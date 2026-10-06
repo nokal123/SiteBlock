@@ -16,9 +16,11 @@ public struct Policy: Sendable, Equatable {
     public var maxFailedAttempts: Int
     /// How many PBKDF2 rounds new password hashes use.
     public var pbkdf2Iterations: Int
+    /// The most sites that can be blocked at once. Adding a new site beyond this fails with tooManySites.
+    public var maxSites: Int
 
-    /// Creates a policy from every value.
-    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int) {
+    /// Creates a policy from every value. `maxSites` defaults to the production cap of 500, so callers that predate the cap keep compiling.
+    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500) {
         self.defaultDelaySeconds = defaultDelaySeconds
         self.minDelaySeconds = minDelaySeconds
         self.maxDelaySeconds = maxDelaySeconds
@@ -26,13 +28,14 @@ public struct Policy: Sendable, Equatable {
         self.lockoutSeconds = lockoutSeconds
         self.maxFailedAttempts = maxFailedAttempts
         self.pbkdf2Iterations = pbkdf2Iterations
+        self.maxSites = maxSites
     }
 
-    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords.
-    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000)
+    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, and at most 500 blocked sites.
+    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500)
 
-    /// Short waits for sandbox runs and tests only.
-    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000)
+    /// Short waits and a low site cap (20) for sandbox runs and tests only, so tests can reach the cap quickly.
+    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20)
 }
 
 /// The whole policy of SiteBlock in one class: it holds the state, applies commands, advances countdowns, and reports what the hosts file should contain. It does no file or socket work, so tests can drive it with fake time.
@@ -48,6 +51,8 @@ public final class Engine {
     public let policy: Policy
     /// Called once when the uninstall countdown finishes.
     public var onUninstall: (() -> Void)?
+    /// Returns the user ID of the person logged in at the screen, or nil when it is not known. The daemon sets it in production to read the owner of /dev/console. While it returns nil (the default, used by sandbox runs and tests), any caller may run setup. When it returns an ID, only root or that user may.
+    public var consoleUID: () -> uid_t? = { nil }
     // The result of the last hosts file enforcement pass, reported in every status. It starts true because the runtime enforces once at startup and then sets it.
     private var lastHostsHealthy = true
 
@@ -89,7 +94,7 @@ public final class Engine {
         do {
             switch request.command {
             case .status: return success(nil)
-            case .setup: return try setup(request)
+            case .setup: return try setup(request, peerUID: peerUID)
             case .add: return try add(request)
             case .unblock: return try unblock(request)
             case .cancelUnblock: return try cancelUnblock(request)
@@ -169,8 +174,12 @@ public final class Engine {
         return nil
     }
 
-    /// Sets the first password; fails when one already exists or the new one is too weak.
-    private func setup(_ request: Request) throws -> Response {
+    /// Sets the first password; fails when the caller is not allowed to, when one already exists, or when the new one is too weak.
+    private func setup(_ request: Request, peerUID: uid_t) throws -> Response {
+        // Who may set the password is checked first, before the arguments and before "already set up", so another account on the Mac learns nothing and cannot claim the password before the owner does (or right after a recovery clears it).
+        if let console = consoleUID(), peerUID != 0, peerUID != console {
+            throw reject(.notAllowed, "Only the administrator or the person logged in at this Mac's screen can set the SiteBlock password.")
+        }
         let password = try require(request.password, "password")
         if state.passwordHash != nil { throw reject(.alreadySetUp, "A password is already set.") }
         state.passwordHash = try makeHash(for: password)
@@ -202,6 +211,8 @@ public final class Engine {
         }
         // Every block must be undoable later, so blocking needs a password to exist. The check comes after the existing-site case so cancelling a pending unblock never needs one.
         guard state.passwordHash != nil else { throw reject(.notSetUp, "Set a password before blocking sites, so every block can be undone later.") }
+        // The cap applies only to a new site (re-adding one that is waiting to unblock returned above). Without it, any account on the Mac could add thousands of sites with no password, and the owner would then need one password check and one wait per site to clear them.
+        guard state.blocked.count < policy.maxSites else { throw reject(.tooManySites, "SiteBlock can block at most \(policy.maxSites) sites. Unblock one before adding another.") }
         state.blocked.append(BlockedSite(domain: domain, hosts: DomainExpander.expand(domain)))
         return success("\(domain) is now blocked.")
     }

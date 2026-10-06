@@ -11,7 +11,7 @@
 6. [Build Script](#build-script)
 7. [Install Script](#install-script)
 8. [Upgrade Behavior](#upgrade-behavior)
-9. [Developer Force-Remove Script](#developer-force-remove-script)
+9. [Repairing an Install](#repairing-an-install)
 
 ---
 
@@ -36,8 +36,7 @@ SiteBlock/
     ├── build.sh
     ├── test.sh
     ├── install.sh
-    ├── verify-install.sh
-    └── dev-force-remove.sh
+    └── verify-install.sh
 ```
 
 ---
@@ -129,10 +128,15 @@ Both LaunchDaemon plists contain `Label`, `ProgramArguments`, `RunAtLoad` true, 
 2. Create `/Library/Application Support/SiteBlock/bin` (mode `0755`), `/usr/local/libexec/siteblock`, `/Library/Logs/SiteBlock`, all owned by `root:wheel`.
 3. If the daemon and watchdog are loaded, `bootout` the watchdog first, then the daemon, so neither restarts the other during the copy. `state.json` is never touched.
 4. Copy `siteblockd` to both the main and backup paths (mode `0755`, `root:wheel`). Copy `siteblock` to `/usr/local/bin/siteblock`. Copy `SiteBlock.app` to `/Applications/` (replacing any older copy).
-5. Write both LaunchDaemon plists by running `siteblockd --print-plist daemon` and `siteblockd --print-plist watchdog`, so the plist text has one source in code. Write the LaunchAgent plist the same way with `--print-plist app`.
+5. Write both LaunchDaemon plists by running the root-owned installed copy, `"/Library/Application Support/SiteBlock/bin/siteblockd" --print-plist daemon` and `--print-plist watchdog`, so the plist text has one source in code. Write the LaunchAgent plist the same way with `--print-plist app`. The script never runs a program from `build/` or `/usr/local/bin` as root, because the user's account can replace files in those folders.
+5a. Write `/etc/newsyslog.d/siteblock.conf` (mode `0644`, `root:wheel`) so macOS's log rotation tool keeps each log file under 1 MB with 3 compressed old copies:
+    ```
+    /Library/Logs/SiteBlock/siteblockd.log  root:wheel  644  3  1024  *  JN
+    /Library/Logs/SiteBlock/watchdog.log    root:wheel  644  3  1024  *  JN
+    ```
 6. `launchctl bootstrap system` the daemon plist, then the watchdog plist.
 7. Load the app for the user who ran `sudo` with `launchctl bootstrap gui/$SUDO_UID /Library/LaunchAgents/com.nokal.siteblock.app.plist`.
-8. Wait up to 10 seconds for the socket to appear, run `siteblock status`, and print next steps (set a password from the menu bar icon or with `siteblock setup`).
+8. Wait up to 10 seconds for the socket to appear, run `siteblock status` as the invoking user (`sudo -u "#$SUDO_UID"`, or skip it when `SUDO_UID` is empty), and print next steps (set a password from the menu bar icon or with `siteblock setup`).
 
 `Install SiteBlock.command` at the repository root is a double-clickable wrapper. Finder opens it in Terminal, where it runs `scripts/build.sh` as the user, then `sudo scripts/install.sh` (Terminal asks for the Mac password), then `scripts/verify-install.sh`, and leaves the window open so the results can be read.
 
@@ -146,6 +150,6 @@ Running `install.sh` again replaces the programs and plists and restarts the job
 
 ---
 
-## Developer Force-Remove Script
+## Repairing an Install
 
-`scripts/dev-force-remove.sh` (needs `sudo`) removes every installed file and the hosts section without the password or the wait. It exists so the developer can recover a broken test install. It is never copied to the installed system and the README describes it only in the developer section.
+Running `sudo scripts/install.sh` again repairs a broken install: it replaces the programs and plists and restarts both jobs, and it never removes the state files, so every block, the password and every countdown survive. The only way to remove SiteBlock is `siteblock uninstall` (or the Uninstall button in Settings), which needs the password and waits for the delay. The repository holds no script that removes SiteBlock without them, because the person who owns the Mac is also the person the block protects.

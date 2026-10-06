@@ -36,18 +36,17 @@
 
 ---
 
-## Step 3: verify-install.sh and dev-force-remove.sh
+## Step 3: verify-install.sh
 
-**Files:** `scripts/verify-install.sh`, `scripts/dev-force-remove.sh`
-**Reference:** [05-testing-and-operations.md](../05-testing-and-operations.md) § Installed-System Verification; [04-infrastructure.md](../04-infrastructure.md) § Developer Force-Remove Script
+**File:** `scripts/verify-install.sh`
+**Reference:** [05-testing-and-operations.md](../05-testing-and-operations.md) § Installed-System Verification
 
 **Sub-steps:**
 - 3a. `verify-install.sh` prints PASS/FAIL per check and a summary, exits non-zero on any FAIL. It uses `youtube.com` and leaves it blocked. It also checks that `siteblock status` reports the hosts file healthy, and prints the sudo command a person can run to test hand-edit repair (`sudo sed -i '' '/youtube.com/d' /etc/hosts; sleep 3; grep -c youtube.com /etc/hosts`).
-- 3b. `dev-force-remove.sh` boots out the watchdog then the daemon, removes every installed path from [04-infrastructure.md](../04-infrastructure.md) § Installed Paths, strips the managed section from `/etc/hosts` using `sed` between the markers, and flushes the DNS cache.
 
 ---
 
 ## Step 4: README
 
 **File:** `README.md`
-**Purpose:** How to build, install, use (app and CLI), recover a forgotten password, uninstall, and what SiteBlock can and cannot stop. A short developer section covers tests and `dev-force-remove.sh`. Plain-English, full sentences.
+**Purpose:** How to build, install, use (app and CLI), recover a forgotten password, uninstall, and what SiteBlock can and cannot stop. A short developer section covers tests and repairing an install. Plain-English, full sentences.

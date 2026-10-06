@@ -14,7 +14,7 @@ public struct Paths: Sendable {
     public let backupDaemon: String
     /// The daemon program that the LaunchDaemons run.
     public let daemonProgram: String
-    /// The folder holding the state file and the program; the watchdog treats its absence as "uninstall in progress".
+    /// The folder holding the state file and the program. The watchdog recreates it when it is missing.
     public let stateDir: String
     /// The persisted state file.
     public let stateFile: String
@@ -36,9 +36,11 @@ public struct Paths: Sendable {
     public let watchdogPlist: String
     /// The app's launchd configuration file (a LaunchAgent).
     public let appAgentPlist: String
+    /// The log rotation settings file that tells macOS's newsyslog how to rotate the two log files.
+    public let newsyslogConf: String
 
     /// Builds the layout shared by production and sandbox: each location is a fixed spot under the given folders.
-    private init(isSandbox: Bool, appBundle: String, cliPath: String, backupDaemon: String, stateDir: String, socket: String, hosts: String, logDir: String, launchDaemonsDir: String, launchAgentsDir: String) {
+    private init(isSandbox: Bool, appBundle: String, cliPath: String, backupDaemon: String, stateDir: String, socket: String, hosts: String, logDir: String, launchDaemonsDir: String, launchAgentsDir: String, newsyslogConf: String) {
         self.isSandbox = isSandbox
         self.appBundle = appBundle
         self.appExecutable = appBundle + "/Contents/MacOS/SiteBlock"
@@ -57,6 +59,7 @@ public struct Paths: Sendable {
         self.daemonPlist = launchDaemonsDir + "/com.nokal.siteblock.daemon.plist"
         self.watchdogPlist = launchDaemonsDir + "/com.nokal.siteblock.watchdog.plist"
         self.appAgentPlist = launchAgentsDir + "/com.nokal.siteblock.app.plist"
+        self.newsyslogConf = newsyslogConf
     }
 
     /// The real system locations used by the installed service.
@@ -64,7 +67,8 @@ public struct Paths: Sendable {
         isSandbox: false, appBundle: "/Applications/SiteBlock.app", cliPath: "/usr/local/bin/siteblock",
         backupDaemon: "/usr/local/libexec/siteblock/siteblockd", stateDir: "/Library/Application Support/SiteBlock",
         socket: "/var/run/siteblock.sock", hosts: "/etc/hosts", logDir: "/Library/Logs/SiteBlock",
-        launchDaemonsDir: "/Library/LaunchDaemons", launchAgentsDir: "/Library/LaunchAgents"
+        launchDaemonsDir: "/Library/LaunchDaemons", launchAgentsDir: "/Library/LaunchAgents",
+        newsyslogConf: "/etc/newsyslog.d/siteblock.conf"
     )
 
     /// Puts every location under the given folder, for tests and manual checks. A Unix socket path must be shorter than 104 bytes, so callers should pick a short root such as one under /tmp.
@@ -76,7 +80,8 @@ public struct Paths: Sendable {
             isSandbox: true, appBundle: base + "/Applications/SiteBlock.app", cliPath: base + "/bin/siteblock",
             backupDaemon: base + "/libexec/siteblock/siteblockd", stateDir: base + "/state",
             socket: base + "/siteblock.sock", hosts: base + "/hosts", logDir: base + "/logs",
-            launchDaemonsDir: base + "/LaunchDaemons", launchAgentsDir: base + "/LaunchAgents"
+            launchDaemonsDir: base + "/LaunchDaemons", launchAgentsDir: base + "/LaunchAgents",
+            newsyslogConf: base + "/newsyslog.d/siteblock.conf"
         )
     }
 }

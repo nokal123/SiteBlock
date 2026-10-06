@@ -103,6 +103,7 @@ SiteBlock defends against the owner of the Mac acting on impulse. It does not de
 **What SiteBlock cannot stop:**
 
 - A root user who unloads both background jobs at the same moment and then deletes their files. No program can fully defend against root on its own machine. The strongest setup is to use a standard (non-administrator) macOS account day to day and give the administrator password to someone else; then none of the root-level bypasses are available on impulse.
+- A root user who stops the daemon (for example with `kill -9`) and edits or deletes `state.json` and its backup before launchd restarts it. The restarted daemon trusts what it finds on disk, so a forged countdown or an empty state takes effect. Freezing both jobs with `pkill -STOP` is the same kind of root-level bypass.
 - A VPN (a service that tunnels all traffic through another computer) or a proxy that does name lookups on the remote side.
 - Tabs that were already connected to a site before it was blocked. Browsers reuse open connections for a short time, so an already-open page may keep loading until the browser closes that connection. Reloading after a minute or two shows the block.
 
@@ -154,7 +155,7 @@ A countdown stores time remaining rather than a finish time, because a finish ti
 
 ## Wire Protocol
 
-The CLI and the app talk to the daemon over the Unix domain socket (a file-system path that two local programs connect through, like a network connection that never leaves the machine). Each connection carries exactly one request and one response, each a single line of JSON ending in `\n`. Requests larger than 64 KB are rejected. The daemon waits at most 5 seconds for the request line.
+The CLI and the app talk to the daemon over the Unix domain socket (a file-system path that two local programs connect through, like a network connection that never leaves the machine). Each connection carries exactly one request and one response, each a single line of JSON ending in `\n`. Requests larger than 64 KB are rejected. The daemon waits at most 2 seconds for the request line, because clients send their one short line immediately after connecting.
 
 ### Request
 
@@ -170,7 +171,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 
 - `ok: Bool` — `true` when the command succeeded.
 - `error: String?` — a sentence a person can read, present when `ok` is `false`.
-- `errorCode: String?` — a stable machine-readable code, present when `ok` is `false`. Codes: `badRequest`, `invalidDomain`, `notSetUp`, `alreadySetUp`, `wrongPassword`, `lockedOut`, `weakPassword`, `notBlocked`, `alreadyBlocked`, `nothingPending`, `invalidDelay`, `notRoot`, `internal`.
+- `errorCode: String?` — a stable machine-readable code, present when `ok` is `false`. Codes: `badRequest`, `invalidDomain`, `notSetUp`, `alreadySetUp`, `wrongPassword`, `lockedOut`, `weakPassword`, `notBlocked`, `alreadyBlocked`, `nothingPending`, `invalidDelay`, `notRoot`, `notAllowed`, `tooManySites`, `internal`.
 - `status: StatusSnapshot?` — present on every successful response, so clients can redraw after any command.
 - `message: String?` — a short confirmation sentence, for example "reddit.com will unblock in 30 minutes."
 
@@ -191,7 +192,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 Commands that make the Mac stricter never need a password. Commands that loosen anything need the password and then a wait.
 
 - `status` — returns the snapshot. No password.
-- `setup` (`password`) — sets the first password. Fails with `alreadySetUp` if one exists.
+- `setup` (`password`) — sets the first password. Fails with `alreadySetUp` if one exists. Only root or the user logged in at the screen (the owner of `/dev/console`) may send it; anyone else gets `notAllowed`. This stops another account on the Mac from claiming the password first, either before the owner sets it or right after a recovery clears it.
 - `add` (`domain`) — blocks a site at once. If the site is already blocked with an unblock pending, this cancels the unblock. Needs a password to be set up first (`notSetUp`), so that every block can later be undone.
 - `unblock` (`domain`, `password`) — starts the unblock countdown for the site.
 - `cancelUnblock` (`domain`) — stops a pending unblock. No password.
@@ -212,6 +213,7 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Recovery wait: 172800 seconds (48 hours).
 - Minimum password length: 6 characters.
 - Wrong-password limit: 5, then a lockout of 900 seconds (15 minutes).
+- Most blocked sites: 500. A further `add` of a new site fails with `tooManySites`. Without a cap, any account on the Mac could add thousands of sites without a password, and the owner would need one password check and one wait per site to clear them.
 - Enforcement tick: every 2 seconds.
 - Watchdog check: every 5 seconds.
 - State is saved to disk after every command and at least every 15 seconds while any countdown is running.

@@ -44,6 +44,8 @@ DAEMON_PLIST="/Library/LaunchDaemons/$DAEMON_LABEL.plist"
 WATCHDOG_PLIST="/Library/LaunchDaemons/$WATCHDOG_LABEL.plist"
 AGENT_PLIST="/Library/LaunchAgents/$APP_LABEL.plist"
 SOCKET="/var/run/siteblock.sock"
+NEWSYSLOG_DIR="/etc/newsyslog.d"
+NEWSYSLOG_CONF="$NEWSYSLOG_DIR/siteblock.conf"
 
 # If anything fails, say so clearly. Re-running the script is always safe.
 trap 'echo "install.sh failed near line $LINENO. It is safe to run it again." >&2' ERR
@@ -92,20 +94,41 @@ install_file() {
     act install -m "$mode" -o root -g wheel "$source" "$dest"
 }
 
-# Writes a launchd plist by asking the built daemon program for its text, so the plist text has one source in the code.
+# Writes a launchd plist by asking the installed daemon program for its text, so the plist text has one source in the code.
+# The program run here is the root-owned copy that step 4 installed, never build/siteblockd: the user's account can replace
+# files under build/, and this script runs as root.
 # The text goes to a temp file first, is checked with plutil, and is then moved into place.
 write_plist() {
     local name="$1" dest="$2"
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "[dry-run] would write $dest from: $BUILD_DIR/siteblockd --print-plist $name (mode 0644, root:wheel)"
+        echo "[dry-run] would write $dest from: $DAEMON_PROGRAM --print-plist $name (mode 0644, root:wheel)"
         return
     fi
     local temp="$dest.install.tmp"
-    "$BUILD_DIR/siteblockd" --print-plist "$name" > "$temp"
+    "$DAEMON_PROGRAM" --print-plist "$name" > "$temp"
     plutil -lint "$temp" >/dev/null
     chown root:wheel "$temp"
     chmod 0644 "$temp"
     mv -f "$temp" "$dest"
+}
+
+# Writes the log rotation settings that make macOS's newsyslog keep each SiteBlock log under 1 MB with 3 compressed old copies.
+# The file goes to a temp file first and is then moved into place with mode 0644 and root:wheel ownership.
+write_newsyslog_conf() {
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[dry-run] would write $NEWSYSLOG_CONF (mode 0644, root:wheel) rotating $LOG_DIR/siteblockd.log and $LOG_DIR/watchdog.log at 1024 KB with 3 compressed copies"
+        return
+    fi
+    # The folder normally exists on macOS; mkdir -p only fills in a missing one and leaves an existing one alone.
+    mkdir -p "$NEWSYSLOG_DIR"
+    local temp="$NEWSYSLOG_CONF.install.tmp"
+    {
+        echo "$LOG_DIR/siteblockd.log  root:wheel  644  3  1024  *  JN"
+        echo "$LOG_DIR/watchdog.log    root:wheel  644  3  1024  *  JN"
+    } > "$temp"
+    chown root:wheel "$temp"
+    chmod 0644 "$temp"
+    mv -f "$temp" "$NEWSYSLOG_CONF"
 }
 
 # True when launchd has the job loaded in the system domain.
@@ -206,11 +229,12 @@ act rm -rf "$APP_DEST"
 act ditto "$BUILD_DIR/SiteBlock.app" "$APP_DEST"
 act chown -R root:wheel "$APP_DEST"
 
-# Step 5: write the launchd plists (two LaunchDaemons and one LaunchAgent).
-step "Step 5: writing launchd plists"
+# Step 5: write the launchd plists (two LaunchDaemons and one LaunchAgent) using the installed daemon program, then the log rotation settings.
+step "Step 5: writing launchd plists and the log rotation settings"
 write_plist daemon "$DAEMON_PLIST"
 write_plist watchdog "$WATCHDOG_PLIST"
 write_plist app "$AGENT_PLIST"
+write_newsyslog_conf
 
 # Step 6: start the daemon, then the watchdog.
 step "Step 6: starting the daemon and the watchdog"
@@ -232,9 +256,20 @@ else
 fi
 
 # Step 8: wait for the daemon's socket, show the status, and print what to do next.
+# The status check runs as the person who ran sudo, not as root: it proves an ordinary account can reach the daemon, and it never runs a
+# program from a user-writable folder (such as /usr/local/bin) as root. Without SUDO_UID there is no such person, so the check is skipped.
 step "Step 8: checking that the daemon is answering"
+STATUS_UID="${SUDO_UID:-}"
+if [[ $DRY_RUN -eq 1 && -z "$STATUS_UID" ]]; then
+    # A dry run is not under sudo; show the command using the current user, which is who sudo would report.
+    STATUS_UID="$(id -u)"
+fi
 if [[ $DRY_RUN -eq 1 ]]; then
-    echo "[dry-run] would wait up to 10 seconds for $SOCKET, then run: $CLI_DEST status"
+    if [[ -n "$STATUS_UID" ]]; then
+        echo "[dry-run] would wait up to 10 seconds for $SOCKET, then run as the invoking user: sudo -u \"#$STATUS_UID\" $CLI_DEST status"
+    else
+        echo "[dry-run] would wait up to 10 seconds for $SOCKET, then skip the status check (no SUDO_UID)"
+    fi
 else
     ready=0
     for _ in $(seq 1 20); do
@@ -248,7 +283,11 @@ else
         echo "error: the daemon did not create $SOCKET within 10 seconds. Look at $LOG_DIR/siteblockd.log" >&2
         exit 1
     fi
-    "$CLI_DEST" status
+    if [[ -n "$STATUS_UID" ]]; then
+        sudo -u "#$STATUS_UID" "$CLI_DEST" status
+    else
+        echo "Skipping the status check: this script was not run through sudo, so there is no user to run it as."
+    fi
 fi
 
 echo

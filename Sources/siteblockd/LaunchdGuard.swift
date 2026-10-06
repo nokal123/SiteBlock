@@ -31,9 +31,11 @@ enum LaunchdGuard {
         return runProcess("/bin/launchctl", ["print", "system/\(job.label)"], timeout: 5) == 0
     }
 
-    /// Makes sure the job's files are intact and the job is loaded. It first puts back a missing or changed plist and a missing program, so a job whose files were deleted can start again even while launchd still has it loaded. When the job is not loaded it then runs `/bin/launchctl bootstrap system <plist>`. Every repair is logged. Does nothing in sandbox mode.
+    /// Makes sure the job's files are intact and the job is loaded. It first recreates a missing state folder and its `bin` folder, then puts back a missing or changed plist and a missing program, so a job whose files were deleted can start again even while launchd still has it loaded. When the job is not loaded it then runs `/bin/launchctl bootstrap system <plist>`. Every repair is logged. Does nothing in sandbox mode.
     static func ensureLoaded(_ job: Job, paths: Paths = .production, log: Logger = Logger()) {
         guard !paths.isSandbox else { return }
+        ensureFolder(paths.stateDir, mode: 0o700, log: log)
+        ensureFolder(paths.stateDir + "/bin", mode: 0o755, log: log)
         restoreFiles(job, paths: paths, log: log)
         if isLoaded(job, paths: paths) { return }
 
@@ -44,6 +46,20 @@ enum LaunchdGuard {
         } else {
             log.log("could not reload \(job.label): launchctl bootstrap exited \(result.status): \(result.output)")
         }
+    }
+
+    /// Creates one folder, and only that folder, when it is missing, then sets its owner to root:wheel and its mode explicitly (the process umask would otherwise trim the mode). Parent folders are never created here: the state folder must be made as 0700 on its own, because creating it as a side effect of making `bin` would leave it world-readable. A folder that already exists is left alone.
+    private static func ensureFolder(_ path: String, mode: mode_t, log: Logger) {
+        var info = stat()
+        if lstat(path, &info) == 0 { return }
+        // The folder is created with the final mode up front, so it is never wider than intended, even for an instant.
+        guard mkdir(path, mode) == 0 else {
+            log.log("could not create \(path): \(String(cString: strerror(errno)))")
+            return
+        }
+        _ = chown(path, 0, 0)
+        _ = chmod(path, mode)
+        log.log("recreated \(path)")
     }
 
     /// Rewrites the plist if it is missing or different from the one built into this program, fixes its owner and mode, and copies the program back from the backup location if it is missing or not runnable.
@@ -84,11 +100,12 @@ enum LaunchdGuard {
         if info.st_mode & 0o7777 != mode { _ = chmod(path, mode) }
     }
 
-    /// Writes the data to a temp file beside the target, sets mode and root:wheel ownership, and renames it into place, so the target is never half-written. Creates the folder when missing. Returns false on any failure.
+    /// Writes the data to a temp file beside the target, sets mode and root:wheel ownership, and renames it into place, so the target is never half-written. Creates the target's own folder (but never its parents) when missing. Returns false on any failure.
     private static func writeFile(_ data: Data, to path: String, mode: mode_t, createFolderMode: mode_t) -> Bool {
         let folder = URL(fileURLWithPath: path).deletingLastPathComponent().path
         if !FileManager.default.fileExists(atPath: folder) {
-            do { try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: Int(createFolderMode)]) } catch { return false }
+            // Only the folder itself is created, never its parents, so a missing state folder cannot be made with the wrong mode as a side effect.
+            do { try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: Int(createFolderMode)]) } catch { return false }
         }
         let tempPath = path + ".siteblock.tmp"
         _ = unlink(tempPath)
@@ -117,7 +134,7 @@ enum LaunchdGuard {
     }
 }
 
-/// Runs the watchdog until it is stopped: every 5 seconds it makes sure the daemon is loaded. It stands down while an uninstall is in progress (the state file says so, or the install folder is gone), and it never touches the hosts file or the socket.
+/// Runs the watchdog until it is stopped: every 5 seconds it makes sure the daemon is loaded. It stands down only when the state file records a finished uninstall, and it never touches the hosts file or the socket.
 func runWatchdog(paths: Paths, log: Logger) -> Never {
     log.log("watchdog started")
     while true {
@@ -126,9 +143,8 @@ func runWatchdog(paths: Paths, log: Logger) -> Never {
     }
 }
 
-/// True when the watchdog must not reload the daemon: the install folder has been removed, or the state file describes a finished uninstall (`uninstalling` set and the uninstall countdown run out). A state file that cannot be read or decoded counts as "not uninstalling", and so does a bare `uninstalling` flag with no finished countdown (hand-editing), so neither can switch the guard off. It decodes the file directly instead of using `StateStore.load`, because loading would rename a damaged file out of the daemon's way.
+/// True only when the state file describes a finished uninstall (`uninstalling` set and the uninstall countdown run out), which is the one case where the watchdog must not reload the daemon. A missing install folder, a missing state file and a state file that cannot be read or decoded all count as "not uninstalling", and so does a bare `uninstalling` flag with no finished countdown (hand-editing), so none of them can switch the guard off. Deleting the install folder is therefore repaired, not mistaken for an uninstall. It decodes the file directly instead of using `StateStore.load`, because loading would rename a damaged file out of the daemon's way.
 func uninstallInProgress(paths: Paths) -> Bool {
-    if !FileManager.default.fileExists(atPath: paths.stateDir) { return true }
     guard let data = FileManager.default.contents(atPath: paths.stateFile), let state = try? JSONCoding.decoder.decode(PersistedState.self, from: data) else { return false }
     return state.hasFinishedUninstall
 }

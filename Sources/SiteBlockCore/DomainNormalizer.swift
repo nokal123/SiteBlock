@@ -26,8 +26,10 @@ public enum DomainError: Error, LocalizedError, Equatable {
 
 /// Turns whatever the user typed (a bare name, a full URL, a name with a port or path) into one canonical lowercase base domain.
 public enum DomainNormalizer {
-    // Characters that end the host part of a URL: the start of the path, the query or the fragment.
-    private static let hostEnders: Set<Unicode.Scalar> = ["/", "?", "#"]
+    /// True for a character that ends the host part of a URL: the start of the path, the query or the fragment. Plain comparisons are used instead of a Set lookup because this runs once per character of untrusted input and must stay fast in a debug build.
+    private static func isHostEnder(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == "/" || scalar == "?" || scalar == "#"
+    }
 
     /// Returns the canonical base domain for the input, or throws a DomainError explaining why it cannot be blocked.
     public static func normalize(_ input: String) throws -> String {
@@ -37,20 +39,21 @@ public enum DomainNormalizer {
         // All text surgery below works on Unicode scalars, because Swift Characters can glue a combining mark onto a "/" or "." and hide it from comparisons.
         var scalars = Array(trimmed.unicodeScalars)
 
+        // Steps 2 to 4 scan the whole input, which can be very long, so they use plain indexed loops. Closure-based helpers such as firstIndex(where:) and filter are many times slower in a debug build, and the size check in step 6 should reject a huge input quickly even there.
         // Step 2: drop a leading "scheme://", then cut at the first "/", "?" or "#".
         // The "://" only counts as a scheme when it comes before any "/", "?" or "#", so "reddit.com/r?u=http://x.com" stays reddit.com instead of becoming x.com.
-        if let at = indexOfScheme(in: scalars), !scalars[..<at].contains(where: { hostEnders.contains($0) }) { scalars = Array(scalars[(at + 3)...]) }
-        if let cut = scalars.firstIndex(where: { hostEnders.contains($0) }) { scalars = Array(scalars[..<cut]) }
+        if let at = indexOfScheme(in: scalars), indexOfHostEnder(in: scalars).map({ $0 >= at }) ?? true { scalars = Array(scalars[(at + 3)...]) }
+        if let cut = indexOfHostEnder(in: scalars) { scalars = Array(scalars[..<cut]) }
 
         // Step 3: drop a "user:pass@" prefix (everything up to and including the last "@").
-        if let at = scalars.lastIndex(of: "@") { scalars = Array(scalars[(at + 1)...]) }
+        if let at = lastIndexOfAtSign(in: scalars) { scalars = Array(scalars[(at + 1)...]) }
 
         // Step 4: reject IPv6 literals and drop a ":port" suffix.
         if scalars.first == "[" { throw DomainError.ipAddress }
-        let colonCount = scalars.filter { $0 == ":" }.count
+        let (colonCount, firstColon) = colons(in: scalars)
         // More than one colon cannot be a name plus a port, so it is a bare IPv6 address.
         if colonCount > 1 { throw DomainError.ipAddress }
-        if colonCount == 1, let colon = scalars.firstIndex(of: ":") {
+        if colonCount == 1, let colon = firstColon {
             // A port must be digits only (or empty); anything else is not a site name.
             guard scalars[(colon + 1)...].allSatisfy({ $0.value >= 0x30 && $0.value <= 0x39 }) else { throw DomainError.invalidCharacters }
             scalars = Array(scalars[..<colon])
@@ -61,7 +64,26 @@ public enum DomainNormalizer {
         if host.hasSuffix(".") { host.removeLast() }
         if host.isEmpty { throw DomainError.empty }
 
-        // Step 6: convert every label that has non-ASCII characters to its xn-- form.
+        // Step 6: check the sizes on the raw Unicode scalars before any encoding.
+        // Every input scalar becomes at least one output byte, so a name over these limits could never pass the final checks anyway. Checking first matters because Punycode encoding takes time that grows with the square of the label length, and the daemon calls this on a queue that every command waits on.
+        // The label limit is checked before the whole-name limit, so one huge label reports labelTooLong (the more useful message) rather than tooLong.
+        var scalarsInLabel = 0
+        var longestLabel = 0
+        var scalarsInName = 0
+        for scalar in host.unicodeScalars {
+            scalarsInName += 1
+            if scalar == "." {
+                scalarsInLabel = 0
+            } else {
+                scalarsInLabel += 1
+                longestLabel = max(longestLabel, scalarsInLabel)
+            }
+        }
+        if longestLabel > 63 { throw DomainError.labelTooLong }
+        // A leading "www." is stripped in step 8, so it gets four extra characters here; otherwise a legal 253-character name typed with "www." in front would be rejected.
+        if scalarsInName > 253 + (host.hasPrefix("www.") ? 4 : 0) { throw DomainError.tooLong }
+
+        // Step 7: convert every label that has non-ASCII characters to its xn-- form.
         var labels = host.components(separatedBy: ".")
         for index in labels.indices {
             let label = labels[index]
@@ -73,10 +95,10 @@ public enum DomainNormalizer {
         }
         var ascii = labels.joined(separator: ".")
 
-        // Step 7: strip one leading "www." so www.reddit.com and reddit.com are the same site (the expander adds www. back).
+        // Step 8: strip one leading "www." so www.reddit.com and reddit.com are the same site (the expander adds www. back).
         if ascii.hasPrefix("www.") { ascii.removeFirst(4) }
 
-        // Step 8: validate the final ASCII name.
+        // Step 9: validate the final ASCII name.
         if ascii.isEmpty { throw DomainError.empty }
         if ascii.utf8.count > 253 { throw DomainError.tooLong }
         // The reserved check comes before the dot check so a bare "localhost" is reported as reserved rather than as missing a dot.
@@ -96,16 +118,57 @@ public enum DomainNormalizer {
 
     /// Finds where "://" starts in the scalars, or nil when it is absent.
     private static func indexOfScheme(in scalars: [Unicode.Scalar]) -> Int? {
-        guard scalars.count >= 3 else { return nil }
-        for i in 0...(scalars.count - 3) where scalars[i] == ":" && scalars[i + 1] == "/" && scalars[i + 2] == "/" { return i }
+        let count = scalars.count
+        var i = 0
+        while i + 2 < count {
+            if scalars[i] == ":" && scalars[i + 1] == "/" && scalars[i + 2] == "/" { return i }
+            i += 1
+        }
         return nil
     }
 
-    /// Builds a String back from a list of Unicode scalars.
+    /// Finds the first "/", "?" or "#" in the scalars, or nil when there is none.
+    private static func indexOfHostEnder(in scalars: [Unicode.Scalar]) -> Int? {
+        let count = scalars.count
+        var i = 0
+        while i < count {
+            if isHostEnder(scalars[i]) { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Finds the last "@" in the scalars, or nil when there is none.
+    private static func lastIndexOfAtSign(in scalars: [Unicode.Scalar]) -> Int? {
+        var i = scalars.count - 1
+        while i >= 0 {
+            if scalars[i] == "@" { return i }
+            i -= 1
+        }
+        return nil
+    }
+
+    /// Counts the ":" characters in the scalars and reports where the first one is.
+    private static func colons(in scalars: [Unicode.Scalar]) -> (count: Int, first: Int?) {
+        let total = scalars.count
+        var count = 0
+        var first: Int?
+        var i = 0
+        while i < total {
+            if scalars[i] == ":" {
+                if first == nil { first = i }
+                count += 1
+            }
+            i += 1
+        }
+        return (count, first)
+    }
+
+    /// Builds a String back from a list of Unicode scalars, exactly as given. It decodes the scalars as UTF-32 text in one step, which is much faster than appending them one at a time (this runs on untrusted input of any length).
     private static func makeString(_ scalars: [Unicode.Scalar]) -> String {
-        var view = String.UnicodeScalarView()
-        view.append(contentsOf: scalars)
-        return String(view)
+        scalars.withUnsafeBufferPointer { buffer in
+            buffer.withMemoryRebound(to: UInt32.self) { String(decoding: $0, as: UTF32.self) }
+        }
     }
 
     /// True for a byte that may appear inside a final label: a-z, 0-9 or a hyphen.

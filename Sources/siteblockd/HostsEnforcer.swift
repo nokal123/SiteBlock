@@ -1,7 +1,7 @@
 import Foundation
 import SiteBlockCore
 
-/// Makes the real hosts file match the block list, and reports whether it does. All the text editing is done by `HostsFileEditor`; this class only reads the file, writes it safely, and clears the name cache.
+/// Makes the real hosts file match the block list, and reports whether it does. All the text editing is done by `HostsFileEditor`; this class only reads the file, clears the flags that could freeze it, writes it safely, and clears the name cache.
 final class HostsEnforcer {
     // A failure message that repeats is logged at most this often, so a persistent problem (such as a read-only disk) does not write a line every tick.
     private static let repeatedFailureLogInterval = Duration.seconds(60)
@@ -16,7 +16,7 @@ final class HostsEnforcer {
         self.log = log
     }
 
-    /// Reads the hosts file, computes what it should contain for the blocked host names, and rewrites it when it differs. Returns true when the file is correct after the pass. `causedByCommand` should be true when the caller just changed the block list on purpose, so the rewrite is expected and is not logged as tampering.
+    /// Reads the hosts file, computes what it should contain for the blocked host names, and rewrites it when it differs. Returns true when the file is correct after the pass. `causedByCommand` should be true when the caller just changed the block list on purpose (a command, or a countdown that finished), so the rewrite is expected and is not logged.
     func enforce(blockedHosts: [String], causedByCommand: Bool = false) -> Bool {
         let current: String
         if FileManager.default.fileExists(atPath: paths.hosts) {
@@ -37,26 +37,80 @@ final class HostsEnforcer {
             return true
         }
 
+        // In production, `chflags uchg /etc/hosts` (or on /etc) must not be able to freeze the file, so the flags that make a file or folder unchangeable are cleared before anything is written.
+        if !paths.isSandbox { clearProtectionFlags() }
         guard writeAtomically(wanted) else { return false }
         lastFailure = nil
         flushNameCache()
         // A rewrite nobody asked for means someone (or another program) changed the file, so it goes in the log.
-        if !causedByCommand { log.log("hosts file repaired") }
+        if !causedByCommand { log.log(describeChange(from: current, to: wanted)) }
         return true
     }
 
-    /// Writes the text to a temp file beside the hosts file and renames it over the hosts file, so readers always see either the old or the new file, never a half-written one. Returns false (after logging why) on any failure.
-    private func writeAtomically(_ text: String) -> Bool {
-        let tempPath = paths.hosts + ".siteblock.tmp"
-        // Remove a leftover temp file first, so O_EXCL below guarantees a brand-new file and a planted symlink can never be followed.
-        _ = unlink(tempPath)
-        let fd = open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644)
-        if fd < 0 {
-            logFailure("hosts file could not be updated: cannot create \(tempPath): \(String(cString: strerror(errno)))")
-            return false
+    /// Picks the log message for a rewrite that no command caused. It is "blocks removed from hosts file" only when the pass did nothing but take managed lines away (the block list is now empty or shorter, for example after the daemon started with lost state). Any other change (block lines put back, a bypass line stripped, or a section moved or edited) is "hosts file repaired".
+    private func describeChange(from current: String, to wanted: String) -> String {
+        let currentLines = Set(current.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map { String(String.UnicodeScalarView($0)) })
+        let wantedLines = wanted.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map { String(String.UnicodeScalarView($0)) }
+        // A line the new text has that the old text did not means block lines were put back, or a user line was rewritten after a blocked name was cut out of it.
+        if wantedLines.contains(where: { !currentLines.contains($0) }) { return "hosts file repaired" }
+        // With the managed sections taken out of both texts, any difference is in the user's own lines, so a bypass line was removed.
+        if HostsFileEditor.render(original: current, blockedHosts: []) != HostsFileEditor.render(original: wanted, blockedHosts: []) { return "hosts file repaired" }
+        // Nothing was added and the user's lines are unchanged, so lines that are no longer wanted went away. If none did, the pass only changed the layout.
+        let removedSomething = !currentLines.isSubset(of: Set(wantedLines))
+        return removedSomething ? "blocks removed from hosts file" : "hosts file repaired"
+    }
+
+    /// The flags that make a file or folder unchangeable: user and system immutable, and user and system append-only.
+    private static let protectionFlags = UInt32(UF_IMMUTABLE | SF_IMMUTABLE | UF_APPEND | SF_APPEND)
+
+    /// Clears the protection flags on the hosts file and on the folder that holds it. The folder is cleared first, because an immutable folder would not let the temp file be created. Root may clear these flags at macOS's normal security level. Production only.
+    private func clearProtectionFlags() {
+        let folder = URL(fileURLWithPath: paths.hosts).deletingLastPathComponent().path
+        // On macOS /etc is a symlink to /private/etc. lchflags on the symlink would change the link and not the folder, so the real folder is looked up first.
+        var resolvedFolder = folder
+        if let resolved = realpath(folder, nil) {
+            resolvedFolder = String(cString: resolved)
+            free(resolved)
         }
+        clearProtectionFlags(at: resolvedFolder)
+        clearProtectionFlags(at: paths.hosts)
+    }
+
+    /// Reads the flags of one path with lstat (which does not follow a symlink at the end of the path) and, when any protection flag is set, writes the flags back with those bits removed using lchflags. A failure is logged and the write is still attempted.
+    private func clearProtectionFlags(at path: String) {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return }
+        guard info.st_flags & HostsEnforcer.protectionFlags != 0 else { return }
+        if lchflags(path, info.st_flags & ~HostsEnforcer.protectionFlags) != 0 {
+            logFailure("cannot clear the immutable flags on \(path): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    /// Creates a new empty temp file beside the hosts file with a random name. It uses mkstemp first, and if that fails it makes its own random name and creates the file with O_CREAT, O_EXCL (fail if anything already exists there) and O_NOFOLLOW (never follow a symlink). Returns the open descriptor and the path, or a descriptor of -1 and the reason the file could not be created.
+    private func createTempFile(in folder: String) -> (fd: Int32, path: String, failure: String) {
+        var template = Array("\(folder)/.hosts.siteblock.XXXXXX".utf8CString)
+        let first = mkstemp(&template)
+        if first >= 0 {
+            _ = fcntl(first, F_SETFD, FD_CLOEXEC)
+            return (first, String(cString: template), "")
+        }
+        var failure = String(cString: strerror(errno))
+        let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        // A few tries, because a random name can in rare cases already exist; any other error is final.
+        for _ in 0..<8 {
+            let suffix = String((0..<6).map { _ in alphabet.randomElement()! })
+            let path = "\(folder)/.hosts.siteblock.\(suffix)"
+            let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            if fd >= 0 { return (fd, path, "") }
+            failure = String(cString: strerror(errno))
+            if errno != EEXIST { break }
+        }
+        return (-1, "", failure)
+    }
+
+    /// Writes every byte to the descriptor, retrying after interrupts and partial writes. Returns nil on success, or the reason it failed.
+    private func writeAll(_ bytes: [UInt8], to fd: Int32) -> String? {
         var failure: String?
-        let bytes = Array(text.utf8)
         bytes.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {
@@ -69,15 +123,47 @@ final class HostsEnforcer {
                 offset += written
             }
         }
+        return failure
+    }
+
+    /// Writes the text into the hosts file itself, for when the rename could not replace it. The file is opened with O_WRONLY and O_TRUNC (empty it first) and O_NOFOLLOW (refuse a symlink). It is not atomic, but it works in places where a rename does not. Returns nil on success, or the reason it failed.
+    private func writeInPlace(_ bytes: [UInt8]) -> String? {
+        let fd = open(paths.hosts, O_WRONLY | O_TRUNC | O_NOFOLLOW)
+        if fd < 0 { return "cannot open \(paths.hosts): \(String(cString: strerror(errno)))" }
+        defer { close(fd) }
+        if let failure = writeAll(bytes, to: fd) { return failure }
+        if fsync(fd) != 0 { return "cannot flush to disk: \(String(cString: strerror(errno)))" }
+        return nil
+    }
+
+    /// Writes the text to a randomly named temp file beside the hosts file and renames it over the hosts file, so readers always see either the old or the new file, never a half-written one. If the rename fails, it writes into the hosts file itself and removes the temp file. Returns false (after logging why) on any failure.
+    private func writeAtomically(_ text: String) -> Bool {
+        let folder = URL(fileURLWithPath: paths.hosts).deletingLastPathComponent().path
+        // A random name means a folder or file planted at a fixed temp path cannot block the write.
+        let temp = createTempFile(in: folder)
+        if temp.fd < 0 {
+            logFailure("hosts file could not be updated: cannot create a temp file in \(folder): \(temp.failure)")
+            return false
+        }
+        let bytes = Array(text.utf8)
+        var failure: String?
         // The mode is set on the open file, so it is 0644 whatever the process umask is.
-        if failure == nil, fchmod(fd, 0o644) != 0 { failure = "cannot set permissions: \(String(cString: strerror(errno)))" }
+        if fchmod(temp.fd, 0o644) != 0 { failure = "cannot set permissions: \(String(cString: strerror(errno)))" }
         // Only the installed daemon changes ownership: a sandbox run is not root and must not try.
-        if failure == nil, !paths.isSandbox, fchown(fd, 0, 0) != 0 { failure = "cannot set owner root:wheel: \(String(cString: strerror(errno)))" }
-        if failure == nil, fsync(fd) != 0 { failure = "cannot flush to disk: \(String(cString: strerror(errno)))" }
-        close(fd)
-        if failure == nil, rename(tempPath, paths.hosts) != 0 { failure = "cannot replace \(paths.hosts): \(String(cString: strerror(errno)))" }
+        if failure == nil, !paths.isSandbox, fchown(temp.fd, 0, 0) != 0 { failure = "cannot set owner root:wheel: \(String(cString: strerror(errno)))" }
+        if failure == nil { failure = writeAll(bytes, to: temp.fd) }
+        if failure == nil, fsync(temp.fd) != 0 { failure = "cannot flush to disk: \(String(cString: strerror(errno)))" }
+        close(temp.fd)
+        if failure == nil, rename(temp.path, paths.hosts) != 0 {
+            // The rename can fail where writing the file itself still works (for example when the folder does not allow replacing files). Try that before giving up.
+            let renameFailure = "cannot replace \(paths.hosts): \(String(cString: strerror(errno)))"
+            if let inPlaceFailure = writeInPlace(bytes) {
+                failure = "\(renameFailure); writing in place also failed: \(inPlaceFailure)"
+            }
+        }
+        // After a successful rename the temp file is already gone, so this removes only a temp file left behind by a failure or by the in-place fallback.
+        _ = unlink(temp.path)
         if let failure {
-            _ = unlink(tempPath)
             logFailure("hosts file could not be updated: \(failure)")
             return false
         }

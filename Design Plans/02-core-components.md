@@ -27,7 +27,7 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 
 ### 1. DomainNormalizer (`Sources/SiteBlockCore/DomainNormalizer.swift`)
 
-**Purpose:** Turns whatever the user typed (a bare name, a full URL, a name with a port or path) into one canonical lowercase base domain, or explains why it cannot be blocked.
+**Purpose:** Turns whatever the user typed (a bare name, a full URL, a name with a port or path) into one canonical lowercase base domain, or explains why it cannot be blocked. It runs in nine steps.
 
 **Key Methods:**
 - `static func normalize(_ input: String) throws -> String` — returns the base domain, or throws `DomainError`.
@@ -38,9 +38,10 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 3. Drop any `user:pass@` prefix (everything up to and including the last `@`).
 4. Drop a `:port` suffix. Input that starts with `[` is an IPv6 literal and throws `.ipAddress`.
 5. Lowercase. Remove one trailing `.`.
-6. Convert each label (the parts between dots) that contains non-ASCII characters to its `xn--` Punycode form, so `bücher.de` becomes `xn--bcher-kva.de`. See § Punycode.
-7. Strip one leading `www.` so that `www.reddit.com` and `reddit.com` are stored as the same site. The expander adds `www.` back.
-8. Validate:
+6. Before any encoding, check sizes on the raw Unicode scalars (single code points): more than 63 in one label throws `.labelTooLong`, and then more than 253 in the whole name throws `.tooLong`. A name that starts with `www.` may have 257, because step 8 strips those four characters. Every input scalar becomes at least one output byte, so such a name could never pass the final checks anyway. Checking first matters because Punycode encoding takes time that grows with the square of the label length, and the daemon runs it on the queue every command waits on.
+7. Convert each label (the parts between dots) that contains non-ASCII characters to its `xn--` Punycode form, so `bücher.de` becomes `xn--bcher-kva.de`. See § Punycode.
+8. Strip one leading `www.` so that `www.reddit.com` and `reddit.com` are stored as the same site. The expander adds `www.` back.
+9. Validate:
    - total length 1–253 characters,
    - at least two labels,
    - each label 1–63 characters, only `a–z`, `0–9` and `-`, not starting or ending with `-`,
@@ -106,7 +107,7 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 - `beginMarker = "# BEGIN SiteBlock — managed by siteblockd; edits inside this block are reverted"`
 - `endMarker = "# END SiteBlock"`
 
-A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` or equals `# END SiteBlock`. This tolerates trailing spaces and a hand-edited comment after the BEGIN text.
+A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteBlock`, and as an END marker when its trimmed text equals `# END SiteBlock`.
 
 **Key Methods:**
 - `static func render(original: String, blockedHosts: [String]) -> String` — returns the corrected file text.
@@ -115,8 +116,8 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 
 **Render steps:**
 1. Split the original into lines (accept `\n` and `\r\n`, write `\n`).
-2. Remove every managed section. A section starts at a BEGIN line and ends at the next END line. A BEGIN line with no END after it removes only the BEGIN line itself, because deleting to the end of the file could destroy the user's own entries. A stray END line with no BEGIN is removed.
-3. In every remaining line that is not a comment, look at the host names after the address (fields are separated by spaces or tabs, and anything after `#` is a comment). Remove any name that equals, ignoring case, a blocked host. If the line has no names left, drop the line. This stops a hand-added line such as `151.101.1.140 reddit.com`, which macOS would otherwise use because it reads the first match.
+2. Remove every managed section. Each END line closes the section that starts at the nearest BEGIN line above it that is not already closed. Only that BEGIN, the END, and the lines between them are removed. Every other BEGIN line (one with no END below it, or an earlier BEGIN that a later BEGIN superseded) is removed as a single line, and so is an END line with no open BEGIN above it. This pairing means a comment the user wrote such as `# BEGIN SiteBlock entries I added myself`, far above the real section, costs only that one comment line and never the user's entries between it and the real section.
+3. In every remaining line that is not a comment, look at the host names after the address, reading the line the way the macOS resolver does. The line ends at the first NUL character or `#`. Fields are separated only by ASCII spaces and tabs. A name is compared after lowercasing ASCII letters and removing one trailing `.`. Remove any name that then equals a blocked host. If the line has no names left, drop the line. This stops a hand-added line such as `151.101.1.140 reddit.com` or `151.101.1.140 reddit.com.`, which macOS would otherwise use because it reads the first match. Lines with no blocked name are left exactly as they were.
 4. Remove trailing empty lines, then add one `\n` if the text is not empty.
 5. If `blockedHosts` is not empty, append one empty line and the managed section, ending with `\n`.
 
@@ -166,7 +167,7 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 
 **Properties:**
 - `private(set) var state: PersistedState`
-- `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`.
+- `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000 and 500.
 - `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
 - `var onUninstall: (() -> Void)?` — called once when the uninstall countdown finishes.
 
@@ -181,6 +182,10 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 2. If no password is set, fail with `notSetUp`.
 3. If the password is wrong, add 1 to `failedAttempts`. When it reaches `maxFailedAttempts`, start `lockout` and reset `failedAttempts` to 0. Fail with `wrongPassword` and say how many tries are left.
 4. If the password is right, reset `failedAttempts` to 0 and continue.
+
+**Who may set up:** `var consoleUID: () -> uid_t?` returns the user ID of the person logged in at the screen. The runtime sets it in production to read the owner of `/dev/console`. It defaults to returning `nil`, and `nil` means any caller may run `setup`, which is what sandbox runs and tests use. When it returns an ID, `setup` succeeds only for `peerUID == 0` or `peerUID` equal to that ID, and fails with `notAllowed` otherwise. The check comes before `alreadySetUp`.
+
+**Site cap:** adding a new site when `policy.maxSites` sites are already blocked fails with `tooManySites`. Re-adding an existing site (to cancel its unblock) is not affected. `Policy.production.maxSites` is 500; `Policy.fastForTests.maxSites` is 20, so tests can reach the cap quickly.
 
 **Argument rule:** a missing required argument fails with `badRequest` before any lockout or password check, so a malformed request never costs a password attempt. `setDelay` also checks the range (`invalidDelay`) before the password.
 

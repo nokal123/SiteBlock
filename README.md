@@ -61,9 +61,9 @@ Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. 
 
 ## What SiteBlock can and cannot stop
 
-SiteBlock is built to stop the person who owns the Mac from undoing a block on impulse. It undoes hand edits to `/etc/hosts`, including lines elsewhere in the file that point a blocked site at a real address. It restarts its service if the service is stopped, restores its files if they are deleted, and rewrites its saved state if that is deleted or edited. Countdowns use a clock that cannot be changed, so moving the Mac's date forward does not skip a wait. Five wrong passwords lock password checks for 15 minutes.
+SiteBlock is built to stop the person who owns the Mac from undoing a block on impulse. It undoes hand edits to `/etc/hosts` within two seconds, including lines elsewhere in the file that point a blocked site at a real address, and it clears the "locked" file flag that `chflags` can set. It restarts its service if the service is stopped, restores its files and folders if they are deleted, and, while the service runs, rewrites its saved state if that is deleted or edited. Countdowns use a clock that cannot be changed, so moving the Mac's date forward does not skip a wait. Five wrong passwords lock password checks for 15 minutes.
 
-It cannot stop a determined administrator with time and knowledge, because the root account can always remove any program on its own Mac. It also does not stop a VPN (a service that sends all traffic through another computer) or a proxy that looks up site names remotely.
+It cannot stop a determined administrator with time and knowledge, because the root account can always remove any program on its own Mac. For example, root can stop the service and edit its saved state before it restarts, or stop both background jobs at once. It also does not stop a VPN (a service that sends all traffic through another computer) or a proxy that looks up site names remotely.
 
 For the strongest protection, use a standard (non-administrator) macOS account day to day and let someone else keep the administrator password. Then none of the root-level workarounds are available.
 
@@ -77,4 +77,4 @@ The design documents are in `Design Plans/`, starting with `00-INDEX.md`.
 
 Run the tests with `scripts/test.sh`. It adds the compiler flags that Swift Testing needs on a Mac that has only the Command Line Tools and not Xcode. The integration tests start the real `siteblockd` in sandbox mode, which uses a temporary folder in place of `/etc/hosts` and the system folders, so the tests need no administrator password.
 
-`scripts/dev-force-remove.sh` removes an installed copy at once, without the password or the wait. It exists for recovering a broken test install, and it is never installed on the system.
+If an install breaks, run `sudo scripts/install.sh` again. It replaces the programs and restarts the background jobs, and it keeps every block, the password and every countdown.

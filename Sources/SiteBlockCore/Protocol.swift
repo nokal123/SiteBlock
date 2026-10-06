@@ -43,6 +43,8 @@ public enum ErrorCode: String, Codable, CaseIterable, Sendable {
     case nothingPending
     case invalidDelay
     case notRoot
+    case notAllowed
+    case tooManySites
     case `internal`
 }
 

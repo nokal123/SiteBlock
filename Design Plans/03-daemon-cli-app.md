@@ -21,7 +21,7 @@
 **Flags:**
 - `--daemon` — run the main service.
 - `--watchdog` — run the watchdog loop.
-- `--sandbox <dir>` — use `Paths.sandbox(root: dir)` instead of the real system paths, and turn off everything that touches the real system: no DNS cache flush, no `launchctl` calls, no watchdog checks. Used by integration tests.
+- `--sandbox <dir>` — use `Paths.sandbox(root: dir)` instead of the real system paths, and turn off everything that touches the real system: no DNS cache flush, no `launchctl` calls, no watchdog checks. Used by integration tests. Refused with exit code 64 when the process runs as root, so `sudo siteblockd --daemon --sandbox /etc` cannot start a second daemon that fights the real one over `/etc/hosts`.
 - `--tick <seconds>` — enforcement interval, default `2`. Only accepted together with `--sandbox`.
 - `--policy-fast` — use `Policy.fastForTests`: delay floor 1 second, recovery 3 seconds, lockout 2 seconds, PBKDF2 iterations 1000. Only accepted together with `--sandbox`, so the installed daemon can never be started with short waits.
 - `--version` — print the version and exit.
@@ -56,7 +56,9 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 
 **After every command:** save the state, then run an enforcement pass, so a newly added site is blocked before the response is sent.
 
-**Logging:** Log lines go to standard error with an ISO 8601 timestamp; launchd sends them to the log file named in the plist. Every command is logged by name and outcome. Passwords are never logged.
+**Logging:** Log lines go to standard error with an ISO 8601 timestamp; launchd sends them to the log file named in the plist. Successful commands other than `status` are logged by name and user ID, and so is every password check, right or wrong. Other rejected commands (such as an invalid domain or a malformed request) are counted per user ID and logged as one summary line per minute, such as "37 rejected requests from uid 501 in the last minute", so a flood of bad requests cannot fill the disk. Passwords and domains are never logged. macOS's log rotation tool, `newsyslog`, rotates both log files (see [04-infrastructure.md](04-infrastructure.md) § Install Script).
+
+**Process runner:** every external command (`launchctl`, `dscacheutil`, `killall`, `pkill`) runs through `ProcessRunner.run`, which waits at most the given timeout and then kills the command. Its captured output is read only after the reader thread has finished, so a grandchild process that keeps the output pipe open cannot cause a data race.
 
 **Signals:** `SIGTERM` (the polite stop signal launchd sends) saves state and exits with code 0. launchd restarts the daemon because of `KeepAlive`.
 
@@ -67,11 +69,12 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Purpose:** Accepts connections on the Unix socket and turns each into one `Request` and one `Response`.
 
 **Behavior:**
-1. Remove any stale socket file at the path, create an `AF_UNIX` `SOCK_STREAM` socket, `bind`, then `chmod` the path to `0666` so the logged-in user's app can connect, then `listen` with a backlog of 16.
-2. Accept on a dedicated thread. For each accepted connection, set `SO_RCVTIMEO` and `SO_SNDTIMEO` to 5 seconds and `SO_NOSIGPIPE` so a vanished client cannot crash the daemon.
-3. Read the peer user ID with `getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, &xucred)` and take `cr_uid`. If the call fails, use `UInt32.max` (an ID that is never root), so a failure can never grant root-only commands.
-4. Read bytes until `\n`, end of stream, or 64 KB. Over the limit returns `badRequest`. Invalid JSON returns `badRequest` with the decoding message.
-5. Hand the request and peer uid to the handler closure and write back the encoded response plus `\n`, then close.
+1. Remove any stale socket file at the path, create an `AF_UNIX` `SOCK_STREAM` socket, and `bind` it with the process umask (the mask that limits the permissions of newly created files) temporarily set to `0o111`. The socket file is then created with mode `0666`, so the logged-in user's app can connect, without a `chmod` by path, which would follow a symlink swapped in after `bind`. Then `listen` with a backlog of 16.
+2. Accept on a dedicated thread. For each accepted connection, set `SO_RCVTIMEO` and `SO_SNDTIMEO` to 2 seconds and `SO_NOSIGPIPE` so a vanished client cannot crash the daemon.
+3. Read the peer user ID with `getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, &xucred)` and take `cr_uid`, right after `accept`. If the call fails, use `UInt32.max` (an ID that is never root), so a failure can never grant root-only commands.
+4. Limit open connections: at most 4 at a time per non-root user ID, and at most 32 in total, of which 4 slots are kept for root. A connection over its limit is closed at once without a reply. This stops one account from holding every slot with idle connections and locking everyone else out.
+5. Read bytes until `\n`, end of stream, or 64 KB. Over the limit returns `badRequest`. Invalid JSON returns `badRequest` with the decoding message.
+6. Hand the request and peer uid to the handler closure and write back the encoded response plus `\n`, then close. For `add`, `unblock` and `cancelUnblock`, the handler runs `DomainNormalizer.normalize` on the `domain` argument on the connection's own thread and answers `invalidDomain` at once when it fails, so a flood of bad names never waits on the engine queue. A valid request goes to the engine with its original text, and the engine normalizes it once itself.
 
 ---
 
@@ -85,9 +88,11 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Steps:**
 1. Read the hosts file as UTF-8. If it does not exist, treat it as empty. If it cannot be read, log and return `false`.
 2. Compute `HostsFileEditor.render`. If the result equals the current text, return `true` without writing.
-3. Otherwise write the new text to `<hosts>.siteblock.tmp` in the same folder, set mode `0644` and (in production) owner `root:wheel`, then `rename` over the hosts file.
-4. In production, flush the name cache: run `/usr/bin/dscacheutil -flushcache` and `/usr/bin/killall -HUP mDNSResponder`, waiting at most 5 seconds for each.
-5. Log "hosts file repaired" when the change was not caused by a command, so tampering shows up in the log.
+3. Otherwise, in production, clear the user and system immutable and append-only flags (`UF_IMMUTABLE`, `SF_IMMUTABLE`, `UF_APPEND`, `SF_APPEND`, which `chflags` sets to make a file unchangeable) on the hosts file and on its folder `/private/etc`. Root may clear them at macOS's normal security level, so `chflags uchg /etc/hosts` cannot freeze the file.
+4. Write the new text to a temp file in the same folder with a random name (`.hosts.siteblock.XXXXXX`, created with `mkstemp`-style `O_CREAT|O_EXCL|O_NOFOLLOW`), set mode `0644` and (in production) owner `root:wheel`, then `rename` over the hosts file. A random name means a folder or file planted at a fixed temp path cannot block the write.
+5. If the rename fails, write the text into the hosts file itself, opened with `O_WRONLY|O_TRUNC|O_NOFOLLOW`, and remove the temp file.
+6. In production, flush the name cache: run `/usr/bin/dscacheutil -flushcache` and `/usr/bin/killall -HUP mDNSResponder`, waiting at most 5 seconds for each.
+7. Log what happened when the change was not caused by a command or a finished countdown. The message is "hosts file repaired" when the pass added missing block lines or removed bypass lines, and "blocks removed from hosts file" when the pass only took lines away because the block list is now empty or shorter. That way tampering shows up in the log, and a daemon that started with lost state does not report its removal of blocks as a repair.
 
 ---
 
@@ -100,7 +105,9 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 - `static func ensureLoaded(_ job: Job)` — when the job is not loaded: write its plist from `LaunchdPlists.xml(for:)` if the file is missing or different, set the plist to `root:wheel` mode `0644`, make sure the program exists (copy from the backup path if missing, mode `0755`), then run `/bin/launchctl bootstrap system <plist>`. It logs what it repaired.
 - `enum Job { case daemon, watchdog }` with each job's label and plist path.
 
-**Watchdog loop (`siteblockd --watchdog`):** every 5 seconds, read `state.json`. When the file's `uninstalling` is `true` or the install folder is gone, do nothing (the uninstall is in progress). Otherwise call `ensureLoaded(.daemon)`. The watchdog never touches the hosts file or the socket.
+**Watchdog loop (`siteblockd --watchdog`):** every 5 seconds, read `state.json`. When it records a finished uninstall (`uninstalling` is `true` and `pendingUninstall` is finished), do nothing. In every other case, including a missing install folder or a missing or unreadable state file, call `ensureLoaded(.daemon)`. `ensureLoaded` recreates `/Library/Application Support/SiteBlock` with mode `0700` and its `bin` folder with mode `0755` before restoring the program from the backup, so deleting the install folder is repaired instead of being mistaken for an uninstall. The watchdog never touches the hosts file or the socket.
+
+A real uninstall does not rely on the watchdog standing down: the daemon unloads the watchdog first (see § Uninstaller), so the watchdog is gone before any file is deleted.
 
 **Plist text** is generated in code (`Sources/siteblockd/LaunchdPlists.swift`) rather than read from disk, so a deleted plist can always be recreated. Both plists set `RunAtLoad` and `KeepAlive` to `true`, `ProcessType` to `Interactive`, and `StandardErrorPath` to the log file. See [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs.
 
@@ -111,13 +118,14 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Purpose:** Removes SiteBlock from the Mac when the uninstall countdown finishes.
 
 **Steps, in order:**
-1. Save the state with `uninstalling = true`, so the watchdog stops guarding.
-2. Remove the managed section from the hosts file (enforce with an empty block list) and flush the name cache.
-3. Stop the menu bar app for the user at the screen. The console user's ID is the owner of `/dev/console`. When that ID is not 0, run `launchctl bootout gui/<uid>/com.nokal.siteblock.app` and `pkill -x SiteBlock`, ignoring failures.
-4. Delete the backup program, the state backup, `/usr/local/bin/siteblock`, the app LaunchAgent plist, both LaunchDaemon plists, and the socket file.
-5. Start a detached `/bin/sh` that waits 1 second, then runs `launchctl bootout system/com.nokal.siteblock.watchdog`, then `launchctl bootout system/com.nokal.siteblock.daemon`, then deletes `/Library/Application Support/SiteBlock` and `/Applications/SiteBlock.app`. The daemon is stopped by the last `bootout`, so the shell must be detached (started with `setsid` through `posix_spawn` with `POSIX_SPAWN_SETSID`) to outlive it.
+1. Save the state with `uninstalling = true`. If this save fails (for example, the disk is full), stop the uninstall and exit with a non-zero code. launchd restarts the daemon, which retries the uninstall from the saved finished countdown, so the uninstall never runs half-way with an old state file on disk.
+2. Unload the watchdog with `launchctl bootout system/com.nokal.siteblock.watchdog` and wait for it to finish (at most 10 seconds), so the watchdog cannot restore any file deleted in the steps below.
+3. Remove the managed section from the hosts file (enforce with an empty block list) and flush the name cache.
+4. Stop the menu bar app for the user at the screen. The console user's ID is the owner of `/dev/console`. When that ID is not 0, run `launchctl bootout gui/<uid>/com.nokal.siteblock.app` and `pkill -x SiteBlock`, ignoring failures.
+5. Delete the backup program, the state backup, `/usr/local/bin/siteblock`, the app LaunchAgent plist, both LaunchDaemon plists, `/etc/newsyslog.d/siteblock.conf`, and the socket file.
+6. Start a detached `/bin/sh` that waits 1 second, then runs `launchctl bootout system/com.nokal.siteblock.daemon`, then deletes `/Library/Application Support/SiteBlock` and `/Applications/SiteBlock.app`. The daemon is stopped by that `bootout`, so the shell must be detached (started with `setsid` through `posix_spawn` with `POSIX_SPAWN_SETSID`) to outlive it.
 
-In sandbox mode, steps 3 to 5 are replaced by deleting the sandbox's own plist and socket files and exiting with code 0.
+In sandbox mode, steps 2, 4, 5 and 6 are replaced by deleting the sandbox's own plist and socket files and exiting with code 0.
 
 ---
 

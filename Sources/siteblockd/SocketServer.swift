@@ -24,28 +24,37 @@ enum SocketServerError: Error, LocalizedError {
 final class SocketServer {
     /// The largest request line accepted; anything bigger is answered with badRequest.
     static let maxRequestBytes = 64 * 1024
-    /// How long the server waits for a request line, and for a reply to be accepted, before giving up on a client.
-    static let clientTimeoutSeconds = 5
+    /// How long the server waits for a request line, and for a reply to be accepted, before giving up on a client. Clients send their one short line right after connecting, so two seconds is plenty and keeps an idle connection from holding a slot for long.
+    static let clientTimeoutSeconds = 2
     // A Unix socket path (with its ending NUL byte) must fit in sockaddr_un.sun_path, which is 104 bytes on macOS.
     private static let maxPathBytes = 103
     // The most connections served at once. Each one holds a thread while it waits for its request, so a cap keeps a flood of idle connections from using up every thread the system will give the daemon.
     private static let maxConnections = 32
+    // The most connections one non-root user ID may hold open at once, so one account cannot take every slot with idle connections and lock everyone else out. Root is not limited this way.
+    private static let maxConnectionsPerUser = 4
+    // Slots that only root may use: a non-root connection is refused once the total reaches maxConnections minus this, so root can always get a command through (for example to start a recovery).
+    private static let rootReservedConnections = 4
 
     private let path: String
     private let handler: (Request, uid_t) -> Response
-    // One lock guards the three fields below, which the accept thread, the client threads and stop() all touch.
+    // Called with the caller's user ID whenever a request is turned away before it reaches the handler (bad JSON, too large, no request in time, or too many connections), so the runtime can count it for its summary log line.
+    private let onRejected: (uid_t) -> Void
+    // One lock guards the four fields below, which the accept thread, the client threads and stop() all touch.
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var stopped = false
+    // Connections being served right now, in total and per non-root user ID (an ID with no open connections has no entry).
     private var activeConnections = 0
+    private var connectionsByUser: [uid_t: Int] = [:]
     // Signalled when the accept thread has finished and closed the listening socket.
     private let acceptThreadDone = DispatchSemaphore(value: 0)
     // Each client is handled on this concurrent queue, so one slow client cannot hold up the others.
     private let clientQueue = DispatchQueue(label: "siteblockd.socket.clients", attributes: .concurrent)
 
-    /// Creates a server for the socket path. The handler is called once per valid request with the caller's user ID.
-    init(path: String, handler: @escaping (Request, uid_t) -> Response) {
+    /// Creates a server for the socket path. The handler is called once per valid request with the caller's user ID. `onRejected` is told about each request or connection that is turned away before the handler sees it.
+    init(path: String, onRejected: @escaping (uid_t) -> Void = { _ in }, handler: @escaping (Request, uid_t) -> Response) {
         self.path = path
+        self.onRejected = onRejected
         self.handler = handler
     }
 
@@ -72,7 +81,7 @@ final class SocketServer {
         return result == 0
     }
 
-    /// Creates the socket, makes it reachable by every user, and starts accepting connections on a dedicated thread. Throws when the path is unusable, another daemon is already listening, or a system call fails.
+    /// Creates the socket (born with mode 0666 so every user can reach it), and starts accepting connections on a dedicated thread. Throws when the path is unusable, another daemon is already listening, or a system call fails.
     func start() throws {
         guard var address = SocketServer.makeAddress(path) else { throw SocketServerError.invalidPath(path) }
 
@@ -88,20 +97,19 @@ final class SocketServer {
         // Without close-on-exec, programs the daemon starts (launchctl, the uninstall shell) would inherit the listening socket and keep it open.
         _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
 
+        // Mode 0666 on purpose: the logged-in user's app must be able to connect to a root daemon. Every command that loosens a block still needs the password.
+        // The mode comes from setting the process umask (the mask that limits the permissions of newly created files) to 0o111 just for the bind. That mask removes only the execute bits, so the socket file is created as 0666. A chmod by path after the bind could instead follow a symlink swapped in between the two calls. The umask is process-wide, but nothing else creates files during this short startup window.
+        let previousMask = umask(0o111)
         let bindResult = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
+        // errno is saved before umask runs, because the umask call could overwrite it.
+        let bindErrno = errno
+        umask(previousMask)
         if bindResult != 0 {
-            let detail = String(cString: strerror(errno))
+            let detail = String(cString: strerror(bindErrno))
             close(fd)
             throw SocketServerError.system("Could not bind \(path): \(detail)")
-        }
-        // Mode 0666 on purpose: the logged-in user's app must be able to connect to a root daemon. Every command that loosens a block still needs the password.
-        if chmod(path, 0o666) != 0 {
-            let detail = String(cString: strerror(errno))
-            close(fd)
-            unlink(path)
-            throw SocketServerError.system("Could not set permissions on \(path): \(detail)")
         }
         if listen(fd, 16) != 0 {
             let detail = String(cString: strerror(errno))
@@ -157,21 +165,43 @@ final class SocketServer {
             }
             _ = fcntl(client, F_SETFD, FD_CLOEXEC)
 
-            lock.lock()
-            let accepted = activeConnections < SocketServer.maxConnections
-            if accepted { activeConnections += 1 }
-            lock.unlock()
-            if !accepted {
-                // Over the cap: hang up at once. The client reports that no usable reply arrived and can try again.
+            // The caller's user ID is read right away, because the connection limits depend on it.
+            let peerUID = peerUserID(client)
+            if !admit(peerUID) {
+                // Over a limit: hang up at once without a reply. The client reports that no usable reply arrived and can try again.
                 close(client)
+                onRejected(peerUID)
                 continue
             }
             clientQueue.async { [self] in
-                serve(client)
-                lock.lock()
-                activeConnections -= 1
-                lock.unlock()
+                serve(client, peerUID: peerUID)
+                release(peerUID)
             }
+        }
+    }
+
+    /// Decides whether a new connection from this user ID may be served, and counts it if so. Root may use every one of the 32 slots. Anyone else may hold at most 4 connections and may not use the last 4 slots, which stay free for root.
+    private func admit(_ uid: uid_t) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if uid == 0 {
+            guard activeConnections < SocketServer.maxConnections else { return false }
+        } else {
+            guard activeConnections < SocketServer.maxConnections - SocketServer.rootReservedConnections, connectionsByUser[uid, default: 0] < SocketServer.maxConnectionsPerUser else { return false }
+            connectionsByUser[uid, default: 0] += 1
+        }
+        activeConnections += 1
+        return true
+    }
+
+    /// Gives back the slot taken by `admit` when a connection has been served.
+    private func release(_ uid: uid_t) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeConnections -= 1
+        if uid != 0 {
+            let remaining = connectionsByUser[uid, default: 0] - 1
+            connectionsByUser[uid] = remaining > 0 ? remaining : nil
         }
     }
 
@@ -204,7 +234,7 @@ final class SocketServer {
         case empty
     }
 
-    /// Reads bytes until a newline, the end of the stream, or the size limit, within five seconds in total. The deadline covers the whole request, so a client that sends one byte at a time cannot hold the connection open.
+    /// Reads bytes until a newline, the end of the stream, or the size limit, within the client timeout (two seconds) in total. The deadline covers the whole request, so a client that sends one byte at a time cannot hold the connection open.
     private func readRequestLine(_ fd: Int32) -> ReadOutcome {
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(SocketServer.clientTimeoutSeconds) * 1_000_000_000
         var collected: [UInt8] = []
@@ -222,9 +252,15 @@ final class SocketServer {
             }
             // End of stream: the client is done sending. Whatever arrived is the request, even without a newline.
             if count == 0 { return collected.isEmpty ? .empty : .line(collected) }
+            let alreadyCollected = collected.count
             collected.append(contentsOf: chunk[0..<count])
-            if let newline = collected.firstIndex(of: 10) {
+            // Only the bytes that just arrived are searched, because the earlier chunks held no newline. Searching everything collected so far after every chunk would make a 64 KB request cost time that grows with the square of its size. memchr is the C routine that finds a byte quickly.
+            let newlineOffset: Int? = chunk.withUnsafeBufferPointer { buffer in
+                memchr(buffer.baseAddress, 10, count).map { buffer.baseAddress!.distance(to: $0.assumingMemoryBound(to: UInt8.self)) }
+            }
+            if let newlineOffset {
                 // Only the first line counts; the size limit applies to the line itself.
+                let newline = alreadyCollected + newlineOffset
                 return newline > SocketServer.maxRequestBytes ? .tooLarge : .line(Array(collected[..<newline]))
             }
             if collected.count > SocketServer.maxRequestBytes { return .tooLarge }
@@ -274,8 +310,8 @@ final class SocketServer {
         }
     }
 
-    /// Serves one connection: reads the request, calls the handler, writes the reply, closes. Every outcome, including garbage input, ends in a reply or a clean close, never a crash.
-    private func serve(_ fd: Int32) {
+    /// Serves one connection from the given user ID: reads the request, calls the handler, writes the reply, closes. Every outcome, including garbage input, ends in a reply or a clean close, never a crash.
+    private func serve(_ fd: Int32, peerUID: uid_t) {
         defer { close(fd) }
         // SO_NOSIGPIPE makes a write to a vanished client return an error instead of killing the daemon with SIGPIPE.
         var one: Int32 = 1
@@ -289,16 +325,19 @@ final class SocketServer {
             return
         case .timedOut:
             response = .failure(.badRequest, "No request arrived within \(SocketServer.clientTimeoutSeconds) seconds.")
+            onRejected(peerUID)
         case .tooLarge:
             response = .failure(.badRequest, "The request is larger than \(SocketServer.maxRequestBytes / 1024) KB.")
             needsDrain = true
+            onRejected(peerUID)
         case .line(let bytes):
             do {
                 let request = try JSONCoding.decoder.decode(Request.self, from: Data(bytes))
-                // The user ID comes from the kernel, not from the request, so a client cannot claim to be root.
-                response = handler(request, peerUserID(fd))
+                // The user ID comes from the kernel (read when the connection was accepted), not from the request, so a client cannot claim to be root.
+                response = handler(request, peerUID)
             } catch {
                 response = .failure(.badRequest, describe(error))
+                onRejected(peerUID)
             }
         }
 

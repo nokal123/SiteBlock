@@ -23,6 +23,48 @@ final class LockedFlag: @unchecked Sendable {
     }
 }
 
+/// Counts requests that were turned away, per user ID, and writes one summary line per user ID each minute. This keeps a flood of bad requests from filling the log with one line each. It is safe to call from any thread.
+final class RejectedRequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [uid_t: Int] = [:]
+    private var timer: DispatchSourceTimer?
+    private let log: Logger
+
+    /// Creates a counter that writes its summary lines to the given logger. Nothing is written until `start()` or `flush()`.
+    init(log: Logger) {
+        self.log = log
+    }
+
+    /// Adds one rejected request from this user ID to the running count.
+    func record(uid: uid_t) {
+        lock.lock()
+        counts[uid, default: 0] += 1
+        lock.unlock()
+    }
+
+    /// Starts the timer that writes the summary lines once a minute.
+    func start() {
+        let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        source.schedule(deadline: .now() + 60, repeating: 60)
+        source.setEventHandler { [weak self] in self?.flush() }
+        source.resume()
+        lock.lock()
+        timer = source
+        lock.unlock()
+    }
+
+    /// Writes one summary line for each user ID that has rejected requests since the last flush, then starts counting again from zero. It also runs when the daemon is told to stop, so the last partial minute is not lost. Never writes a line when nothing was rejected.
+    func flush() {
+        lock.lock()
+        let snapshot = counts
+        counts.removeAll()
+        lock.unlock()
+        for (uid, count) in snapshot.sorted(by: { $0.key < $1.key }) {
+            log.log("\(count) rejected \(count == 1 ? "request" : "requests") from uid \(uid) in the last minute")
+        }
+    }
+}
+
 /// Connects the policy engine to the outside world: the socket, the hosts file, the state files, the clock and the watchdog. Every touch of the engine happens on one serial queue, so a command and a timer tick can never run at the same time.
 final class DaemonRuntime {
     // The longest stretch of time one tick may count. The clock used cannot be set by the user and keeps running while the Mac sleeps, so a long sleep must count; the cap is 7 days only to stop an absurd reading from finishing every countdown at once.
@@ -42,6 +84,8 @@ final class DaemonRuntime {
     private let log: Logger
     private let store: StateStore
     private let enforcer: HostsEnforcer
+    // Counts requests turned away by the socket server or the command handler, so the log gets a summary line per minute instead of one line per bad request.
+    private let rejections: RejectedRequestCounter
     // The serial queue that owns the engine, the store and the timers.
     private let engineQueue = DispatchQueue(label: "siteblockd.engine")
     // A separate queue for launchctl calls, so a slow launchctl cannot delay ticks or commands.
@@ -68,6 +112,7 @@ final class DaemonRuntime {
         let store = StateStore(url: URL(fileURLWithPath: paths.stateFile), backupURL: URL(fileURLWithPath: paths.stateBackup))
         self.store = store
         self.enforcer = HostsEnforcer(paths: paths, log: log)
+        self.rejections = RejectedRequestCounter(log: log)
 
         // Startup step 1: the state folder is root-only (mode 0700) because it holds the password hash.
         try? FileManager.default.createDirectory(atPath: paths.stateDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -82,7 +127,16 @@ final class DaemonRuntime {
         }
         self.engine = Engine(state: loaded ?? .fresh(delaySeconds: policy.defaultDelaySeconds), policy: policy)
         self.ignoredUninstallFlag = clearedFlag
+        // In production only the person logged in at the screen (or root) may set the first password. Sandbox runs leave the rule off, because the test user is not tied to /dev/console.
+        if !paths.isSandbox { engine.consoleUID = { DaemonRuntime.consoleOwner() } }
         if loaded == nil { log.log("no saved state found; starting fresh") }
+    }
+
+    /// The user ID of the person logged in at the screen: the owner of /dev/console, which is root (0) when nobody is logged in. If the owner cannot be read it returns 0, so the rule fails closed: only root may set up, and a read failure never opens setup to everyone.
+    private static func consoleOwner() -> uid_t {
+        var info = stat()
+        guard stat("/dev/console", &info) == 0 else { return 0 }
+        return info.st_uid
     }
 
     /// Runs the startup steps in order and then keeps running forever. Never returns.
@@ -122,7 +176,7 @@ final class DaemonRuntime {
         }
 
         // Startup step 6: open the socket. Failing here is fatal; launchd restarts the daemon after its throttle interval.
-        let socketServer = SocketServer(path: paths.socket) { [unowned self] request, uid in handle(request, peerUID: uid) }
+        let socketServer = SocketServer(path: paths.socket, onRejected: { [rejections] uid in rejections.record(uid: uid) }) { [unowned self] request, uid in handle(request, peerUID: uid) }
         do {
             try socketServer.start()
         } catch {
@@ -130,6 +184,7 @@ final class DaemonRuntime {
             exit(1)
         }
         server = socketServer
+        rejections.start()
 
         // Startup step 7: start the tick timer on the engine queue.
         lastTick = ContinuousClock.now
@@ -167,6 +222,7 @@ final class DaemonRuntime {
                 // During an uninstall the state folder is about to be deleted, so saving would only bring it back.
                 if !uninstallStarted.isSet { _ = saveState() }
                 server?.stop()
+                rejections.flush()
                 log.log("received signal \(number); exiting")
                 exit(0)
             }
@@ -177,15 +233,47 @@ final class DaemonRuntime {
 
     // MARK: - Commands
 
-    /// Called on a client thread: hops onto the engine queue and handles the request there.
+    /// Called on a client thread. It first checks any site name in the request on this thread and rejects an invalid one at once, then hops onto the engine queue and handles the request there. Rejecting here means a flood of bad names never queues behind, or in front of, real commands and ticks.
     private func handle(_ request: Request, peerUID: uid_t) -> Response {
-        engineQueue.sync { process(request, peerUID: peerUID) }
+        // Only the commands that use a site name are checked. An unblock that is also missing its password is left to the engine, which answers badRequest first, the same as for any other missing argument.
+        let usesDomain = request.command == .add || request.command == .unblock || request.command == .cancelUnblock
+        let missingPassword = request.command == .unblock && request.password == nil
+        if usesDomain, !missingPassword, let raw = request.domain {
+            do {
+                _ = try DomainNormalizer.normalize(raw)
+            } catch {
+                rejections.record(uid: peerUID)
+                return .failure(.invalidDomain, error.localizedDescription)
+            }
+        }
+        // The engine gets the original text and normalizes it once itself. Passing the normalized name instead would run a second pass, which strips another "www." from a name typed as "www.www.example.com".
+        return engineQueue.sync { process(request, peerUID: peerUID) }
+    }
+
+    /// The commands that compare a password against the stored one.
+    private static let passwordCommands: Set<Command> = [.unblock, .setDelay, .changePassword, .uninstall]
+
+    /// True when the command really compared a password, whatever the outcome. A locked-out request, a missing password setup, or a bad argument fails before any comparison, so those are not password checks. A changePassword that fails only because the new password is too weak did compare the old one, and it was right.
+    private func comparedPassword(_ command: Command, _ response: Response) -> Bool {
+        guard DaemonRuntime.passwordCommands.contains(command) else { return false }
+        return response.ok || response.errorCode == .wrongPassword || (command == .changePassword && response.errorCode == .weakPassword)
+    }
+
+    /// Writes the log line for one finished command. Status polling is never logged, because the menu bar app asks once a second. A successful command and every password check (right or wrong) get one line each, with the command name, the user ID and the outcome. Any other rejected command is only counted, so a flood of them cannot fill the disk. Passwords and domains are never written.
+    private func logOutcome(_ command: Command, _ response: Response, peerUID: uid_t) {
+        if command == .status { return }
+        if response.ok || comparedPassword(command, response) {
+            log.log("command \(command.rawValue) from uid \(peerUID): " + (response.ok ? "ok" : "failed (\(response.errorCode?.rawValue ?? "unknown"))"))
+        } else {
+            rejections.record(uid: peerUID)
+        }
     }
 
     /// Runs one command on the engine queue: apply it, save the state if it changed, enforce the hosts file, and build the reply from the state as it is after enforcement. The block is in the hosts file before the reply is sent.
     private func process(_ request: Request, peerUID: uid_t) -> Response {
         // After the uninstall has begun, nothing may change the block list or touch the hosts file again. A status request is read-only and still allowed.
         if uninstallStarted.isSet && request.command != .status {
+            rejections.record(uid: peerUID)
             return .failure(.internal, "SiteBlock is uninstalling and is not accepting commands.")
         }
         let stateBefore = engine.state
@@ -200,10 +288,7 @@ final class DaemonRuntime {
         let healthy = enforcer.enforce(blockedHosts: engine.blockedHosts, causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
 
-        // Passwords are never logged, only the command name, who asked and the outcome. Status polling is not logged, because the menu bar app asks once a second.
-        if request.command != .status {
-            log.log("command \(request.command.rawValue) from uid \(peerUID): " + (response.ok ? "ok" : "failed (\(response.errorCode?.rawValue ?? "unknown"))"))
-        }
+        logOutcome(request.command, response, peerUID: peerUID)
 
         // Rebuild the snapshot so hostsFileHealthy reflects the enforcement pass that just ran, not the one before it.
         guard response.status != nil else { return response }
@@ -283,11 +368,17 @@ final class DaemonRuntime {
         guardQueue.sync {}
         server?.stop()
 
-        Uninstaller.run(paths: paths, enforcer: enforcer, saveUninstallingState: { [self] in
-            // The engine set `uninstalling` before calling us, or the saved state already had it; saving the engine's state records that.
+        Uninstaller.run(paths: paths, enforcer: enforcer, saveUninstallingState: { [self] () -> Bool in
+            // The engine set `uninstalling` before calling us, or the saved state already had it; saving the engine's state records that. A failed save is reported back so the uninstaller can stop before touching anything.
             var state = engine.state
             state.uninstalling = true
-            do { try store.save(state) } catch { log.log("could not save the uninstall marker: \(error.localizedDescription)") }
+            do {
+                try store.save(state)
+                return true
+            } catch {
+                log.log("could not save the uninstall marker: \(error.localizedDescription)")
+                return false
+            }
         }, log: log)
 
         // Only production gets here. The cleanup shell is running; launchd will stop this process with the last bootout.

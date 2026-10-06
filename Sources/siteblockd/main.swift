@@ -38,7 +38,7 @@ func usageError(_ message: String? = nil) -> Never {
     exit(64)
 }
 
-/// Reads the flags by hand. Any unknown flag, repeated flag, missing value, or forbidden combination is a usage error.
+/// Reads the flags by hand. Any unknown flag, repeated flag, missing value, or forbidden combination is a usage error, and so is --sandbox when the process runs as root.
 func parseOptions(_ arguments: [String]) -> Options {
     var options = Options()
     var seen: Set<String> = []
@@ -82,6 +82,8 @@ func parseOptions(_ arguments: [String]) -> Options {
     // Short waits and fast ticks are only for sandbox runs, so the installed daemon can never be started with them.
     if options.sandboxRoot == nil && options.tickSeconds != nil { usageError("--tick is only accepted together with --sandbox") }
     if options.sandboxRoot == nil && options.policyFast { usageError("--policy-fast is only accepted together with --sandbox") }
+    // A sandbox run as root could be pointed at the real /etc, where a second daemon would fight the installed one over the hosts file, so root may never use --sandbox. Exit code 64 comes from usageError.
+    if options.sandboxRoot != nil && geteuid() == 0 { usageError("--sandbox cannot be used while running as root") }
     return options
 }
 

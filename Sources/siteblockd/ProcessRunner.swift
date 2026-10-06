@@ -8,7 +8,7 @@ struct ProcessResult {
     let output: String
 }
 
-/// Holds the bytes a background reader collected, so the reading thread and the waiting thread share one value safely (the group wait orders the two).
+/// Holds the bytes a background reader collected. The waiting thread reads `data` only after the group wait reports that the reader has finished, which is what keeps the two threads from touching it at the same time.
 private final class OutputBox: @unchecked Sendable {
     var data = Data()
 }
@@ -75,6 +75,10 @@ private func runProcessCapturing(_ path: String, _ args: [String], timeout: Time
     } else {
         status = process.terminationStatus
     }
-    if capture { _ = readerDone.wait(timeout: .now() + 1) }
-    return ProcessResult(status: status, output: String(decoding: collected.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+    // The collected output is read only after the reader thread has finished. If the program started a child of its own that still holds the pipe open, the reader is still blocked and may still write to the box, so the box must not be touched and the output is reported as empty. (The reader thread then ends by itself when that child exits.)
+    var output = ""
+    if capture, readerDone.wait(timeout: .now() + 1) == .success {
+        output = String(decoding: collected.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return ProcessResult(status: status, output: output)
 }

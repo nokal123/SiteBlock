@@ -52,7 +52,7 @@
 24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script
 25. `scripts/install.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 26. `scripts/verify-install.sh` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Installed-System Verification
-27. `scripts/dev-force-remove.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Developer Force-Remove Script
+27. `Install SiteBlock.command` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 28. `Tests/SiteBlockCoreTests/*` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests
 29. `Tests/IntegrationTests/*` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Integration Tests
 

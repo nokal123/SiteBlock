@@ -15,41 +15,47 @@ enum Uninstaller {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Runs the uninstall steps in order. `saveUninstallingState` must write the state with `uninstalling` set, so the watchdog stands down. In sandbox mode the function ends the process with exit code 0 after removing the hosts section, the sandbox's own plist files and its socket. In production it returns after starting the detached cleanup shell, and the caller then waits for launchd to stop the daemon; if the shell cannot be started it exits with code 1, so launchd restarts the daemon and the next start finishes the job.
-    static func run(paths: Paths, enforcer: HostsEnforcer, saveUninstallingState: () -> Void, log: Logger) {
-        // Step 1: record that an uninstall is under way before anything is removed, so a crash part-way is finished on the next start and the watchdog does not undo the work.
-        saveUninstallingState()
+    /// Runs the uninstall steps in order. `saveUninstallingState` must write the state with `uninstalling` set and return false when the write fails. In sandbox mode the function ends the process with exit code 0 after removing the hosts section, the sandbox's own plist files and its socket. In production it returns after starting the detached cleanup shell, and the caller then waits for launchd to stop the daemon. If the state cannot be saved, the watchdog cannot be unloaded, or the cleanup shell cannot be started, it exits with code 1 before (or instead of) deleting anything further, so launchd restarts the daemon and the next start retries from the saved finished countdown.
+    static func run(paths: Paths, enforcer: HostsEnforcer, saveUninstallingState: () -> Bool, log: Logger) {
+        // Step 1: record that an uninstall is under way before anything is touched, so a crash part-way is finished on the next start. If the save fails (for example the disk is full), nothing has been changed yet, so stop here; the restarted daemon retries from the saved finished countdown. Going on with an old state file on disk could leave a half-removed install that the next start cannot recognize.
+        guard saveUninstallingState() else {
+            log.log("uninstall stopped: the uninstall marker could not be saved; exiting so it is retried")
+            exit(1)
+        }
 
-        // Step 2: take SiteBlock's lines out of the hosts file (an empty block list) and flush the name cache.
+        if !paths.isSandbox {
+            // Safety check before anything is deleted: only the exact production locations are ever removed, and the shell below runs rm -rf on two of them.
+            guard paths.stateDir == Paths.production.stateDir, paths.appBundle == Paths.production.appBundle else {
+                log.log("uninstall stopped: refusing to delete unexpected paths")
+                exit(1)
+            }
+            // Step 2: unload the watchdog and wait for it, before any file is deleted. Once the state folder is gone, the watchdog would no longer see a finished uninstall and would restore everything it can.
+            unloadWatchdog(log: log)
+        }
+
+        // Step 3: take SiteBlock's lines out of the hosts file (an empty block list) and flush the name cache.
         _ = enforcer.enforce(blockedHosts: [], causedByCommand: true)
 
         if paths.isSandbox {
             // A sandbox run has no launchd jobs and no installed files, so it only removes its own stand-ins and stops.
-            for file in [paths.daemonPlist, paths.watchdogPlist, paths.appAgentPlist, paths.socket] { unlink(file) }
+            for file in [paths.daemonPlist, paths.watchdogPlist, paths.appAgentPlist, paths.newsyslogConf, paths.socket] { unlink(file) }
             log.log("uninstall finished (sandbox); exiting")
             exit(0)
         }
 
-        // Safety check before anything is deleted: only the exact production locations are ever removed, and the shell below runs rm -rf on two of them.
-        guard paths.stateDir == Paths.production.stateDir, paths.appBundle == Paths.production.appBundle else {
-            log.log("uninstall stopped: refusing to delete unexpected paths")
-            exit(1)
-        }
-
-        // Step 3: stop the menu bar app, so it does not keep running (and showing a dead icon) after its files are gone.
+        // Step 4: stop the menu bar app, so it does not keep running (and showing a dead icon) after its files are gone.
         stopMenuBarApp(log: log)
 
-        // Step 4: delete the files that can be deleted while the daemon is still running.
-        let files = [paths.backupDaemon, paths.stateBackup, paths.cliPath, paths.appAgentPlist, paths.daemonPlist, paths.watchdogPlist, paths.socket]
+        // Step 5: delete the files that can be deleted while the daemon is still running.
+        let files = [paths.backupDaemon, paths.stateBackup, paths.cliPath, paths.appAgentPlist, paths.daemonPlist, paths.watchdogPlist, paths.newsyslogConf, paths.socket]
         for file in files { unlink(file) }
         // Remove the backup folder too when nothing else is in it; rmdir refuses a folder that still has files, which is what we want.
         rmdir(URL(fileURLWithPath: paths.backupDaemon).deletingLastPathComponent().path)
 
-        // Step 5: the daemon cannot delete its own program or stop itself cleanly, so a separate shell does it after a short delay.
+        // Step 6: the daemon cannot delete its own program or stop itself cleanly, so a separate shell does it after a short delay. The watchdog is already unloaded (step 2), so the shell only stops the daemon.
         let script = [
             "/bin/sleep 1",
-            "/bin/launchctl bootout system/com.nokal.siteblock.watchdog",
-            // The last bootout stops the daemon itself, which is why this shell has to be detached from it.
+            // This bootout stops the daemon itself, which is why this shell has to be detached from it.
             "/bin/launchctl bootout system/com.nokal.siteblock.daemon",
             "/bin/rm -rf \(shellQuote(paths.stateDir)) \(shellQuote(paths.appBundle))",
         ].joined(separator: "; ")
@@ -58,6 +64,20 @@ enum Uninstaller {
         } else {
             log.log("uninstall: could not start the cleanup shell; exiting so launchd restarts the daemon and retries")
             exit(1)
+        }
+    }
+
+    /// Runs `launchctl bootout system/<watchdog label>` and waits for it, at most 10 seconds. A failure of the command itself is fine when the watchdog is not loaded any more (it may already have been unloaded). If the watchdog is still loaded after a failed bootout, the uninstall stops with exit code 1 before anything is deleted, because deleting files under a live watchdog would let it put them back.
+    private static func unloadWatchdog(log: Logger) {
+        let label = LaunchdPlists.Job.watchdog.label
+        let result = runProcessCapturingOutput("/bin/launchctl", ["bootout", "system/\(label)"], timeout: 10)
+        if result.status == 0 {
+            log.log("uninstall: watchdog unloaded")
+        } else if LaunchdGuard.isLoaded(.watchdog) {
+            log.log("uninstall stopped: the watchdog could not be unloaded (launchctl bootout exited \(result.status): \(result.output)); exiting so it is retried")
+            exit(1)
+        } else {
+            log.log("uninstall: watchdog was already unloaded (launchctl bootout exited \(result.status))")
         }
     }
 
