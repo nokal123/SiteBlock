@@ -22,12 +22,17 @@ public enum HostsFileEditor {
         line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Trims and lowercases each host, keeps only entries made entirely of a-z, 0-9, "-" and ".", then sorts and drops duplicates. Blocked hosts are reloaded from state.json, so this allowlist is the last gate before text reaches root's hosts file: an entry carrying a newline, "#", a space or anything else can never inject an extra line.
+    /// Trims and lowercases each host, keeps only entries made entirely of a-z, 0-9, "-" and ".", drops names the Mac itself relies on, then sorts and drops duplicates. Blocked hosts are reloaded from state.json, so this allowlist is the last gate before text reaches root's hosts file: an entry carrying a newline, "#", a space or anything else can never inject an extra line.
     private static func cleanHosts(_ hosts: [String]) -> [String] {
         let usable = hosts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { host in
-            !host.isEmpty && host.unicodeScalars.allSatisfy { allowedHostScalars.contains($0) }
+            !host.isEmpty && host.unicodeScalars.allSatisfy { allowedHostScalars.contains($0) } && !isSystemName(host)
         }
         return Array(Set(usable)).sorted()
+    }
+
+    /// True for localhost, broadcasthost and names ending in .local or .localhost. Blocking one of these would also make step 3 delete the stock "127.0.0.1 localhost" style lines the Mac needs, so they are never written even if a forged state file lists them.
+    private static func isSystemName(_ host: String) -> Bool {
+        host == "localhost" || host == "broadcasthost" || host.hasSuffix(".local") || host.hasSuffix(".localhost")
     }
 
     /// The only characters a host name may contain when it is written to the hosts file.

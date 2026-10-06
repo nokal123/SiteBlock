@@ -121,7 +121,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 4. Remove trailing empty lines, then add one `\n` if the text is not empty.
 5. If `blockedHosts` is not empty, append one empty line and the managed section, ending with `\n`.
 
-**Input guard:** `render` and `managedSection` trim and lowercase each entry of `blockedHosts`, then drop any entry that is empty or contains a character outside `a–z 0–9 - .`. The engine only ever passes normalized names, but blocked hosts are reloaded from `state.json`, so this check is the last gate before text reaches root's hosts file. A hostile entry such as `"evil.com\n0.0.0.0 bank.com"` therefore produces no line at all.
+**Input guard:** `render` and `managedSection` trim and lowercase each entry of `blockedHosts`, then drop any entry that is empty or contains a character outside `a–z 0–9 - .`, and any entry that is `localhost`, `broadcasthost`, or ends in `.local` or `.localhost`. Those names are never blocked because step 3 would also delete the stock lines (`127.0.0.1 localhost`, `255.255.255.255 broadcasthost`, `::1 localhost`) the Mac needs. Duplicates are removed. The engine only ever passes normalized names, but blocked hosts are reloaded from `state.json`, so this check is the last gate before text reaches root's hosts file. A hostile entry such as `"evil.com\n0.0.0.0 bank.com"` therefore produces no line at all.
 
 **Line breaks:** `\n`, `\r\n` and a lone `\r` all count as line breaks on input. Output always uses `\n`.
 
