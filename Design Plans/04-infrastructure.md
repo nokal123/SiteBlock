@@ -52,8 +52,11 @@ SiteBlock/
 
 ```
 F=/Library/Developer/CommandLineTools/Library/Developer/Frameworks
-swift test -Xswiftc -F$F -Xlinker -F$F -Xlinker -rpath -Xlinker $F "$@"
+swift test -Xswiftc -F$F -Xlinker -F$F -Xlinker -rpath -Xlinker $F \
+  -Xswiftc -Xfrontend -Xswiftc -disable-cross-import-overlays "$@"
 ```
+
+The last flag is needed because the Command Line Tools ship `_Testing_Foundation.framework` without its module files. Without the flag, any test file that imports both `Foundation` and `Testing` fails with "no such module '_Testing_Foundation'". The flag tells the compiler not to look for that combined module.
 
 When Xcode is installed, plain `swift test` also works, and the script detects `xcode-select -p` pointing at Xcode and skips the extra flags.
 
