@@ -31,7 +31,7 @@ enum LaunchdGuard {
         return runProcess("/bin/launchctl", ["print", "system/\(job.label)"], timeout: 5) == 0
     }
 
-    /// Makes sure the job's files are intact and the job is loaded. It first recreates a missing state folder and its `bin` folder, then puts back a missing or changed plist and a missing program, so a job whose files were deleted can start again even while launchd still has it loaded. When the job is not loaded it then runs `/bin/launchctl bootstrap system <plist>`. Every repair is logged. Does nothing in sandbox mode.
+    /// Makes sure the job's files are intact and the job is loaded. It first recreates a missing state folder and its `bin` folder, then puts back a missing or changed plist and a missing program, so a job whose files were deleted can start again even while launchd still has it loaded. When the job is not loaded it clears any "disabled" mark with `/bin/launchctl enable system/<label>` and then runs `/bin/launchctl bootstrap system <plist>`. Every repair is logged. Does nothing in sandbox mode.
     static func ensureLoaded(_ job: Job, paths: Paths = .production, log: Logger = Logger()) {
         guard !paths.isSandbox else { return }
         ensureFolder(paths.stateDir, mode: 0o700, log: log)
@@ -39,6 +39,8 @@ enum LaunchdGuard {
         restoreFiles(job, paths: paths, log: log)
         if isLoaded(job, paths: paths) { return }
 
+        // `launchctl disable` (or switching the item off under "Allow in the Background" in System Settings) makes launchd refuse to load the job, so the mark is cleared first. Failure is ignored: bootstrap below reports the real outcome.
+        _ = runProcess("/bin/launchctl", ["enable", "system/\(job.label)"], timeout: 5)
         let plist = job.plistPath(in: paths)
         let result = runProcessCapturingOutput("/bin/launchctl", ["bootstrap", "system", plist], timeout: 10)
         if result.status == 0 {

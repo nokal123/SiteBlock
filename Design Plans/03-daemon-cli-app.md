@@ -102,7 +102,7 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 
 **Key Methods:**
 - `static func isLoaded(_ job: Job) -> Bool` — runs `/bin/launchctl print system/<label>` and returns `true` on exit code 0.
-- `static func ensureLoaded(_ job: Job)` — when the job is not loaded: write its plist from `LaunchdPlists.xml(for:)` if the file is missing or different, set the plist to `root:wheel` mode `0644`, make sure the program exists (copy from the backup path if missing, mode `0755`), then run `/bin/launchctl bootstrap system <plist>`. It logs what it repaired.
+- `static func ensureLoaded(_ job: Job)` — when the job is not loaded: write its plist from `LaunchdPlists.xml(for:)` if the file is missing or different, set the plist to `root:wheel` mode `0644`, make sure the program exists (copy from the backup path if missing, mode `0755`), run `/bin/launchctl enable system/<label>` to clear any "disabled" mark left by `launchctl disable`, then run `/bin/launchctl bootstrap system <plist>`. It logs what it repaired.
 - `enum Job { case daemon, watchdog }` with each job's label and plist path.
 
 **Watchdog loop (`siteblockd --watchdog`):** every 5 seconds, read `state.json`. When it records a finished uninstall (`uninstalling` is `true` and `pendingUninstall` is finished), do nothing. In every other case, including a missing install folder or a missing or unreadable state file, call `ensureLoaded(.daemon)`. `ensureLoaded` recreates `/Library/Application Support/SiteBlock` with mode `0700` and its `bin` folder with mode `0755` before restoring the program from the backup, so deleting the install folder is repaired instead of being mistaken for an uninstall. The watchdog never touches the hosts file or the socket.
