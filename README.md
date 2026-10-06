@@ -12,6 +12,8 @@ Three programs make this work:
 - A second copy of `siteblockd` runs as a watchdog. The service and the watchdog each restart the other if it is stopped.
 - `SiteBlock.app` (the shield icon in the menu bar) and the `siteblock` Terminal command are how you control it.
 
+While at least one site is blocked, SiteBlock also turns off iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers). Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. Private Relay comes back on its own once nothing is blocked. Chrome needs no change; it reads `/etc/hosts` even when its "Secure DNS" setting is on.
+
 A site you block also blocks its common variants, because the hosts file cannot use wildcards. Blocking `youtube.com` also blocks `www.youtube.com`, `m.youtube.com`, `youtu.be`, `music.youtube.com`, YouTube Kids, and the servers that hold YouTube's thumbnails and page files.
 
 ## Install

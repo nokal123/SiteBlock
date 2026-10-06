@@ -83,7 +83,7 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Purpose:** Makes the real hosts file match the engine's block list, and reports whether it does.
 
 **Key Methods:**
-- `func enforce(blockedHosts: [String]) -> Bool` — returns `true` when the file is correct after the pass.
+- `func enforce(blockedHosts: [String], causedByCommand: Bool) -> Bool` — returns `true` when the file is correct after the pass. The runtime always passes `engine.hostsToWrite`, which includes the Private Relay names whenever a site is blocked.
 
 **Steps:**
 1. Read the hosts file as UTF-8. If it does not exist, treat it as empty. If it cannot be read, log and return `false`.

@@ -67,6 +67,15 @@ public final class Engine {
         Array(Set(state.blocked.flatMap { $0.hosts })).sorted()
     }
 
+    /// The host names iCloud Private Relay needs. Apple documents blocking these as the way a network turns Private Relay off, and Private Relay would otherwise send Safari's lookups to Apple's servers past the hosts file.
+    public static let privateRelayHosts = ["mask-h2.icloud.com", "mask.icloud.com"]
+
+    /// Everything the hosts file must block: every blocked site's hosts, plus the Private Relay names whenever at least one site is blocked. With nothing blocked, Private Relay is left alone.
+    public var hostsToWrite: [String] {
+        let hosts = blockedHosts
+        return hosts.isEmpty ? [] : Array(Set(hosts + Engine.privateRelayHosts)).sorted()
+    }
+
     /// Records whether the last hosts file enforcement pass left the file correct, so later status responses can report it.
     public func setHostsHealthy(_ healthy: Bool) {
         lastHostsHealthy = healthy

@@ -169,6 +169,8 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `private(set) var state: PersistedState`
 - `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000 and 500.
 - `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
+- `static let privateRelayHosts` — `["mask-h2.icloud.com", "mask.icloud.com"]`.
+- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` when `blockedHosts` is not empty, sorted and without duplicates; empty when nothing is blocked. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
 - `var onUninstall: (() -> Void)?` — called once when the uninstall countdown finishes.
 
 **Key Methods:**

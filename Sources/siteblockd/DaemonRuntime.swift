@@ -168,7 +168,7 @@ final class DaemonRuntime {
         engine.onUninstall = { [unowned self] in beginUninstall() }
 
         // Startup step 5: enforce the hosts file at once, so blocks apply at boot before any client connects. This pass is not "caused by a command", so tampering that happened while the daemon was stopped is logged.
-        let healthy = enforcer.enforce(blockedHosts: engine.blockedHosts, causedByCommand: false)
+        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: false)
         engine.setHostsHealthy(healthy)
         // If the state came from the backup, or the backup does not exist yet, write both files now.
         if !store.matchesLastSave() {
@@ -277,15 +277,15 @@ final class DaemonRuntime {
             return .failure(.internal, "SiteBlock is uninstalling and is not accepting commands.")
         }
         let stateBefore = engine.state
-        let hostsBefore = engine.blockedHosts
+        let hostsBefore = engine.hostsToWrite
         let response = engine.handle(request, peerUID: peerUID)
 
         // Failed commands can change state too (the wrong-password count, a lockout), so the comparison covers every outcome. A read-only command writes nothing.
         if engine.state != stateBefore { _ = saveState() }
 
         // Enforce after every command, even a read-only one: the pass costs one file read when nothing is wrong, and it makes the reported hosts health current.
-        let blockListChanged = engine.blockedHosts != hostsBefore
-        let healthy = enforcer.enforce(blockedHosts: engine.blockedHosts, causedByCommand: blockListChanged)
+        let blockListChanged = engine.hostsToWrite != hostsBefore
+        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
 
         logOutcome(request.command, response, peerUID: peerUID)
@@ -318,14 +318,14 @@ final class DaemonRuntime {
         let elapsed = raw.isFinite ? min(max(raw, 0), DaemonRuntime.maxElapsedPerTick) : 0
         lastTick = now
 
-        let hostsBefore = engine.blockedHosts
+        let hostsBefore = engine.hostsToWrite
         let changed = engine.tick(elapsed: elapsed)
         // When the uninstall countdown ended inside engine.tick, the uninstall has already run; nothing else may happen.
         if uninstallStarted.isSet { return }
 
         // A countdown that finished (a site whose wait is over) changes the block list on purpose, so that rewrite is not reported as tampering.
-        let blockListChanged = engine.blockedHosts != hostsBefore
-        let healthy = enforcer.enforce(blockedHosts: engine.blockedHosts, causedByCommand: blockListChanged)
+        let blockListChanged = engine.hostsToWrite != hostsBefore
+        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
 
         // The state files must hold exactly what was last written. This is checked before any save below, so a hand edit is logged rather than silently overwritten by a routine save.
