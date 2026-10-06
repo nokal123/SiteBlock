@@ -47,6 +47,13 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
    - the last label (the top-level domain) is not all digits, which rejects IPv4 addresses such as `1.2.3.4` with `.ipAddress`,
    - the name is not `localhost` and does not end in `.local` or `.localhost` (`.reserved`), because blocking those would break the Mac itself.
 
+**Parsing details:**
+- `://` counts as a scheme separator only when it appears before any `/`, `?` or `#`. So `reddit.com/?next=https://other.com` normalizes to `reddit.com`.
+- The cut at `/`, `?` or `#` (step 2) happens before the `@` removal (step 3), so an `@` in a path, query or fragment is ignored. `https://www.youtube.com/@MrBeast` normalizes to `youtube.com`, and `reddit.com?e=a@b.com` to `reddit.com`.
+- A port that is not all digits (`reddit.com:abc`), an empty label (`a..com`), and any whitespace, control or invisible character (including zero-width characters such as U+200B) throw `.invalidCharacters`.
+- Bare `localhost` throws `.reserved`. An empty result after parsing (`https://`, `.`) throws `.empty`.
+- Only one leading `www.` is stripped.
+
 **DomainError cases:** `empty`, `ipAddress`, `invalidCharacters`, `labelTooLong`, `tooLong`, `needsDot`, `reserved`. Each has a human sentence via `LocalizedError.errorDescription`, for example "IP addresses can't be blocked through the hosts file. Enter a site name like example.com."
 
 ---
@@ -113,6 +120,12 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 4. Remove trailing empty lines, then add one `\n` if the text is not empty.
 5. If `blockedHosts` is not empty, append one empty line and the managed section, ending with `\n`.
 
+**Input guard:** `render` and `managedSection` trim and lowercase each entry of `blockedHosts`, then drop any entry that is empty or contains a character outside `a–z 0–9 - .`. The engine only ever passes normalized names, but blocked hosts are reloaded from `state.json`, so this check is the last gate before text reaches root's hosts file. A hostile entry such as `"evil.com\n0.0.0.0 bank.com"` therefore produces no line at all.
+
+**Line breaks:** `\n`, `\r\n` and a lone `\r` all count as line breaks on input. Output always uses `\n`.
+
+**Comments on rewritten lines:** when step 3 removes a name from a user line, the line's trailing comment (if any) is kept as ` #comment`.
+
 **Behavioral notes:** Running `render` on its own output returns the same text (it is idempotent), which is what lets the daemon compare and only rewrite when something changed. With an empty block list, `render` removes the section and leaves the user's own lines.
 
 ---
@@ -124,7 +137,8 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 **Key Methods:**
 - `static func make(password: String, iterations: Int = 210_000) throws -> PasswordHash` — fills a 16-byte salt from `SecRandomCopyBytes` (the system's secure random number generator) and derives 32 bytes with `CCKeyDerivationPBKDF` using `kCCPRFHmacAlgSHA256`.
 - `static func verify(password: String, against: PasswordHash) -> Bool` — derives the full 32 bytes again with the stored salt and iteration count and compares in constant time. A stored hash that is not exactly 32 bytes never matches (every byte is compared even after a mismatch, so timing does not reveal how many bytes matched). Returns `false` for an unknown algorithm or bad Base64.
-- `static func validateNew(_ password: String) throws` — throws `PasswordError.tooShort` when the password has fewer than 6 characters, and `.whitespaceOnly` when it is only spaces.
+- `static func validateNew(_ password: String) throws` — throws `PasswordError.tooShort` when the password has fewer than 6 characters (counted as Swift `Character`s, not bytes). Otherwise it throws `.whitespaceOnly` when every character is whitespace (spaces, tabs or newlines). The length rule runs first, so `"   "` reports `tooShort`.
+- A stored `iterations` value below 1 or above `UInt32.max` makes `verify` return `false` instead of crashing.
 
 **Behavioral notes:** Passwords are hashed as their UTF-8 bytes with no Unicode normalization. Leading and trailing spaces are kept as part of the password.
 
@@ -138,7 +152,7 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 
 `Countdown` has:
 - `init(seconds: Double)` — sets both `remainingSeconds` and `totalSeconds`.
-- `mutating func advance(by elapsed: Double)` — subtracts, clamps at `0`, and ignores negative or non-finite input so a bad clock reading cannot add time or finish a countdown early.
+- `mutating func advance(by elapsed: Double)` — subtracts, clamps at `0`, and ignores negative or non-finite input so a bad clock reading cannot add time or finish a countdown early. A remainder below `1e-9` seconds (one nanosecond) is set to exactly `0`. Without this, rounding error in floating-point subtraction would leave a countdown that ran 18,000 ticks of 0.1 seconds on a 1,800-second wait with a few billionths of a second left, so it would need one extra tick. A remainder of `1e-6` seconds is still running.
 - `var isFinished: Bool` — `remainingSeconds <= 0`.
 - `var displaySeconds: Int` — `remainingSeconds` rounded up, so a countdown never shows `0` while it is still running.
 
@@ -168,14 +182,22 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 3. If the password is wrong, add 1 to `failedAttempts`. When it reaches `maxFailedAttempts`, start `lockout` and reset `failedAttempts` to 0. Fail with `wrongPassword` and say how many tries are left.
 4. If the password is right, reset `failedAttempts` to 0 and continue.
 
+**Argument rule:** a missing required argument fails with `badRequest` before any lockout or password check, so a malformed request never costs a password attempt. `setDelay` also checks the range (`invalidDelay`) before the password.
+
 **Command rules:**
-- `add`: normalize (fail `invalidDomain` with the normalizer's sentence). If already blocked with a pending unblock, clear the pending unblock and say "Unblock cancelled; reddit.com stays blocked." If already blocked without one, fail `alreadyBlocked`. Otherwise append a `BlockedSite` with its expanded hosts.
+- `add`: normalize (fail `invalidDomain` with the normalizer's sentence). If already blocked with a pending unblock, clear the pending unblock and say "Unblock cancelled; reddit.com stays blocked." This works even when no password is set, because after a finished recovery `add` is the only way to stop an unblock that was already counting down. If already blocked without one, fail `alreadyBlocked`. Only a new site needs a password to exist (`notSetUp`). Otherwise append a `BlockedSite` with its expanded hosts.
 - `unblock`: normalize, find the site (fail `notBlocked`), check the password, then set `pendingUnblock = Countdown(seconds: delaySeconds)`. If one is already pending, keep the existing countdown (do not restart it) and report its remaining time.
-- `setDelay`: validate the range (fail `invalidDelay`), check the password. A value greater than or equal to the current delay applies at once and clears `pendingDelayChange`. A smaller value sets `pendingDelayChange` with a countdown equal to the current delay.
+- `setDelay`: validate the range (fail `invalidDelay`), check the password. A value greater than or equal to the current delay applies at once and clears `pendingDelayChange`. A smaller value replaces any existing `pendingDelayChange` with a new one whose countdown starts again at the current delay.
 - `changePassword`: check the old password, validate the new one (`weakPassword`), store a new hash.
 - `uninstall`: check the password, start `pendingUninstall` at `delaySeconds` unless one is already running.
 - `recoveryStart`: fail `notRoot` unless `peerUID == 0`. Fail `notSetUp` if no password is set. Start `recovery` at `recoverySeconds` unless already running.
-- Cancel commands clear their countdown, or fail `nothingPending` when there is none.
+- Cancel commands clear their countdown, or fail `nothingPending` when there is none. `cancelUninstall` also fails `nothingPending` once the uninstall countdown has finished and `uninstalling` is `true`, because removal has already begun.
+
+**Lockout wording:** the lockout message gives the remaining time in whole minutes rounded up, so 59.5 seconds left reads "1 minute" and the message never says "0 minutes". Under one minute left it may use seconds instead. The wrong-password message says "1 try left" in the singular.
+
+**Finished-but-uncleared lockout:** a lockout whose countdown reached 0 but which the next tick has not cleared yet does not block a password check. The check clears it and proceeds.
+
+**Hosts health:** `setHostsHealthy(_ healthy: Bool)` records the result of the runtime's last enforcement pass, and every snapshot built by `handle` reports it as `hostsFileHealthy`. It starts as `true`.
 
 **Tick rule:** advance every countdown by `elapsed`. Then in this order: remove sites whose unblock finished; apply a finished delay change; clear a finished lockout; for a finished recovery, set `passwordHash = nil`, `failedAttempts = 0`, `lockout = nil` and clear `recovery`; for a finished uninstall, set `uninstalling = true` and call `onUninstall`.
 
@@ -189,7 +211,9 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 - `init(url: URL, backupURL: URL? = nil)` — the daemon passes `Paths.stateBackup` as the backup.
 - `func load() -> PersistedState?` — returns the primary file's state when it decodes. When the primary exists but cannot be decoded, it renames it to `state.json.corrupt-<unix time>`. When the primary is missing or corrupt, it returns the backup's state if that decodes, otherwise `nil`, so the daemon starts fresh instead of crashing in a restart loop.
 - `func save(_ state: PersistedState) throws` — encodes with sorted keys and writes the primary and then the backup. Each write goes to a temp file in the same folder with mode `0600` and is then renamed over the target. The rename is atomic (the file is either the old version or the new version, never half-written).
-- `func matchesLastSave() -> Bool` — `false` when either file is missing or its bytes differ from what this store last wrote. The daemon uses it to undo hand edits.
+- `func matchesLastSave() -> Bool` — `false` when either file is missing or its bytes differ from what this store last wrote or loaded. A store that has neither saved nor loaded returns `true`. The daemon uses it to undo hand edits.
+
+**Failure and naming details:** `save` throws when either the primary or the backup write fails, so the daemon knows to retry. When a corrupt file is renamed and `state.json.corrupt-<unix time>` already exists (two corrupt loads in the same second), a counter suffix keeps both files, as in `state.json.corrupt-<unix time>-1`. The `version` field is decoded but not checked.
 
 ---
 
@@ -211,4 +235,6 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 **Key Methods:**
 - `static func duration(_ seconds: Int) -> String` — `45 seconds`, `1 minute`, `30 minutes`, `1 hour 5 minutes`, `2 days 3 hours`. It shows at most the two largest non-zero units.
 - `static func clock(_ seconds: Int) -> String` — `29:41` under one hour, `1:05:09` under one day, `2d 03:04:05` otherwise.
-- `static func parseDuration(_ text: String) -> Int?` — accepts `90`, `90s`, `15m`, `2h`, `1d`, and combinations such as `1h30m`. Plain numbers are seconds. Returns `nil` for anything else.
+- `static func parseDuration(_ text: String) -> Int?` — accepts `90`, `90s`, `15m`, `2h`, `1d`, and combinations such as `1h30m`. Plain numbers are seconds. Surrounding whitespace is trimmed and units are case-insensitive (`15M` works). Units may appear in any order, but each at most once. A number without a unit after a unit (`1h30`), signs, decimals and non-ASCII digits return `nil`.
+
+`clock` pads every unit after the first to two digits and leaves the first unpadded: `5:03`, `29:41`, `1:05:09`, `2d 03:04:05`.

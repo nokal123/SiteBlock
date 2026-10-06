@@ -22,13 +22,16 @@ public enum HostsFileEditor {
         line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Sorts the host list and drops duplicates, empty entries, and entries with whitespace or "#" in them, so a bad entry can never inject an extra line or comment into the hosts file.
+    /// Trims and lowercases each host, keeps only entries made entirely of a-z, 0-9, "-" and ".", then sorts and drops duplicates. Blocked hosts are reloaded from state.json, so this allowlist is the last gate before text reaches root's hosts file: an entry carrying a newline, "#", a space or anything else can never inject an extra line.
     private static func cleanHosts(_ hosts: [String]) -> [String] {
-        let usable = hosts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { host in
-            !host.isEmpty && !host.contains("#") && !host.contains(where: { $0.isWhitespace })
+        let usable = hosts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { host in
+            !host.isEmpty && host.unicodeScalars.allSatisfy { allowedHostScalars.contains($0) }
         }
         return Array(Set(usable)).sorted()
     }
+
+    /// The only characters a host name may contain when it is written to the hosts file.
+    private static let allowedHostScalars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.")
 
     /// Returns the managed section: the BEGIN line, then two lines (IPv4 and IPv6) per host in sorted order, then the END line, each line ending in a newline.
     public static func managedSection(for blockedHosts: [String]) -> String {
