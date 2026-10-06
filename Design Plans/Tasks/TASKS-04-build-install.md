@@ -42,7 +42,7 @@
 **Reference:** [05-testing-and-operations.md](../05-testing-and-operations.md) § Installed-System Verification; [04-infrastructure.md](../04-infrastructure.md) § Developer Force-Remove Script
 
 **Sub-steps:**
-- 3a. `verify-install.sh` prints PASS/FAIL per check and a summary, exits non-zero on any FAIL. It also performs a tamper check that needs no root: it confirms the daemon log shows the hosts file is healthy, and prints the sudo command a person can run to test hand-edit repair (`sudo sed -i '' '/example.org/d' /etc/hosts; sleep 3; grep example.org /etc/hosts`).
+- 3a. `verify-install.sh` prints PASS/FAIL per check and a summary, exits non-zero on any FAIL. It uses `youtube.com` and leaves it blocked. It also checks that `siteblock status` reports the hosts file healthy, and prints the sudo command a person can run to test hand-edit repair (`sudo sed -i '' '/youtube.com/d' /etc/hosts; sleep 3; grep -c youtube.com /etc/hosts`).
 - 3b. `dev-force-remove.sh` boots out the watchdog then the daemon, removes every installed path from [04-infrastructure.md](../04-infrastructure.md) § Installed Paths, strips the managed section from `/etc/hosts` using `sed` between the markers, and flushes the DNS cache.
 
 ---

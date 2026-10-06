@@ -69,6 +69,7 @@ When Xcode is installed, plain `swift test` also works, and the script detects `
 - Daemon program: `/Library/Application Support/SiteBlock/bin/siteblockd`
 - Backup program (restored by the guard if the main one is deleted): `/usr/local/libexec/siteblock/siteblockd`
 - State file: `/Library/Application Support/SiteBlock/state.json`
+- State backup (restored from if the main state file is deleted while the daemon is stopped): `/usr/local/libexec/siteblock/state.backup.json`
 - Socket: `/var/run/siteblock.sock`
 - Hosts file: `/etc/hosts`
 - Log file: `/Library/Logs/SiteBlock/siteblockd.log` (watchdog: `watchdog.log`)

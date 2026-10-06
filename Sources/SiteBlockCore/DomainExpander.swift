@@ -18,7 +18,11 @@ public enum DomainExpander {
             "redd.it", "i.redd.it", "v.redd.it", "preview.redd.it", "external-preview.redd.it",
             "redditstatic.com", "www.redditstatic.com", "redditmedia.com",
         ],
-        "youtube.com": ["music.youtube.com", "tv.youtube.com", "youtu.be", "youtube-nocookie.com", "youtubei.googleapis.com", "yt3.ggpht.com"],
+        // ytimg.com and youtube.googleapis.com serve only YouTube (thumbnails, page files, its API), so blocking them breaks nothing else.
+        "youtube.com": [
+            "music.youtube.com", "tv.youtube.com", "studio.youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com",
+            "youtubei.googleapis.com", "youtube.googleapis.com", "i.ytimg.com", "s.ytimg.com", "yt3.ggpht.com",
+        ],
         "x.com": twitterNames,
         "twitter.com": twitterNames,
         "facebook.com": ["web.facebook.com", "mbasic.facebook.com", "touch.facebook.com", "fb.com", "fb.me"],

@@ -78,7 +78,7 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 
 **Related domains table:**
 - `reddit.com`: `np.reddit.com`, `i.reddit.com`, `oauth.reddit.com`, `gateway.reddit.com`, `gql.reddit.com`, `sh.reddit.com`, `redd.it`, `i.redd.it`, `v.redd.it`, `preview.redd.it`, `external-preview.redd.it`, `redditstatic.com`, `www.redditstatic.com`, `redditmedia.com`
-- `youtube.com`: `music.youtube.com`, `tv.youtube.com`, `youtu.be`, `youtube-nocookie.com`, `youtubei.googleapis.com`, `yt3.ggpht.com`
+- `youtube.com`: `music.youtube.com`, `tv.youtube.com`, `studio.youtube.com`, `youtu.be`, `youtube-nocookie.com`, `youtubekids.com`, `youtubei.googleapis.com`, `youtube.googleapis.com`, `i.ytimg.com`, `s.ytimg.com`, `yt3.ggpht.com`
 - `x.com` and `twitter.com` (same list for both): `x.com`, `twitter.com`, `mobile.twitter.com`, `mobile.x.com`, `api.x.com`, `api.twitter.com`, `pbs.twimg.com`, `abs.twimg.com`, `video.twimg.com`
 - `facebook.com`: `web.facebook.com`, `mbasic.facebook.com`, `touch.facebook.com`, `fb.com`, `fb.me`
 - `instagram.com`: `i.instagram.com`, `help.instagram.com`, `instagr.am`
@@ -183,12 +183,13 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 
 ### 8. StateStore (`Sources/SiteBlockCore/StateStore.swift`)
 
-**Purpose:** Reads and writes `state.json` safely.
+**Purpose:** Reads and writes `state.json` and its backup copy safely.
 
 **Key Methods:**
-- `init(url: URL)`
-- `func load() -> PersistedState?` — returns `nil` when the file does not exist. When the file exists but cannot be decoded, it renames it to `state.json.corrupt-<unix time>` and returns `nil`, so the daemon starts fresh instead of crashing in a restart loop.
-- `func save(_ state: PersistedState) throws` — encodes with sorted keys, writes to `state.json.tmp` in the same folder, sets mode `0600`, then renames over `state.json`. The rename is atomic (the file is either the old version or the new version, never half-written).
+- `init(url: URL, backupURL: URL? = nil)` — the daemon passes `Paths.stateBackup` as the backup.
+- `func load() -> PersistedState?` — returns the primary file's state when it decodes. When the primary exists but cannot be decoded, it renames it to `state.json.corrupt-<unix time>`. When the primary is missing or corrupt, it returns the backup's state if that decodes, otherwise `nil`, so the daemon starts fresh instead of crashing in a restart loop.
+- `func save(_ state: PersistedState) throws` — encodes with sorted keys and writes the primary and then the backup. Each write goes to a temp file in the same folder with mode `0600` and is then renamed over the target. The rename is atomic (the file is either the old version or the new version, never half-written).
+- `func matchesLastSave() -> Bool` — `false` when either file is missing or its bytes differ from what this store last wrote. The daemon uses it to undo hand edits.
 
 ---
 

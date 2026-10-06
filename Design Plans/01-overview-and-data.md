@@ -95,13 +95,14 @@ SiteBlock defends against the owner of the Mac acting on impulse. It does not de
 - Editing `/etc/hosts` by hand. The daemon rewrites its section within two seconds, and it also removes lines elsewhere in the file that point a blocked name at a real address (because macOS uses the first matching line, such a line would otherwise win).
 - Unloading the daemon or the watchdog. Each one reloads the other.
 - Deleting the daemon's plist (its `launchd` configuration file) or its program file. The watchdog writes the plist again from a copy built into its own program and copies the program back from a backup location.
+- Deleting or editing the state file. The running daemon writes it back from memory within one tick, and a daemon that starts with no state file reads a backup copy kept in a second folder.
 - Moving the system clock forward. Countdowns are measured with a monotonic clock (a counter that only moves forward with real elapsed time and ignores the wall clock).
 - Guessing the password with a script. Five wrong passwords lock password checks for 15 minutes.
 - Shortening the waiting period on impulse. Making the wait longer applies at once. Making it shorter has to sit through the current wait first.
 
 **What SiteBlock cannot stop:**
 
-- A root user who unloads both background jobs at the same moment and then deletes their files. No program can fully defend against root on its own machine.
+- A root user who unloads both background jobs at the same moment and then deletes their files. No program can fully defend against root on its own machine. The strongest setup is to use a standard (non-administrator) macOS account day to day and give the administrator password to someone else; then none of the root-level bypasses are available on impulse.
 - A VPN (a service that tunnels all traffic through another computer) or a proxy that does name lookups on the remote side.
 - Tabs that were already connected to a site before it was blocked. Browsers reuse open connections for a short time, so an already-open page may keep loading until the browser closes that connection. Reloading after a minute or two shows the block.
 

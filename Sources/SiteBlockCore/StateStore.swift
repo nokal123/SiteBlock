@@ -12,26 +12,39 @@ public enum StateStoreError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Reads and writes state.json safely.
+/// Reads and writes state.json safely, and keeps an optional second copy (the backup) so deleting or wiping one file cannot lose the block list.
 public final class StateStore {
     /// The location of the state file.
     public let url: URL
+    /// The location of the backup copy, or nil when no backup is kept.
+    public let backupURL: URL?
+    // The exact bytes this store last wrote or last loaded from the primary file; matchesLastSave compares the files on disk against them. Nil until the first save or successful load.
+    private var lastKnownBytes: Data?
 
-    /// Creates a store for the given state file location.
-    public init(url: URL) {
+    /// Creates a store for the given state file location. Pass a backupURL to also keep a second copy; without one the store behaves as a single-file store.
+    public init(url: URL, backupURL: URL? = nil) {
         self.url = url
+        self.backupURL = backupURL
     }
 
-    /// Returns the saved state, or nil when there is no file. A file that exists but cannot be read or decoded is renamed to state.json.corrupt-<unix time> and nil is returned, so the daemon starts fresh instead of crashing in a restart loop.
+    /// Returns the primary file's state when it decodes. When the primary is missing or unusable, returns the backup's state if that decodes, otherwise nil, so the daemon starts fresh instead of crashing in a restart loop. A primary that exists but cannot be read or decoded is renamed to state.json.corrupt-<unix time> so it is kept for inspection.
     public func load() -> PersistedState? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        do {
-            let data = try Data(contentsOf: url)
-            return try JSONCoding.decoder.decode(PersistedState.self, from: data)
-        } catch {
-            moveAsideCorruptFile()
-            return nil
+        if FileManager.default.fileExists(atPath: url.path) {
+            do {
+                let data = try Data(contentsOf: url)
+                let state = try JSONCoding.decoder.decode(PersistedState.self, from: data)
+                // Remember what the primary held, so matchesLastSave can tell later whether either file drifted from it (for example a backup that does not exist yet).
+                lastKnownBytes = data
+                return state
+            } catch {
+                moveAsideCorruptFile()
+            }
         }
+        // The backup is only a fallback: it is never renamed, because the next save overwrites it anyway.
+        guard let backupURL, let data = try? Data(contentsOf: backupURL), let state = try? JSONCoding.decoder.decode(PersistedState.self, from: data) else { return nil }
+        // The primary is missing or was just moved aside, so the next matchesLastSave reports a mismatch and the caller writes the primary back.
+        lastKnownBytes = data
+        return state
     }
 
     /// Renames the unusable state file so it is kept for inspection but no longer in the way. A failed rename is ignored; the next successful save replaces the file anyway.
@@ -47,17 +60,37 @@ public final class StateStore {
         _ = rename(url.path, target)
     }
 
-    /// Writes the state atomically: encode with sorted keys, write to state.json.tmp in the same folder with mode 0600, then rename over state.json. The file is always either the old version or the new one, never half-written.
+    /// Writes the primary file and then the backup (when there is one). Each write is atomic: encode with sorted keys, write to a temp file next to the target with mode 0600, then rename over the target, so each file is always either the old version or the new version, never half-written. Throws when either write fails; the primary is still written when only the backup fails.
     public func save(_ state: PersistedState) throws {
         let data: Data
         do { data = try JSONCoding.encoder.encode(state) } catch { throw StateStoreError.writeFailed("encoding failed: \(error.localizedDescription)") }
 
-        let directory = url.deletingLastPathComponent().path
+        try writeAtomically(data, to: url.path)
+        // The primary is on disk now, so remember its bytes even if the backup write below fails; matchesLastSave then reports the missing backup and the caller retries.
+        lastKnownBytes = data
+        if let backupURL { try writeAtomically(data, to: backupURL.path) }
+    }
+
+    /// True when every file this store keeps (the primary, and the backup if there is one) exists and holds exactly the bytes this store last wrote or loaded. Returns true when the store has not written or loaded anything yet, because there is nothing to compare against.
+    public func matchesLastSave() -> Bool {
+        guard let expected = lastKnownBytes else { return true }
+        var paths = [url.path]
+        if let backupURL { paths.append(backupURL.path) }
+        for path in paths {
+            // A missing or unreadable file counts as a mismatch.
+            guard let onDisk = FileManager.default.contents(atPath: path), onDisk == expected else { return false }
+        }
+        return true
+    }
+
+    /// Writes the data to a temp file beside the target (creating the folder with mode 0700 when it is missing) and renames it over the target.
+    private func writeAtomically(_ data: Data, to path: String) throws {
+        let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
         if !FileManager.default.fileExists(atPath: directory) {
             do { try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) } catch { throw StateStoreError.writeFailed("could not create \(directory): \(error.localizedDescription)") }
         }
 
-        let tempPath = url.path + ".tmp"
+        let tempPath = path + ".tmp"
         // Remove a leftover temp file first, so O_EXCL below guarantees a brand-new file and a planted symlink can never be followed.
         _ = unlink(tempPath)
         let fd = open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
@@ -74,10 +107,10 @@ public final class StateStore {
             throw error
         }
         close(fd)
-        if rename(tempPath, url.path) != 0 {
+        if rename(tempPath, path) != 0 {
             let detail = String(cString: strerror(errno))
             _ = unlink(tempPath)
-            throw StateStoreError.writeFailed("could not replace \(url.path): \(detail)")
+            throw StateStoreError.writeFailed("could not replace \(path): \(detail)")
         }
     }
 

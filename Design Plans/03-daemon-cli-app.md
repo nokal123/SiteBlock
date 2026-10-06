@@ -47,11 +47,12 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Concurrency:** All engine access happens on one serial `DispatchQueue` named `siteblockd.engine`. The socket server reads requests on its own queue, then hops onto the engine queue to handle each one. This means a command and a tick can never run at the same time.
 
 **Tick (every `tick` seconds, on the engine queue):**
-1. Measure elapsed time since the last tick with `ContinuousClock.now`. Clamp to the range 0 to 3600 seconds so one odd reading cannot finish a long countdown in one step.
+1. Measure elapsed time since the last tick with `ContinuousClock.now`, clamped to the range 0 to 604800 seconds (7 days). `ContinuousClock` keeps counting while the Mac sleeps and cannot be changed by the user, so time spent asleep counts toward a countdown.
 2. Call `engine.tick(elapsed:)`.
 3. Run an enforcement pass with `HostsEnforcer`.
 4. Save the state if the tick reported a change, or if any countdown is running and 15 seconds have passed since the last save.
-5. In production mode, every 5 seconds, call `LaunchdGuard.ensureLoaded(.watchdog)`.
+5. Ask the `StateStore` whether the primary and backup state files still hold exactly the bytes it last wrote. If either file is missing or different, save again from the in-memory state and log "state file repaired". While the daemon runs, its in-memory state is the source of truth, so deleting or editing `state.json` by hand is undone within one tick.
+6. In production mode, every 5 seconds, call `LaunchdGuard.ensureLoaded(.watchdog)`.
 
 **After every command:** save the state, then run an enforcement pass, so a newly added site is blocked before the response is sent.
 

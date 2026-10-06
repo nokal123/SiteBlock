@@ -18,6 +18,8 @@ public struct Paths: Sendable {
     public let stateDir: String
     /// The persisted state file.
     public let stateFile: String
+    /// A second copy of the state file, kept outside the state folder so deleting or wiping one location cannot lose the block list.
+    public let stateBackup: String
     /// The Unix socket clients connect to.
     public let socket: String
     /// The hosts file that gets edited.
@@ -45,6 +47,8 @@ public struct Paths: Sendable {
         self.stateDir = stateDir
         self.daemonProgram = stateDir + "/bin/siteblockd"
         self.stateFile = stateDir + "/state.json"
+        // The state backup sits next to the backup daemon program, so both live in the same folder that the installer creates.
+        self.stateBackup = URL(fileURLWithPath: backupDaemon).deletingLastPathComponent().path + "/state.backup.json"
         self.socket = socket
         self.hosts = hosts
         self.logDir = logDir

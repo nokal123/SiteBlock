@@ -63,16 +63,16 @@ Tests:
 
 ## Installed-System Verification
 
-`scripts/verify-install.sh` runs as the normal user after `sudo scripts/install.sh`. It uses a test domain that the user is unlikely to visit, `example.org`, and removes it at the end only if the script added it. Because unblocking needs the password and a wait, the script asks for the password once and sets the cleanup to happen through the normal unblock path.
+`scripts/verify-install.sh` runs as the normal user after `sudo scripts/install.sh`. It uses `youtube.com`, the site the user wants blocked, and leaves it blocked when it finishes. If a password has not been set yet, the script stops and asks the user to set one first, because `add` refuses until a password exists.
 
 Checks:
 1. Both launchd jobs are loaded (`launchctl print system/<label>`).
 2. `siteblock status` succeeds.
-3. After `siteblock add example.org`, `/etc/hosts` contains `0.0.0.0 example.org`.
-4. `dscacheutil -q host -a name example.org` returns `0.0.0.0`.
-5. `curl --max-time 5 https://example.org` fails to connect.
-6. Real browsers: the script opens `https://example.org` in Safari and in Chrome and prints instructions to confirm that each shows a "can't connect" page. The person running it confirms by eye.
-7. Prints how to remove the test block with `siteblock unblock example.org`.
+3. `siteblock add youtube.com` succeeds, or reports it is already blocked.
+4. `/etc/hosts` contains `0.0.0.0 youtube.com`, `0.0.0.0 www.youtube.com`, `0.0.0.0 m.youtube.com` and `0.0.0.0 youtu.be`.
+5. `dscacheutil -q host -a name www.youtube.com` returns `0.0.0.0` (the macOS system lookup that Safari uses).
+6. `curl --max-time 5 https://www.youtube.com` fails to connect.
+7. Real browsers: the script opens `https://www.youtube.com` in Safari and in Chrome. It then reads each browser's current page through AppleScript where the browser allows it, and otherwise prints instructions so the person can confirm by eye that each shows a "can't connect" page.
 
 ---
 
@@ -99,7 +99,7 @@ Checks:
 ## Success Criteria
 
 - [ ] All unit and integration tests pass with `scripts/test.sh`.
-- [ ] After install, a blocked site fails to load in Safari and Chrome.
+- [ ] After install, youtube.com fails to load in Safari and Chrome.
 - [ ] Editing `/etc/hosts` by hand is undone within 2 seconds.
 - [ ] `sudo launchctl bootout system/com.nokal.siteblock.daemon` is undone within 5 seconds.
 - [ ] Unblocking needs the password and waits the full delay; moving the clock forward does not shorten it.
