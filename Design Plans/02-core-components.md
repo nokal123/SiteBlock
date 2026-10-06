@@ -123,7 +123,7 @@ A line counts as a marker when its trimmed text starts with `# BEGIN SiteBlock` 
 
 **Key Methods:**
 - `static func make(password: String, iterations: Int = 210_000) throws -> PasswordHash` — fills a 16-byte salt from `SecRandomCopyBytes` (the system's secure random number generator) and derives 32 bytes with `CCKeyDerivationPBKDF` using `kCCPRFHmacAlgSHA256`.
-- `static func verify(password: String, against: PasswordHash) -> Bool` — derives again with the stored salt and iteration count and compares in constant time (every byte is compared even after a mismatch, so timing does not reveal how many bytes matched). Returns `false` for an unknown algorithm or bad Base64.
+- `static func verify(password: String, against: PasswordHash) -> Bool` — derives the full 32 bytes again with the stored salt and iteration count and compares in constant time. A stored hash that is not exactly 32 bytes never matches (every byte is compared even after a mismatch, so timing does not reveal how many bytes matched). Returns `false` for an unknown algorithm or bad Base64.
 - `static func validateNew(_ password: String) throws` — throws `PasswordError.tooShort` when the password has fewer than 6 characters, and `.whitespaceOnly` when it is only spaces.
 
 **Behavioral notes:** Passwords are hashed as their UTF-8 bytes with no Unicode normalization. Leading and trailing spaces are kept as part of the password.

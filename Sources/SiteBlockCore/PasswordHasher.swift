@@ -56,8 +56,8 @@ public enum PasswordHasher {
         guard stored.algorithm == algorithmName else { return false }
         guard let salt = Data(base64Encoded: stored.salt), let expected = Data(base64Encoded: stored.hash) else { return false }
         guard !salt.isEmpty, !expected.isEmpty else { return false }
-        // Derive exactly as many bytes as were stored, so the comparison covers the whole stored hash.
-        guard let derived = derive(password: password, salt: [UInt8](salt), iterations: stored.iterations, length: expected.count) else { return false }
+        // Always derive the full 32 bytes. A stored hash of any other length then fails the length check in constantTimeEqual, so a shortened hash in an edited state file cannot make wrong passwords easier to hit.
+        guard let derived = derive(password: password, salt: [UInt8](salt), iterations: stored.iterations, length: hashLength) else { return false }
         return constantTimeEqual(derived, [UInt8](expected))
     }
 
