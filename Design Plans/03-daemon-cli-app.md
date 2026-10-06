@@ -23,7 +23,7 @@
 - `--watchdog` — run the watchdog loop.
 - `--sandbox <dir>` — use `Paths.sandbox(root: dir)` instead of the real system paths, and turn off everything that touches the real system: no DNS cache flush, no `launchctl` calls, no watchdog checks. Used by integration tests. Refused with exit code 64 when the process runs as root, so `sudo siteblockd --daemon --sandbox /etc` cannot start a second daemon that fights the real one over `/etc/hosts`.
 - `--tick <seconds>` — enforcement interval, default `2`. Only accepted together with `--sandbox`.
-- `--policy-fast` — use `Policy.fastForTests`: delay floor 1 second, recovery 3 seconds, lockout 2 seconds, PBKDF2 iterations 1000. Only accepted together with `--sandbox`, so the installed daemon can never be started with short waits.
+- `--policy-fast` — use `Policy.fastForTests`: default unblock delay 2 seconds, delay floor 1 second, recovery 3 seconds, lockout 2 seconds, PBKDF2 iterations 1000, at most 20 sites. Only accepted together with `--sandbox`, so the installed daemon can never be started with short waits.
 - `--version` — print the version and exit.
 - `--print-plist <daemon|watchdog|app>` — print that job's launchd plist XML and exit. The install script uses it so the plist text has one source.
 
@@ -73,7 +73,7 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 2. Accept on a dedicated thread. For each accepted connection, set `SO_RCVTIMEO` and `SO_SNDTIMEO` to 2 seconds and `SO_NOSIGPIPE` so a vanished client cannot crash the daemon.
 3. Read the peer user ID with `getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, &xucred)` and take `cr_uid`, right after `accept`. If the call fails, use `UInt32.max` (an ID that is never root), so a failure can never grant root-only commands.
 4. Limit open connections: at most 4 at a time per non-root user ID, and at most 32 in total, of which 4 slots are kept for root. A connection over its limit is closed at once without a reply. This stops one account from holding every slot with idle connections and locking everyone else out.
-5. Read bytes until `\n`, end of stream, or 64 KB. Over the limit returns `badRequest`. Invalid JSON returns `badRequest` with the decoding message.
+5. Read bytes until `\n`, end of stream, or 64 KB. Over the limit returns `badRequest`. Invalid JSON returns `badRequest` with the decoding message. A client that sends no complete line within 2 seconds receives `badRequest` with "No request arrived within 2 seconds." and is disconnected.
 6. Hand the request and peer uid to the handler closure and write back the encoded response plus `\n`, then close. For `add`, `unblock` and `cancelUnblock`, the handler runs `DomainNormalizer.normalize` on the `domain` argument on the connection's own thread and answers `invalidDomain` at once when it fails, so a flood of bad names never waits on the engine queue. A valid request goes to the engine with its original text, and the engine normalizes it once itself.
 
 ---
@@ -92,7 +92,7 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 4. Write the new text to a temp file in the same folder with a random name (`.hosts.siteblock.XXXXXX`, created with `mkstemp`-style `O_CREAT|O_EXCL|O_NOFOLLOW`), set mode `0644` and (in production) owner `root:wheel`, then `rename` over the hosts file. A random name means a folder or file planted at a fixed temp path cannot block the write.
 5. If the rename fails, write the text into the hosts file itself, opened with `O_WRONLY|O_TRUNC|O_NOFOLLOW`, and remove the temp file.
 6. In production, flush the name cache: run `/usr/bin/dscacheutil -flushcache` and `/usr/bin/killall -HUP mDNSResponder`, waiting at most 5 seconds for each.
-7. Log what happened when the change was not caused by a command or a finished countdown. The message is "hosts file repaired" when the pass added missing block lines or removed bypass lines, and "blocks removed from hosts file" when the pass only took lines away because the block list is now empty or shorter. That way tampering shows up in the log, and a daemon that started with lost state does not report its removal of blocks as a repair.
+7. Log what happened when the change was not caused by a command or a finished countdown. The message is "blocks removed from hosts file" when the pass only took lines away, and "hosts file repaired" for every other rewrite (it added lines or changed a user line). That way tampering shows up in the log, and a daemon that started with lost state does not report its removal of blocks as a repair.
 
 ---
 
@@ -154,7 +154,7 @@ siteblock version
 **Behavior:**
 - Passwords are read with `readpassphrase` (a C function that turns off echo on the terminal so the password does not show while typing). When standard input is not a terminal, the password is read from the first line of standard input, which lets tests pipe it in.
 - `status` prints the delay, then each blocked site with its host count and any countdown, then any pending delay change, uninstall, recovery or lockout.
-- Exit codes: `0` success, `1` the daemon refused the command (the error sentence is printed to standard error), `2` the daemon is not running, `64` usage error.
+- Exit codes: `0` success, `1` the daemon refused the command (the error sentence is printed to standard error) or a typed password and its confirmation do not match, `2` the daemon is not running, `64` usage error. An empty password and a duration that `parseDuration` rejects are usage errors (`64`) and are never sent to the daemon, so a stray Enter does not use up one of the five password tries.
 - `add` with several sites sends one request per site and keeps going after a failure, then exits `1` if any failed.
 
 ---

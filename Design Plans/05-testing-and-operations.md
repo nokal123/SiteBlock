@@ -52,9 +52,17 @@ Tests:
 - Delete the managed section from the sandbox hosts file by hand and see it restored within 1 second.
 - Add a bypass line `151.101.1.140 reddit.com` at the top of the hosts file and see it removed.
 - Unblock with the wrong password fails; with the right password the site stays in the hosts file until the delay passes (2 seconds with a delay of 2), then disappears.
-- Kill the daemon with `SIGKILL` during an unblock countdown, restart it, and see the countdown continue from about where it was rather than restart or finish early.
-- Send a request over 64 KB and get `badRequest`; send invalid JSON and get `badRequest`; open a connection and send nothing, and see the daemon still answer the next client after the 5-second read timeout.
-- Ten clients at the same time each add a different domain; all ten end up blocked.
+- Kill the daemon with `SIGKILL` during an unblock countdown, restart it, and see the countdown continue from where it was at the last save (after the last command, or at most 15 seconds earlier) rather than restart or finish early.
+- Send a request over 64 KB and get `badRequest`; send invalid JSON and get `badRequest`; open a connection and send nothing, and see it receive `badRequest` after the 2-second read timeout while the daemon keeps answering other clients.
+- Ten clients each add a different domain, with no more than three in flight at a time because of the 4-connections-per-user limit; all ten end up blocked. A fifth simultaneous connection from one user is closed without a reply, and the slot frees up once a connection ends.
+- Adding a 21st site under `--policy-fast` gives `tooManySites`.
+- Deleting or overwriting `state.json` while the daemon runs is repaired within about 1 second with the blocks kept. After `SIGKILL`, a missing `state.json` is restored from `state.backup.json`.
+- A hand-set `uninstalling: true` without a finished uninstall countdown is ignored on restart; with a finished countdown the uninstall runs.
+- `add youtube.com` puts the `0.0.0.0` and `::` lines for every expanded YouTube name into the hosts file before the response returns.
+- Hostile domain strings sent as raw JSON (newlines, `#`, spaces, control characters) never add a line to the hosts file.
+- A lockout survives a daemon restart.
+- Passwords and domains never appear in the log; a flood of rejected requests produces summary lines, not one line per request.
+- `--tick` or `--policy-fast` without `--sandbox` exits with code 64.
 - `recoveryStart` from a non-root test process returns `notRoot`.
 - Run the real `siteblock` CLI with `SITEBLOCK_SOCKET` set: `status`, `add`, `unblock` with the password piped on standard input, and the exit codes from [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI, including exit code 2 when no daemon is running.
 - Uninstall in sandbox mode: after the delay, the hosts section is gone and the daemon exits with code 0.
