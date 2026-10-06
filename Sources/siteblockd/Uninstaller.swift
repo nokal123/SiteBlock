@@ -1,6 +1,13 @@
 import Foundation
 import SiteBlockCore
 
+extension PersistedState {
+    /// True only when the saved state describes a real uninstall: the `uninstalling` flag is set and the uninstall countdown has run out. The flag alone is not enough, because anyone who can edit the state file could set it to make the daemon uninstall itself without the password and the wait.
+    var hasFinishedUninstall: Bool {
+        uninstalling && pendingUninstall?.isFinished == true
+    }
+}
+
 /// Removes SiteBlock from the Mac once the uninstall countdown has finished.
 enum Uninstaller {
     /// Wraps text in single quotes for a shell, so a path with spaces (like "Application Support") stays one word.
@@ -29,13 +36,16 @@ enum Uninstaller {
             exit(1)
         }
 
-        // Step 3: delete the files that can be deleted while the daemon is still running.
+        // Step 3: stop the menu bar app, so it does not keep running (and showing a dead icon) after its files are gone.
+        stopMenuBarApp(log: log)
+
+        // Step 4: delete the files that can be deleted while the daemon is still running.
         let files = [paths.backupDaemon, paths.stateBackup, paths.cliPath, paths.appAgentPlist, paths.daemonPlist, paths.watchdogPlist, paths.socket]
         for file in files { unlink(file) }
         // Remove the backup folder too when nothing else is in it; rmdir refuses a folder that still has files, which is what we want.
         rmdir(URL(fileURLWithPath: paths.backupDaemon).deletingLastPathComponent().path)
 
-        // Step 4: the daemon cannot delete its own program or stop itself cleanly, so a separate shell does it after a short delay.
+        // Step 5: the daemon cannot delete its own program or stop itself cleanly, so a separate shell does it after a short delay.
         let script = [
             "/bin/sleep 1",
             "/bin/launchctl bootout system/com.nokal.siteblock.watchdog",
@@ -49,6 +59,18 @@ enum Uninstaller {
             log.log("uninstall: could not start the cleanup shell; exiting so launchd restarts the daemon and retries")
             exit(1)
         }
+    }
+
+    /// Stops the menu bar app for the user who is logged in at the screen. The user is found from the owner of /dev/console; when nobody is logged in the owner is root (user ID 0) and there is nothing to stop. The app's LaunchAgent is booted out first so launchd does not hold it, then any remaining process named SiteBlock is killed (the app may have been opened by hand). Failures are ignored: an app that is not running is not a problem. The `run` closure runs one program and returns its exit code; tests pass a recording closure so no real program is started.
+    static func stopMenuBarApp(log: Logger, run: (String, [String]) -> Int32 = { runProcess($0, $1, timeout: 5) }) {
+        var info = stat()
+        guard stat("/dev/console", &info) == 0, info.st_uid != 0 else {
+            log.log("uninstall: no console user; not stopping the menu bar app")
+            return
+        }
+        let bootout = run("/bin/launchctl", ["bootout", "gui/\(info.st_uid)/com.nokal.siteblock.app"])
+        let kill = run("/usr/bin/pkill", ["-x", "SiteBlock"])
+        log.log("uninstall: stopped the menu bar app for uid \(info.st_uid) (bootout exit \(bootout), pkill exit \(kill))")
     }
 
     /// Starts `/bin/sh -c <script>` in a new session so it keeps running after the daemon is stopped. Returns false when the process could not be started.

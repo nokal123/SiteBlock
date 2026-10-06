@@ -126,9 +126,9 @@ func runWatchdog(paths: Paths, log: Logger) -> Never {
     }
 }
 
-/// True when the watchdog must not reload the daemon: the install folder has been removed, or the state file has `uninstalling` set. A state file that cannot be read or decoded counts as "not uninstalling", so a damaged file never switches the guard off. It decodes the file directly instead of using `StateStore.load`, because loading would rename a damaged file out of the daemon's way.
-private func uninstallInProgress(paths: Paths) -> Bool {
+/// True when the watchdog must not reload the daemon: the install folder has been removed, or the state file describes a finished uninstall (`uninstalling` set and the uninstall countdown run out). A state file that cannot be read or decoded counts as "not uninstalling", and so does a bare `uninstalling` flag with no finished countdown (hand-editing), so neither can switch the guard off. It decodes the file directly instead of using `StateStore.load`, because loading would rename a damaged file out of the daemon's way.
+func uninstallInProgress(paths: Paths) -> Bool {
     if !FileManager.default.fileExists(atPath: paths.stateDir) { return true }
     guard let data = FileManager.default.contents(atPath: paths.stateFile), let state = try? JSONCoding.decoder.decode(PersistedState.self, from: data) else { return false }
-    return state.uninstalling
+    return state.hasFinishedUninstall
 }

@@ -56,6 +56,8 @@ final class DaemonRuntime {
     private var lastFailedRepair: ContinuousClock.Instant?
     // Set once an uninstall has begun; from then on nothing may rewrite the hosts file or the state.
     private let uninstallStarted = LockedFlag()
+    // True when the saved state had `uninstalling` set without a finished uninstall countdown; startUp logs it and saves the corrected state.
+    private var ignoredUninstallFlag = false
 
     /// Creates the runtime: makes the state folder, loads the saved state (or a fresh one), and builds the engine. Nothing runs until `run()`.
     init(paths: Paths, policy: Policy, tickInterval: TimeInterval, log: Logger) {
@@ -70,8 +72,16 @@ final class DaemonRuntime {
         // Startup step 1: the state folder is root-only (mode 0700) because it holds the password hash.
         try? FileManager.default.createDirectory(atPath: paths.stateDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // Startup step 2: load the saved state (from the main file, or from the backup when the main file is missing or damaged), or start from a fresh one with the policy's default delay.
-        let loaded = store.load()
+        var loaded = store.load()
+        // The `uninstalling` flag is only believed when the uninstall countdown has really finished. A flag with no finished countdown behind it is treated as tampering and cleared, so editing the state file cannot trigger an uninstall.
+        var clearedFlag = false
+        if var state = loaded, state.uninstalling, !state.hasFinishedUninstall {
+            state.uninstalling = false
+            loaded = state
+            clearedFlag = true
+        }
         self.engine = Engine(state: loaded ?? .fresh(delaySeconds: policy.defaultDelaySeconds), policy: policy)
+        self.ignoredUninstallFlag = clearedFlag
         if loaded == nil { log.log("no saved state found; starting fresh") }
     }
 
@@ -87,8 +97,14 @@ final class DaemonRuntime {
     private func startUp() {
         log.log("siteblockd \(siteBlockVersion) starting (\(paths.isSandbox ? "sandbox" : "production"), tick \(tickInterval)s, blocked sites: \(engine.state.blocked.count))")
 
-        // Startup step 3: an uninstall that was interrupted (for example by a crash) is finished instead of starting normal service.
-        if engine.state.uninstalling {
+        // A cleared tampered flag is reported and written back to both state files right away, so the bad value does not linger on disk.
+        if ignoredUninstallFlag {
+            log.log("ignored uninstalling flag without a finished uninstall countdown")
+            _ = saveState()
+        }
+
+        // Startup step 3: an uninstall that was interrupted (for example by a crash) is finished instead of starting normal service. Only a state with a finished uninstall countdown counts; init already cleared the flag otherwise.
+        if engine.state.hasFinishedUninstall {
             log.log("state says an uninstall was in progress; finishing it")
             beginUninstall()
             return

@@ -38,7 +38,7 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Startup:**
 1. Create the state folder with mode `0700` if missing.
 2. Load state with `StateStore`. If there is none, start from a fresh `PersistedState` with the policy's default delay.
-3. If the loaded state has `uninstalling == true`, finish the uninstall (see § Uninstaller) and exit. This covers a crash in the middle of an uninstall.
+3. If the loaded state has `uninstalling == true` and `pendingUninstall` is a finished countdown, finish the uninstall (see § Uninstaller) and exit. This covers a crash in the middle of an uninstall. If `uninstalling` is `true` without a finished `pendingUninstall`, someone set the flag by hand to skip the password and the wait, so the daemon sets it back to `false`, logs it, saves, and runs normally. The watchdog applies the same rule before it stands down.
 4. Create the `Engine`, set `onUninstall`.
 5. Run one enforcement pass immediately so blocks apply at boot before any client connects.
 6. Start the `SocketServer`.
@@ -113,10 +113,11 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 **Steps, in order:**
 1. Save the state with `uninstalling = true`, so the watchdog stops guarding.
 2. Remove the managed section from the hosts file (enforce with an empty block list) and flush the name cache.
-3. Delete the backup program, `/usr/local/bin/siteblock`, the app LaunchAgent plist, both LaunchDaemon plists, and the socket file.
-4. Start a detached `/bin/sh` that waits 1 second, then runs `launchctl bootout system/com.nokal.siteblock.watchdog`, then `launchctl bootout system/com.nokal.siteblock.daemon`, then deletes `/Library/Application Support/SiteBlock` and `/Applications/SiteBlock.app`. The daemon is stopped by the last `bootout`, so the shell must be detached (started with `setsid` through `posix_spawn` with `POSIX_SPAWN_SETSID`) to outlive it.
+3. Stop the menu bar app for the user at the screen. The console user's ID is the owner of `/dev/console`. When that ID is not 0, run `launchctl bootout gui/<uid>/com.nokal.siteblock.app` and `pkill -x SiteBlock`, ignoring failures.
+4. Delete the backup program, the state backup, `/usr/local/bin/siteblock`, the app LaunchAgent plist, both LaunchDaemon plists, and the socket file.
+5. Start a detached `/bin/sh` that waits 1 second, then runs `launchctl bootout system/com.nokal.siteblock.watchdog`, then `launchctl bootout system/com.nokal.siteblock.daemon`, then deletes `/Library/Application Support/SiteBlock` and `/Applications/SiteBlock.app`. The daemon is stopped by the last `bootout`, so the shell must be detached (started with `setsid` through `posix_spawn` with `POSIX_SPAWN_SETSID`) to outlive it.
 
-In sandbox mode, steps 3 and 4 are replaced by deleting the sandbox's own plist and socket files and exiting with code 0.
+In sandbox mode, steps 3 to 5 are replaced by deleting the sandbox's own plist and socket files and exiting with code 0.
 
 ---
 
