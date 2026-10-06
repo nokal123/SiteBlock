@@ -137,4 +137,9 @@ public struct PersistedState: Codable, Equatable, Sendable {
     public static func fresh(delaySeconds: Int = 1800) -> PersistedState {
         PersistedState(delaySeconds: delaySeconds)
     }
+
+    /// True only when the state describes a real uninstall: the `uninstalling` flag is set, an uninstall countdown exists, and it has run out. The flag alone is not enough, because anyone who can edit the state file could set it to make the daemon uninstall itself without the password and the wait.
+    public var hasFinishedUninstall: Bool {
+        uninstalling && pendingUninstall?.isFinished == true
+    }
 }

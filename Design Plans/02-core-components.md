@@ -14,6 +14,8 @@
 9. [StateStore](#8-statestore-sourcessiteblockcorestatestoreswift)
 10. [DaemonClient](#9-daemonclient-sourcessiteblockcoredaemonclientswift)
 11. [Formatting](#10-formatting-sourcessiteblockcoreformattingswift)
+12. [ConnectionLimiter](#11-connectionlimiter-sourcessiteblockcoreconnectionlimiterswift)
+13. [UninstallRule](#12-uninstallrule-sourcessiteblockcoreuninstallruleswift)
 
 ---
 
@@ -220,7 +222,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `func save(_ state: PersistedState) throws` — encodes with sorted keys and writes the primary and then the backup. Each write goes to a temp file in the same folder with mode `0600` and is then renamed over the target. The rename is atomic (the file is either the old version or the new version, never half-written).
 - `func matchesLastSave() -> Bool` — `false` when either file is missing or its bytes differ from what this store last wrote or loaded. A store that has neither saved nor loaded returns `true`. The daemon uses it to undo hand edits.
 
-**Failure and naming details:** `save` throws when either the primary or the backup write fails, so the daemon knows to retry. When a corrupt file is renamed and `state.json.corrupt-<unix time>` already exists (two corrupt loads in the same second), a counter suffix keeps both files, as in `state.json.corrupt-<unix time>-1`. The `version` field is decoded but not checked.
+**Failure and naming details:** `save` throws when either the primary or the backup write fails, so the daemon knows to retry. When a corrupt file is renamed and `state.json.corrupt-<unix time>` already exists (two corrupt loads in the same second), a counter suffix keeps both files, as in `state.json.corrupt-<unix time>-1`. The `version` field is decoded but not checked. A file that is valid JSON but lacks any required field (for example `{}` or `{"version":1}`) does not decode, so it is treated as corrupt.
 
 ---
 
@@ -245,3 +247,27 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `static func parseDuration(_ text: String) -> Int?` — accepts `90`, `90s`, `15m`, `2h`, `1d`, and combinations such as `1h30m`. Plain numbers are seconds. Surrounding whitespace is trimmed and units are case-insensitive (`15M` works). Units may appear in any order, but each at most once. A number without a unit after a unit (`1h30`), signs, decimals and non-ASCII digits return `nil`.
 
 `clock` pads every unit after the first to two digits and leaves the first unpadded: `5:03`, `29:41`, `1:05:09`, `2d 03:04:05`.
+
+---
+
+### 11. ConnectionLimiter (`Sources/SiteBlockCore/ConnectionLimiter.swift`)
+
+**Purpose:** Decides whether the daemon's socket server may take one more connection from a given user, so one account cannot hold every slot.
+
+**Key Methods:**
+- `init(perUserLimit: Int = 4, total: Int = 32, rootReserved: Int = 4)`
+- `func admit(uid: uid_t) -> Bool` — root (uid 0) is admitted while fewer than `total` connections are open in all. A non-root user is admitted while it holds fewer than `perUserLimit` connections and fewer than `total - rootReserved` connections are open in all, counting root's. The last `rootReserved` slots are therefore always free for root. `UInt32.max`, the ID used when the peer lookup fails, is an ordinary non-root user.
+- `func release(uid: uid_t)` — frees one slot for that user; a release for a user with nothing open does nothing, so no count goes below zero.
+
+**Behavioral notes:** Thread-safe with an `NSLock`, because the accept thread admits and the connection threads release.
+
+---
+
+### 12. UninstallRule (`Sources/SiteBlockCore/UninstallRule.swift`)
+
+**Purpose:** The one rule for "has an uninstall really finished", shared by the daemon's startup and the watchdog.
+
+**Key Methods:**
+- `PersistedState.hasFinishedUninstall: Bool` (in `Models.swift`) — `true` only when `uninstalling` is `true` and `pendingUninstall` exists and is finished.
+- `static func watchdogShouldStandDown(stateFileData: Data?) -> Bool` — decodes the bytes of `state.json` and returns `hasFinishedUninstall`; returns `false` for missing or undecodable data, so damage to the state file keeps the watchdog guarding.
+

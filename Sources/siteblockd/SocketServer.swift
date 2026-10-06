@@ -22,30 +22,23 @@ enum SocketServerError: Error, LocalizedError {
 
 /// Accepts connections on a Unix domain socket and turns each one into exactly one `Request` and one `Response`. It does no policy work: it passes each decoded request, together with the kernel-reported user ID of the caller, to a handler closure.
 final class SocketServer {
-    /// The largest request line accepted; anything bigger is answered with badRequest.
+    /// The largest request line accepted, counting the bytes before the newline and not the newline itself. A line of exactly this many bytes is accepted; one more byte is answered with badRequest.
     static let maxRequestBytes = 64 * 1024
     /// How long the server waits for a request line, and for a reply to be accepted, before giving up on a client. Clients send their one short line right after connecting, so two seconds is plenty and keeps an idle connection from holding a slot for long.
     static let clientTimeoutSeconds = 2
     // A Unix socket path (with its ending NUL byte) must fit in sockaddr_un.sun_path, which is 104 bytes on macOS.
     private static let maxPathBytes = 103
-    // The most connections served at once. Each one holds a thread while it waits for its request, so a cap keeps a flood of idle connections from using up every thread the system will give the daemon.
-    private static let maxConnections = 32
-    // The most connections one non-root user ID may hold open at once, so one account cannot take every slot with idle connections and lock everyone else out. Root is not limited this way.
-    private static let maxConnectionsPerUser = 4
-    // Slots that only root may use: a non-root connection is refused once the total reaches maxConnections minus this, so root can always get a command through (for example to start a recovery).
-    private static let rootReservedConnections = 4
 
     private let path: String
     private let handler: (Request, uid_t) -> Response
     // Called with the caller's user ID whenever a request is turned away before it reaches the handler (bad JSON, too large, no request in time, or too many connections), so the runtime can count it for its summary log line.
     private let onRejected: (uid_t) -> Void
-    // One lock guards the four fields below, which the accept thread, the client threads and stop() all touch.
+    // Decides which new connections may be served: at most 4 per non-root user ID and 32 in all, with the last 4 slots kept for root. Each served connection holds a thread while it waits for its request, so the caps keep a flood of idle connections from using up every thread the system will give the daemon.
+    private let limiter = ConnectionLimiter()
+    // One lock guards the two fields below, which the accept thread and stop() both touch.
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var stopped = false
-    // Connections being served right now, in total and per non-root user ID (an ID with no open connections has no entry).
-    private var activeConnections = 0
-    private var connectionsByUser: [uid_t: Int] = [:]
     // Signalled when the accept thread has finished and closed the listening socket.
     private let acceptThreadDone = DispatchSemaphore(value: 0)
     // Each client is handled on this concurrent queue, so one slow client cannot hold up the others.
@@ -167,7 +160,7 @@ final class SocketServer {
 
             // The caller's user ID is read right away, because the connection limits depend on it.
             let peerUID = peerUserID(client)
-            if !admit(peerUID) {
+            if !limiter.admit(uid: peerUID) {
                 // Over a limit: hang up at once without a reply. The client reports that no usable reply arrived and can try again.
                 close(client)
                 onRejected(peerUID)
@@ -175,33 +168,8 @@ final class SocketServer {
             }
             clientQueue.async { [self] in
                 serve(client, peerUID: peerUID)
-                release(peerUID)
+                limiter.release(uid: peerUID)
             }
-        }
-    }
-
-    /// Decides whether a new connection from this user ID may be served, and counts it if so. Root may use every one of the 32 slots. Anyone else may hold at most 4 connections and may not use the last 4 slots, which stay free for root.
-    private func admit(_ uid: uid_t) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if uid == 0 {
-            guard activeConnections < SocketServer.maxConnections else { return false }
-        } else {
-            guard activeConnections < SocketServer.maxConnections - SocketServer.rootReservedConnections, connectionsByUser[uid, default: 0] < SocketServer.maxConnectionsPerUser else { return false }
-            connectionsByUser[uid, default: 0] += 1
-        }
-        activeConnections += 1
-        return true
-    }
-
-    /// Gives back the slot taken by `admit` when a connection has been served.
-    private func release(_ uid: uid_t) {
-        lock.lock()
-        defer { lock.unlock() }
-        activeConnections -= 1
-        if uid != 0 {
-            let remaining = connectionsByUser[uid, default: 0] - 1
-            connectionsByUser[uid] = remaining > 0 ? remaining : nil
         }
     }
 
@@ -234,7 +202,7 @@ final class SocketServer {
         case empty
     }
 
-    /// Reads bytes until a newline, the end of the stream, or the size limit, within the client timeout (two seconds) in total. The deadline covers the whole request, so a client that sends one byte at a time cannot hold the connection open.
+    /// Reads bytes until a newline, the end of the stream, or the size limit, within the client timeout (two seconds) in total. The deadline covers the whole request, so a client that sends one byte at a time cannot hold the connection open. The limit is on the line without its newline: with no newline yet, more than `maxRequestBytes` bytes collected means the line is already too long; with one, the number of bytes before it is compared with `maxRequestBytes`.
     private func readRequestLine(_ fd: Int32) -> ReadOutcome {
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(SocketServer.clientTimeoutSeconds) * 1_000_000_000
         var collected: [UInt8] = []

@@ -95,6 +95,7 @@ final class DaemonRuntime {
     private var tickTimer: DispatchSourceTimer?
     private var guardTimer: DispatchSourceTimer?
     private var signalSources: [DispatchSourceSignal] = []
+    // The one clock reading that countdowns are measured from. Both the timer tick and the catch-up before each command read it, advance every countdown by the time since it, and move it to now, so no stretch of time is counted twice or skipped.
     private var lastTick = ContinuousClock.now
     private var lastSave = ContinuousClock.now
     private var lastFailedRepair: ContinuousClock.Instant?
@@ -269,12 +270,18 @@ final class DaemonRuntime {
         }
     }
 
-    /// Runs one command on the engine queue: apply it, save the state if it changed, enforce the hosts file, and build the reply from the state as it is after enforcement. The block is in the hosts file before the reply is sent.
+    /// Runs one command on the engine queue: first bring every countdown up to date with the clock, then apply the command, save the state if it changed, enforce the hosts file, and build the reply from the state as it is after enforcement. The block is in the hosts file before the reply is sent.
     private func process(_ request: Request, peerUID: uid_t) -> Response {
+        // The countdowns are brought up to date before the command runs. Otherwise a countdown that this command starts would be charged, at the next timer tick, for the time that passed before the command existed, and would finish early.
+        catchUpCountdowns()
         // After the uninstall has begun, nothing may change the block list or touch the hosts file again. A status request is read-only and still allowed.
-        if uninstallStarted.isSet && request.command != .status {
-            rejections.record(uid: peerUID)
-            return .failure(.internal, "SiteBlock is uninstalling and is not accepting commands.")
+        if uninstallStarted.isSet {
+            guard request.command == .status else {
+                rejections.record(uid: peerUID)
+                return .failure(.internal, "SiteBlock is uninstalling and is not accepting commands.")
+            }
+            // The catch-up above can be the thing that finished the uninstall countdown. The reply is built straight from the engine, with no save and no enforcement pass, because a pass now would write the blocks back into a hosts file the uninstaller has just cleaned.
+            return engine.handle(request, peerUID: peerUID)
         }
         let stateBefore = engine.state
         let hostsBefore = engine.hostsToWrite
@@ -309,17 +316,35 @@ final class DaemonRuntime {
         return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
     }
 
-    /// One timer tick: advance the countdowns by the real time that passed, enforce the hosts file, undo hand edits to the state files, and save the state when needed.
-    private func tick() {
-        if uninstallStarted.isSet { return }
-        let now = ContinuousClock.now
+    /// Advances every countdown by the time since the last tick or command, and moves that "last tick" time to now. Returns true when a countdown finished and the state must be saved, the same as `Engine.tick`. Both the timer tick and the catch-up before a command use it, so they share one clock reading.
+    private func advanceCountdowns(now: ContinuousClock.Instant) -> Bool {
         // The elapsed time comes from a clock the user cannot set. Negative or odd readings are clamped to 0, and a very large one to 7 days.
         let raw = seconds(now - lastTick)
         let elapsed = raw.isFinite ? min(max(raw, 0), DaemonRuntime.maxElapsedPerTick) : 0
         lastTick = now
+        return engine.tick(elapsed: elapsed)
+    }
 
+    /// Runs at the start of every command, on the engine queue: advances every countdown by the time since the last tick or command, then applies whatever finished the way a timer tick would. It saves the state, and runs an enforcement pass when something finished, so a site whose wait just ended is already out of the hosts file when the command runs. It does nothing once an uninstall has begun.
+    private func catchUpCountdowns() {
+        if uninstallStarted.isSet { return }
         let hostsBefore = engine.hostsToWrite
-        let changed = engine.tick(elapsed: elapsed)
+        let changed = advanceCountdowns(now: ContinuousClock.now)
+        // A countdown that ended inside engine.tick may have started the uninstall; nothing else may happen then.
+        if uninstallStarted.isSet || !changed { return }
+        _ = saveState()
+        // A finished unblock changes the block list on purpose, so that rewrite is not reported as tampering.
+        let blockListChanged = engine.hostsToWrite != hostsBefore
+        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: blockListChanged)
+        engine.setHostsHealthy(healthy)
+    }
+
+    /// One timer tick: advance the countdowns by the real time that passed, enforce the hosts file, undo hand edits to the state files, and save the state when needed.
+    private func tick() {
+        if uninstallStarted.isSet { return }
+        let now = ContinuousClock.now
+        let hostsBefore = engine.hostsToWrite
+        let changed = advanceCountdowns(now: now)
         // When the uninstall countdown ended inside engine.tick, the uninstall has already run; nothing else may happen.
         if uninstallStarted.isSet { return }
 

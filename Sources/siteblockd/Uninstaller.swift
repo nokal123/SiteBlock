@@ -1,13 +1,6 @@
 import Foundation
 import SiteBlockCore
 
-extension PersistedState {
-    /// True only when the saved state describes a real uninstall: the `uninstalling` flag is set and the uninstall countdown has run out. The flag alone is not enough, because anyone who can edit the state file could set it to make the daemon uninstall itself without the password and the wait.
-    var hasFinishedUninstall: Bool {
-        uninstalling && pendingUninstall?.isFinished == true
-    }
-}
-
 /// Removes SiteBlock from the Mac once the uninstall countdown has finished.
 enum Uninstaller {
     /// Wraps text in single quotes for a shell, so a path with spaces (like "Application Support") stays one word.

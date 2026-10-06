@@ -38,6 +38,8 @@
 10. `Sources/SiteBlockCore/StateStore.swift` — **Primary:** [02-core-components.md](02-core-components.md) § StateStore
 11. `Sources/SiteBlockCore/DaemonClient.swift` — **Primary:** [02-core-components.md](02-core-components.md) § DaemonClient
 12. `Sources/SiteBlockCore/Formatting.swift` — **Primary:** [02-core-components.md](02-core-components.md) § Formatting
+13a. `Sources/SiteBlockCore/ConnectionLimiter.swift` — **Primary:** [02-core-components.md](02-core-components.md) § ConnectionLimiter — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SocketServer
+13b. `Sources/SiteBlockCore/UninstallRule.swift` — **Primary:** [02-core-components.md](02-core-components.md) § UninstallRule — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § LaunchdGuard and Watchdog
 13. `Sources/SiteBlockCore/Paths.swift` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Installed Paths
 14. `Sources/siteblockd/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblockd Entry Point
 15. `Sources/siteblockd/DaemonRuntime.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime

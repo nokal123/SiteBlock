@@ -157,7 +157,7 @@ A countdown stores time remaining rather than a finish time, because a finish ti
 
 ## Wire Protocol
 
-The CLI and the app talk to the daemon over the Unix domain socket (a file-system path that two local programs connect through, like a network connection that never leaves the machine). Each connection carries exactly one request and one response, each a single line of JSON ending in `\n`. Requests larger than 64 KB are rejected. The daemon waits at most 2 seconds for the request line, because clients send their one short line immediately after connecting.
+The CLI and the app talk to the daemon over the Unix domain socket (a file-system path that two local programs connect through, like a network connection that never leaves the machine). Each connection carries exactly one request and one response, each a single line of JSON ending in `\n`. A request line of up to 65,536 bytes, not counting the newline, is accepted; anything longer is rejected with `badRequest`. The daemon waits at most 2 seconds for the request line, because clients send their one short line immediately after connecting.
 
 ### Request
 

@@ -136,17 +136,11 @@ enum LaunchdGuard {
     }
 }
 
-/// Runs the watchdog until it is stopped: every 5 seconds it makes sure the daemon is loaded. It stands down only when the state file records a finished uninstall, and it never touches the hosts file or the socket.
+/// Runs the watchdog until it is stopped: every 5 seconds it makes sure the daemon is loaded. It stands down only when the state file records a finished uninstall (see `UninstallRule`), and it never touches the hosts file or the socket. A missing install folder or state file is not an uninstall, so deleting the folder is repaired instead.
 func runWatchdog(paths: Paths, log: Logger) -> Never {
     log.log("watchdog started")
     while true {
-        if !uninstallInProgress(paths: paths) { LaunchdGuard.ensureLoaded(.daemon, paths: paths, log: log) }
+        if !UninstallRule.watchdogShouldStandDown(stateFileData: FileManager.default.contents(atPath: paths.stateFile)) { LaunchdGuard.ensureLoaded(.daemon, paths: paths, log: log) }
         sleep(5)
     }
-}
-
-/// True only when the state file describes a finished uninstall (`uninstalling` set and the uninstall countdown run out), which is the one case where the watchdog must not reload the daemon. A missing install folder, a missing state file and a state file that cannot be read or decoded all count as "not uninstalling", and so does a bare `uninstalling` flag with no finished countdown (hand-editing), so none of them can switch the guard off. Deleting the install folder is therefore repaired, not mistaken for an uninstall. It decodes the file directly instead of using `StateStore.load`, because loading would rename a damaged file out of the daemon's way.
-func uninstallInProgress(paths: Paths) -> Bool {
-    guard let data = FileManager.default.contents(atPath: paths.stateFile), let state = try? JSONCoding.decoder.decode(PersistedState.self, from: data) else { return false }
-    return state.hasFinishedUninstall
 }
