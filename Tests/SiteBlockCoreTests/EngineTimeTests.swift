@@ -50,9 +50,11 @@ import SiteBlockCore
         #expect(engine.tick(1.0, times: 50) == 0)
     }
 
-    // Tenths of a second are not exact in binary floating point, so 18,000 of them can leave a residue of about 1e-12.
-    // The design measures elapsed real time, so 18,000 ticks of 0.1 s are exactly 1,800 s and the unblock must be done,
-    // while 17,999 ticks (1,799.9 s) must not be.
+    // Tenths of a second are not exact in binary floating point: subtracting 0.1 from 1,800 eighteen thousand times in plain Double
+    // arithmetic leaves a residue of about 5.4e-10 s, not zero. That is below the 1e-9 s tolerance in Countdown.advance
+    // (02-core-components.md § Models and Protocol Types), so the countdown counts as finished; without the tolerance it would
+    // need one more tick. The design measures elapsed real time, so 18,000 ticks of 0.1 s are exactly 1,800 s and the unblock must
+    // be done, while 17,999 ticks (1,799.9 s) must not be.
     @Test func anUnblockDrivenByTenthSecondTicksEndsOnTheEighteenThousandthTickAndNotBefore() {
         let engine = makeEngine(blocking: ["reddit.com"])
         engine.send(.unblock, domain: "reddit.com", password: rightPassword)
@@ -573,5 +575,238 @@ import SiteBlockCore
         #expect(restored.state.blocked.map(\.domain) == ["reddit.com", "example.com"])
         #expect(restored.tick(elapsed: 1) == true)
         #expect(restored.state.blocked.map(\.domain) == ["example.com"])
+    }
+}
+
+// The Countdown tolerance seen through the Engine. 02-core-components.md § Models and Protocol Types (Countdown.advance): a remainder
+// below 1e-9 seconds is set to exactly 0, and a remainder of 1e-6 seconds is still running.
+@Suite struct EngineCountdownToleranceTests {
+    @Test func anUnblockWithAboutAMicrosecondLeftIsStillRunning() {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        engine.send(.unblock, domain: "reddit.com", password: rightPassword)
+        #expect(engine.tick(elapsed: 1799.999999) == false)
+        #expect(engine.state.blocked.map(\.domain) == ["reddit.com"])
+        let left = engine.pendingUnblock(of: "reddit.com")?.remainingSeconds ?? 0
+        #expect(left > 9e-7 && left < 1.1e-6, "about 1e-6 s should be left, got \(left)")
+        #expect(engine.send(.status).status?.blocked.first?.unblockSecondsRemaining == 1, "a running countdown never shows 0")
+        // The last microsecond finishes it, which also proves the earlier tick did not finish it by accident.
+        #expect(engine.tick(elapsed: 0.000001) == true)
+        #expect(engine.state.blocked.isEmpty)
+    }
+
+    @Test func anUnblockWithAboutTenPicosecondsLeftCountsAsFinished() {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        engine.send(.unblock, domain: "reddit.com", password: rightPassword)
+        #expect(engine.tick(elapsed: 1799.9999999999) == true)
+        #expect(engine.state.blocked.isEmpty)
+        #expect(engine.blockedHosts.isEmpty)
+    }
+
+    // The same two remainders for a countdown that is not an unblock: a recovery with a microsecond left has not cleared the password,
+    // and one with ten picoseconds left has.
+    @Test(arguments: [(172_799.999999, false), (172_799.9999999999, true)])
+    func aRecoveryClearsThePasswordOnlyWhenTheRemainderIsBelowOneNanosecond(elapsed: Double, finished: Bool) {
+        let engine = makeEngine()
+        engine.send(.recoveryStart, uid: 0)
+        #expect(engine.tick(elapsed: elapsed) == finished)
+        #expect((engine.state.passwordHash == nil) == finished)
+        #expect((engine.state.recovery == nil) == finished)
+    }
+}
+
+// Every countdown in the design runs for a whole number of seconds, so half a second before the end it must still be running and
+// half a second later it must be finished. A boundary that is off by one tick would show up here, and not in the whole-second tests.
+enum HalfSecondCountdown: CaseIterable, Sendable, CustomTestStringConvertible {
+    case lockout, delayChange, uninstall, recovery, unblock
+
+    // The name shown in the test report.
+    var testDescription: String {
+        switch self {
+        case .lockout: return "lockout"
+        case .delayChange: return "delay change"
+        case .uninstall: return "uninstall"
+        case .recovery: return "recovery"
+        case .unblock: return "unblock"
+        }
+    }
+}
+
+@Suite struct EngineHalfSecondBoundaryTests {
+    @Test(arguments: HalfSecondCountdown.allCases)
+    func aCountdownIsStillRunningHalfASecondBeforeItsEndAndFinishedHalfASecondLater(kind: HalfSecondCountdown) {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        var uninstallCalls = 0
+        engine.onUninstall = { uninstallCalls += 1 }
+        let total: Double
+        switch kind {
+        case .lockout:
+            exhaustPasswordAttempts(engine)
+            total = 900
+        case .delayChange:
+            expectSuccess(engine.send(.setDelay, password: rightPassword, seconds: 600))
+            total = 1800
+        case .uninstall:
+            expectSuccess(engine.send(.uninstall, password: rightPassword))
+            total = 1800
+        case .recovery:
+            expectSuccess(engine.send(.recoveryStart, uid: 0))
+            total = 172_800
+        case .unblock:
+            expectSuccess(engine.send(.unblock, domain: "reddit.com", password: rightPassword))
+            total = 1800
+        }
+
+        // Half a second left: nothing has finished, the tick reports nothing to save, and the status still shows one second.
+        #expect(engine.tick(elapsed: total - 0.5) == false)
+        let running = engine.send(.status).status
+        switch kind {
+        case .lockout:
+            // The correct password is still refused while any lockout time is left.
+            expectFailure(engine.send(.unblock, domain: "reddit.com", password: rightPassword), .lockedOut)
+            #expect(engine.state.lockout != nil)
+            #expect(running?.lockoutSecondsRemaining == 1)
+        case .delayChange:
+            #expect(engine.state.delaySeconds == 1800)
+            #expect(engine.state.pendingDelayChange?.newDelaySeconds == 600)
+            #expect(running?.pendingDelay == PendingDelayStatus(newDelaySeconds: 600, secondsRemaining: 1))
+        case .uninstall:
+            #expect(engine.state.uninstalling == false)
+            #expect(uninstallCalls == 0)
+            #expect(running?.uninstallSecondsRemaining == 1)
+        case .recovery:
+            #expect(engine.state.passwordHash != nil)
+            #expect(engine.state.recovery != nil)
+            #expect(running?.recoverySecondsRemaining == 1)
+        case .unblock:
+            #expect(engine.state.blocked.map(\.domain) == ["reddit.com"])
+            #expect(engine.blockedHosts.contains("reddit.com"))
+            #expect(running?.blocked.first?.unblockSecondsRemaining == 1)
+        }
+
+        // The last half second finishes it and the tick reports a change to save.
+        #expect(engine.tick(elapsed: 0.5) == true)
+        let finished = engine.send(.status).status
+        switch kind {
+        case .lockout:
+            #expect(engine.state.lockout == nil)
+            #expect(finished?.lockoutSecondsRemaining == nil)
+            expectSuccess(engine.send(.unblock, domain: "reddit.com", password: rightPassword))
+        case .delayChange:
+            #expect(engine.state.delaySeconds == 600)
+            #expect(engine.state.pendingDelayChange == nil)
+            #expect(finished?.delaySeconds == 600)
+        case .uninstall:
+            #expect(engine.state.uninstalling == true)
+            #expect(uninstallCalls == 1)
+        case .recovery:
+            #expect(engine.state.passwordHash == nil)
+            #expect(engine.state.recovery == nil)
+            #expect(finished?.passwordSet == false)
+        case .unblock:
+            #expect(engine.state.blocked.isEmpty)
+            #expect(engine.blockedHosts.isEmpty)
+        }
+    }
+}
+
+// 02-core-components.md § Engine, "Lockout wording": the lockout message gives the remaining time in whole minutes rounded up, so 59.5
+// seconds left reads "1 minute" and the message never says "0 minutes". And "The wrong-password message says '1 try left' in the singular."
+@Suite struct EngineWordingTests {
+    // Every "<number> minute(s)" or "<number> try/tries" in the text, written as "N word", so the figure and its unit are judged together.
+    private func figures(in text: String, units: Set<String>) -> [String] {
+        let words = text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        var found: [String] = []
+        for (index, word) in words.enumerated() where index > 0 && units.contains(word) {
+            if let number = Int(words[index - 1]) { found.append("\(number) \(word)") }
+        }
+        return found
+    }
+
+    // The lockout starts at 900 s; ticking 900 minus the wanted figure leaves exactly that many seconds (all values are binary-exact).
+    @Test(arguments: [(900.0, "15 minutes"), (840.0, "14 minutes"), (839.5, "14 minutes"), (780.5, "14 minutes"), (780.0, "13 minutes"), (121.0, "3 minutes"), (120.0, "2 minutes"), (61.0, "2 minutes"), (60.5, "2 minutes"), (60.0, "1 minute"), (59.5, "1 minute")])
+    func theLockoutMessageRoundsTheRemainingTimeUpToWholeMinutes(remaining: Double, expected: String) {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        exhaustPasswordAttempts(engine)
+        _ = engine.tick(elapsed: 900 - remaining)
+        let response = engine.send(.unblock, domain: "reddit.com", password: rightPassword)
+        expectFailure(response, .lockedOut)
+        #expect(figures(in: response.error ?? "", units: ["minute", "minutes"]) == [expected], "message was \(response.error ?? "nil")")
+        #expect(!(response.error ?? "").contains("0 minutes"))
+    }
+
+    // Under one minute the design allows seconds, so only the two firm rules are checked: never "0 minutes", and the lockout still holds.
+    @Test(arguments: [59.0, 30.0, 1.5, 1.0, 0.5])
+    func aLockoutMessageWithUnderAMinuteLeftNeverSaysZeroMinutes(remaining: Double) {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        exhaustPasswordAttempts(engine)
+        _ = engine.tick(elapsed: 900 - remaining)
+        let response = engine.send(.unblock, domain: "reddit.com", password: rightPassword)
+        expectFailure(response, .lockedOut)
+        #expect(!(response.error ?? "").contains("0 minutes"), "message was \(response.error ?? "nil")")
+    }
+
+    @Test func theWrongPasswordMessageSaysOneTryLeftInTheSingularAndOtherCountsInThePlural() {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        var messages: [String] = []
+        for _ in 0..<4 {
+            let response = engine.send(.unblock, domain: "reddit.com", password: badPassword)
+            expectFailure(response, .wrongPassword)
+            messages.append(response.error ?? "")
+        }
+        let expected = ["4 tries", "3 tries", "2 tries", "1 try"]
+        for (message, figure) in zip(messages, expected) { #expect(figures(in: message, units: ["try", "tries"]) == [figure], "message was \(message)") }
+        #expect(messages[3].contains("1 try left"))
+        #expect(!messages[3].contains("1 tries"))
+    }
+}
+
+@Suite struct EngineFinishedStateTests {
+    // 02-core-components.md § Engine, "Finished-but-uncleared lockout": a lockout whose countdown reached 0 but which the next tick has
+    // not cleared yet does not block a password check. The check clears it and proceeds.
+    private func engineWithAFinishedUncleredLockout() -> Engine {
+        var state = makeEngine(blocking: ["reddit.com"]).state
+        state.lockout = Countdown(remainingSeconds: 0, totalSeconds: 900)
+        state.failedAttempts = 3
+        return Engine(state: state, policy: designPolicy)
+    }
+
+    @Test(arguments: [Command.unblock, .setDelay, .changePassword, .uninstall])
+    func aStoredLockoutAtZeroSecondsDoesNotStopACommandWithTheRightPassword(command: Command) {
+        let engine = engineWithAFinishedUncleredLockout()
+        let response = engine.send(command, domain: "reddit.com", password: rightPassword, newPassword: "brand-new-pass", seconds: 3600)
+        expectSuccess(response)
+        #expect(engine.state.lockout == nil, "the check must clear the finished lockout")
+        #expect(engine.state.failedAttempts == 0, "a right password resets the counter")
+    }
+
+    // The check proceeds for a wrong password too: it is judged and counted like any other wrong password, not refused as locked out.
+    @Test func aStoredLockoutAtZeroSecondsLetsAWrongPasswordBeCountedInsteadOfRefusedAsLockedOut() {
+        let engine = engineWithAFinishedUncleredLockout()
+        expectFailure(engine.send(.unblock, domain: "reddit.com", password: badPassword), .wrongPassword)
+        #expect(engine.state.lockout == nil)
+        #expect(engine.state.failedAttempts == 4)
+    }
+
+    // 02-core-components.md § Engine, cancelUninstall: "also fails nothingPending once the uninstall countdown has finished and
+    // uninstalling is true, because removal has already begun."
+    @Test func cancelUninstallAfterTheUninstallCountdownFinishedFailsWithNothingPendingAndChangesNothing() {
+        let engine = makeEngine()
+        engine.send(.uninstall, password: rightPassword)
+        #expect(engine.tick(elapsed: 1800) == true)
+        #expect(engine.state.uninstalling == true)
+        let before = engine.state
+        expectFailure(engine.send(.cancelUninstall), .nothingPending)
+        #expect(engine.state == before, "removal has begun, so the cancel must not undo it")
+    }
+
+    @Test func cancelUninstallJustBeforeTheCountdownFinishesStillCancels() {
+        let engine = makeEngine()
+        var calls = 0
+        engine.onUninstall = { calls += 1 }
+        engine.send(.uninstall, password: rightPassword)
+        _ = engine.tick(elapsed: 1799.5)
+        expectSuccess(engine.send(.cancelUninstall))
+        #expect(engine.tick(elapsed: 100) == false)
+        #expect(calls == 0 && engine.state.uninstalling == false)
     }
 }

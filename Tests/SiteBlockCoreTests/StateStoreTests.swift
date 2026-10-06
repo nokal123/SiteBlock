@@ -187,8 +187,10 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
     }
 
     // A save that fails must leave the previous state untouched. A read-only folder makes creating the temporary file fail.
-    @Test func aFailedSaveLeavesThePreviousStateIntact() throws {
-        guard getuid() != 0 else { return }
+    // Root ignores directory permissions, so under root the folder would stay writable and the save would succeed; the test is
+    // reported as skipped there instead of returning early and counting as a pass.
+    @Test(.enabled(if: getuid() != 0, "root ignores directory permissions, so a read-only folder would not make the save fail"))
+    func aFailedSaveLeavesThePreviousStateIntact() throws {
         try withTempDirectory { dir in
             let url = dir.appendingPathComponent("state.json")
             let store = StateStore(url: url)
@@ -277,6 +279,62 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
             #expect(store.load() == nil)
             try store.save(fullState())
             #expect(store.load() == fullState())
+        }
+    }
+
+    // 02-core-components.md § StateStore: "When a corrupt file is renamed and state.json.corrupt-<unix time> already exists (two corrupt
+    // loads in the same second), a counter suffix keeps both files." The three loads below take a few milliseconds, so they almost always
+    // share a second, but the check holds either way: nothing may be lost, so three corrupt files must leave three files with their own bytes.
+    @Test func threeCorruptLoadsInQuickSuccessionLeaveThreeCorruptFilesEachWithItsOwnBytes() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("state.json")
+            let store = StateStore(url: url)
+            let written = [Data("garbage one".utf8), Data("garbage two".utf8), Data("garbage three".utf8)]
+            for bytes in written {
+                try bytes.write(to: url)
+                #expect(store.load() == nil)
+            }
+            let corrupt = try names(in: dir).filter { $0.hasPrefix("state.json.corrupt-") }
+            #expect(corrupt.count == 3, "\(corrupt)")
+            let kept = try corrupt.map { try Data(contentsOf: dir.appendingPathComponent($0)) }
+            #expect(Set(kept) == Set(written), "every corrupt file's bytes must be kept")
+            #expect(try names(in: dir).count == 3)
+        }
+    }
+
+    // The collision made certain: files already occupy the corrupt-<unix time> name for every second this load could use, with bytes that
+    // must survive. The new corrupt file takes the counter name ("...-1", as the design shows) and nothing is overwritten.
+    @Test func aCorruptFileWhoseNameIsAlreadyTakenIsKeptUnderACounterSuffixAndTheOlderFileIsNotOverwritten() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("state.json")
+            let now = Int(Date().timeIntervalSince1970)
+            var earlier: [String: Data] = [:]
+            for second in (now - 2)...(now + 3) {
+                let name = "state.json.corrupt-\(second)"
+                let bytes = Data("an earlier corrupt file from second \(second)".utf8)
+                try bytes.write(to: dir.appendingPathComponent(name))
+                earlier[name] = bytes
+            }
+            let newest = Data("the newest corrupt bytes".utf8)
+            try newest.write(to: url)
+            #expect(StateStore(url: url).load() == nil)
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+            for (name, bytes) in earlier { #expect(try Data(contentsOf: dir.appendingPathComponent(name)) == bytes, "\(name) was overwritten") }
+            let corrupt = try names(in: dir).filter { $0.hasPrefix("state.json.corrupt-") }
+            #expect(corrupt.count == earlier.count + 1, "\(corrupt)")
+            let added = Array(Set(corrupt).subtracting(earlier.keys))
+            #expect(added.count == 1)
+            let addedName = added.first ?? ""
+            #expect(earlier.keys.contains { $0 + "-1" == addedName }, "expected a name like state.json.corrupt-<unix time>-1, got \(addedName)")
+            #expect(try Data(contentsOf: dir.appendingPathComponent(addedName)) == newest)
+            // A second corrupt file after that one is kept as well.
+            let afterwards = Data("one more corrupt file".utf8)
+            try afterwards.write(to: url)
+            #expect(StateStore(url: url).load() == nil)
+            let all = try names(in: dir).filter { $0.hasPrefix("state.json.corrupt-") }
+            #expect(all.count == earlier.count + 2)
+            #expect(try all.contains { try Data(contentsOf: dir.appendingPathComponent($0)) == afterwards })
+            #expect(try Data(contentsOf: dir.appendingPathComponent(addedName)) == newest)
         }
     }
 
@@ -409,18 +467,29 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
         }
     }
 
-    // The primary is written first, so even when the backup cannot be written the primary already holds the new state.
-    @Test func thePrimaryIsWrittenEvenWhenTheBackupFolderCannotBeWritten() throws {
-        guard getuid() != 0 else { return }
+    // The primary is written first, so even when the backup cannot be written the primary already holds the new state. But the save
+    // still throws: 02-core-components.md § StateStore says "save throws when either the primary or the backup write fails, so the
+    // daemon knows to retry". The earlier version of this test swallowed the error with `try?`, which would have passed even if save
+    // reported success for a failed backup write. matchesLastSave must then say false, because the backup holds the older bytes.
+    // Root ignores directory permissions, so the test is skipped under root instead of returning early and counting as a pass.
+    @Test(.enabled(if: getuid() != 0, "root ignores directory permissions, so a read-only backup folder would not make the write fail"))
+    func thePrimaryIsWrittenEvenWhenTheBackupFolderCannotBeWrittenButSaveThrows() throws {
         try withStores { primary, backup in
             let store = StateStore(url: primary, backupURL: backup)
             try store.save(fullState(delay: 100))
+            #expect(store.matchesLastSave())
             let backupDir = backup.deletingLastPathComponent()
             try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: backupDir.path)
-            _ = try? store.save(fullState(delay: 200))
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: backupDir.path) }
+            #expect(throws: (any Error).self) { try store.save(fullState(delay: 200)) }
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: backupDir.path)
             #expect(StateStore(url: primary).load()?.delaySeconds == 200)
             #expect(StateStore(url: backup).load()?.delaySeconds == 100, "the backup keeps its last good copy")
+            #expect(!store.matchesLastSave(), "the backup is behind the primary, so the caller must be told to write it again")
+            // The retry the daemon would make: once the folder is writable again the same save succeeds and both files agree.
+            try store.save(fullState(delay: 200))
+            #expect(store.matchesLastSave())
+            #expect(StateStore(url: backup).load()?.delaySeconds == 200)
         }
     }
 
@@ -497,6 +566,79 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
             try store.save(fullState())
             try FileManager.default.removeItem(at: url)
             #expect(!store.matchesLastSave())
+        }
+    }
+}
+
+// 02-core-components.md § StateStore: matchesLastSave "false when either file is missing or its bytes differ from what this store last
+// wrote or loaded. A store that has neither saved nor loaded returns true."
+@Suite struct StateStoreMatchesLastSaveTests {
+    private func withStores(_ body: (_ primary: URL, _ backup: URL) throws -> Void) throws {
+        try withTempDirectory { dir in
+            let primaryDir = dir.appendingPathComponent("state", isDirectory: true)
+            let backupDir = dir.appendingPathComponent("backup", isDirectory: true)
+            try FileManager.default.createDirectory(at: primaryDir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+            try body(primaryDir.appendingPathComponent("state.json"), backupDir.appendingPathComponent("state.json"))
+        }
+    }
+
+    @Test func aStoreThatHasNeitherSavedNorLoadedMatchesWhateverIsOnDisk() throws {
+        try withStores { primary, backup in
+            #expect(StateStore(url: primary, backupURL: backup).matchesLastSave(), "no files at all")
+            try Data("anything at all".utf8).write(to: primary)
+            #expect(StateStore(url: primary, backupURL: backup).matchesLastSave(), "a primary this store never wrote or loaded")
+            try Data("something else".utf8).write(to: backup)
+            #expect(StateStore(url: primary, backupURL: backup).matchesLastSave(), "a backup this store never wrote or loaded")
+            #expect(StateStore(url: primary).matchesLastSave(), "a single-file store")
+            #expect(StateStore(url: backup.deletingLastPathComponent().appendingPathComponent("never-created.json")).matchesLastSave())
+        }
+    }
+
+    // A load that finds nothing has not loaded anything, so the store is still fresh.
+    @Test func aLoadThatFindsNothingLeavesTheStoreFresh() throws {
+        try withStores { primary, backup in
+            let store = StateStore(url: primary, backupURL: backup)
+            #expect(store.load() == nil)
+            #expect(store.matchesLastSave())
+        }
+    }
+
+    // After a load, the bytes that were loaded are the ones to compare against.
+    @Test func afterALoadBothFilesMustHoldTheBytesThatWereLoaded() throws {
+        try withStores { primary, backup in
+            try StateStore(url: primary, backupURL: backup).save(fullState())
+            let loader = StateStore(url: primary, backupURL: backup)
+            #expect(loader.load() == fullState())
+            #expect(loader.matchesLastSave())
+            try Data("tampered".utf8).write(to: backup)
+            #expect(!loader.matchesLastSave())
+        }
+    }
+
+    // A primary that exists with no backup yet: the load succeeds, but the backup is missing, so the caller is told to write it.
+    @Test func aLoadWhoseBackupIsMissingReportsAMismatchUntilTheNextSave() throws {
+        try withStores { primary, backup in
+            try StateStore(url: primary).save(fullState())
+            let store = StateStore(url: primary, backupURL: backup)
+            #expect(store.load() == fullState())
+            #expect(!store.matchesLastSave())
+            try store.save(fullState())
+            #expect(store.matchesLastSave())
+        }
+    }
+
+    // A load that fell back to the backup: the primary is missing, so the caller is told to write it back.
+    @Test func aLoadThatFellBackToTheBackupReportsAMismatchUntilThePrimaryIsWrittenBack() throws {
+        try withStores { primary, backup in
+            try StateStore(url: primary, backupURL: backup).save(fullState(delay: 321))
+            try FileManager.default.removeItem(at: primary)
+            let store = StateStore(url: primary, backupURL: backup)
+            #expect(store.load()?.delaySeconds == 321)
+            #expect(!store.matchesLastSave())
+            try store.save(fullState(delay: 321))
+            #expect(store.matchesLastSave())
+            #expect(StateStore(url: primary).load()?.delaySeconds == 321)
         }
     }
 }

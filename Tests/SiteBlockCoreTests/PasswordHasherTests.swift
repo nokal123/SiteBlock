@@ -189,6 +189,17 @@ private let knownAnswers: [(String, String, Int, String)] = [
         #expect(!PasswordHasher.verify(password: "hunter22", against: tampered))
     }
 
+    // 02-core-components.md § PasswordHasher: "A stored iterations value below 1 or above UInt32.max makes verify return false instead of
+    // crashing." CommonCrypto takes a 32-bit count, so converting any of these straight to UInt32 would trap and stop the daemon.
+    // (UInt32.max itself is a legal count, about four billion rounds, so it is not run here.)
+    @Test(arguments: [Int.max, Int.max - 1, Int(UInt32.max) + 1, Int(UInt32.max) + 2, 1 << 40, 1 << 62])
+    func verifyFailsAndDoesNotCrashOnAnIterationCountAboveUInt32Max(iterations: Int) throws {
+        let hash = try makeHash("hunter22")
+        let tampered = PasswordHash(algorithm: hash.algorithm, iterations: iterations, salt: hash.salt, hash: hash.hash)
+        #expect(!PasswordHasher.verify(password: "hunter22", against: tampered))
+        #expect(!PasswordHasher.verify(password: "wrong-password", against: tampered))
+    }
+
     @Test(arguments: ["pbkdf2-sha1", "pbkdf2-sha512", "bcrypt", "", "sha256", "pbkdf2", "pbkdf2-sha256 ", "pbkdf2-sha256\u{0}"])
     func verifyFailsForAnUnknownAlgorithmEvenWithTheRightBytes(algorithm: String) throws {
         let hash = try makeHash("hunter22")
@@ -262,11 +273,28 @@ private let knownAnswers: [(String, String, Int, String)] = [
         #expect(weakness(password) == .whitespaceOnly)
     }
 
-    // Both rules apply to these (shorter than six and only spaces); the design does not say which error wins.
-    @Test(arguments: ["", " ", "   ", "     "])
-    func validateNewRejectsShortAndEmptySpacePasswords(password: String) {
-        let error = weakness(password)
-        #expect(error == .whitespaceOnly || error == .tooShort(minimum: 6))
+    // Design change: 02-core-components.md § PasswordHasher, validateNew, now says "The length rule runs first, so '   ' reports tooShort".
+    // Both rules apply to these (shorter than six and only spaces) and the design used to leave open which error wins, so this test used
+    // to accept either. It now requires tooShort, the error the design names.
+    @Test(arguments: ["", " ", "   ", "     ", "\t\t\t\t\t", "\n\n\n"])
+    func validateNewRejectsShortAndEmptySpacePasswordsAsTooShortBecauseTheLengthRuleRunsFirst(password: String) {
+        #expect(weakness(password) == .tooShort(minimum: 6))
+    }
+
+    // "Otherwise it throws .whitespaceOnly when every character is whitespace (spaces, tabs or newlines)." Six characters pass the length
+    // rule, so these are judged by the second rule. (A "\r\n" pair is one Swift Character, so it is not used here: the rule counts Characters.)
+    @Test(arguments: ["\t\t\t\t\t\t", "\n\n\n\n\n\n", " \t\n \t\n", "\t \t \t ", "\t\t\t\t\t\t\t\t\t\t"])
+    func validateNewRejectsSixOrMoreTabsAndNewlinesAsWhitespaceOnly(password: String) {
+        #expect(password.count >= 6)
+        #expect(weakness(password) == .whitespaceOnly, "\(password.debugDescription)")
+    }
+
+    // The boundary between the two rules for tabs: five tabs are too short, six are whitespace only, and one real character among them is fine.
+    @Test func validateNewJudgesTabsByLengthFirstAndThenByContent() {
+        #expect(weakness(String(repeating: "\t", count: 5)) == .tooShort(minimum: 6))
+        #expect(weakness(String(repeating: "\t", count: 6)) == .whitespaceOnly)
+        #expect(weakness("\t\t\t\t\t\ta") == nil)
+        #expect(weakness("a\t\t\t\t\t") == nil)
     }
 
     @Test func minimumLengthIsSix() {

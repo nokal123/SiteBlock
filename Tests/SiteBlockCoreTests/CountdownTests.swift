@@ -84,3 +84,54 @@ import SiteBlockCore
         #expect(countdown.isFinished)
     }
 }
+
+// 02-core-components.md § Models and Protocol Types (Countdown.advance): "A remainder below 1e-9 seconds (one nanosecond) is set to
+// exactly 0. ... A remainder of 1e-6 seconds is still running."
+@Suite struct CountdownToleranceTests {
+    // Starting at 1 + remainder and advancing by 1 leaves the stated remainder, give or take floating-point noise far below 1e-9.
+    // The remainders on either side of the 1e-9 line are kept clear of it (no value within a factor of two), because a value that
+    // close to the line would be decided by rounding noise, not by the design.
+    @Test(arguments: [(1e-6, true), (1e-3, true), (0.5, true), (2e-9, true), (5.4e-10, false), (1e-10, false), (1e-12, false), (1e-15, false)])
+    func aRemainderBelowOneNanosecondCountsAsFinishedAndAnyOtherRemainderIsStillRunning(remainder: Double, running: Bool) {
+        var countdown = Countdown(remainingSeconds: 1 + remainder, totalSeconds: 100)
+        countdown.advance(by: 1)
+        #expect(countdown.isFinished == !running, "a remainder of \(remainder) s")
+        if running {
+            #expect(countdown.remainingSeconds > 0 && abs(countdown.remainingSeconds - remainder) < 1e-9)
+            #expect(countdown.displaySeconds == 1, "a running countdown never shows 0")
+        } else {
+            #expect(countdown.remainingSeconds == 0, "the remainder must be set to exactly 0")
+            #expect(countdown.displaySeconds == 0)
+        }
+    }
+
+    // The case the tolerance exists for: 18,000 ticks of 0.1 s on a 1,800 s countdown. In plain arithmetic the residue is not zero,
+    // so the first #expect proves that the test would catch a missing tolerance; the countdown must still finish on the last tick.
+    @Test func eighteenThousandTenthSecondAdvancesFinishAnEighteenHundredSecondCountdownOnTheLastOne() {
+        var plain = 1800.0
+        for _ in 0..<18_000 { plain -= 0.1 }
+        #expect(plain > 0 && plain < 1e-9, "premise: plain subtraction leaves a tiny positive residue (\(plain))")
+        var countdown = Countdown(seconds: 1800)
+        for _ in 0..<17_999 { countdown.advance(by: 0.1) }
+        #expect(!countdown.isFinished, "1,799.9 s have passed")
+        countdown.advance(by: 0.1)
+        #expect(countdown.isFinished && countdown.remainingSeconds == 0)
+    }
+
+    // The tolerance is about the remainder, not the elapsed time: a tiny elapsed value must still be subtracted in full.
+    @Test func aTinyElapsedValueIsStillSubtractedWhenTheRemainderStaysLarge() {
+        var countdown = Countdown(seconds: 10)
+        countdown.advance(by: 1e-10)
+        #expect(countdown.remainingSeconds == 10 - 1e-10)
+        #expect(!countdown.isFinished)
+    }
+
+    // A stored remainder of 5e-10 s is not finished (isFinished only looks at remainingSeconds <= 0), but any positive advance leaves a
+    // remainder below a nanosecond, which is set to exactly 0.
+    @Test func aCountdownWithUnderANanosecondLeftFinishesOnAnyPositiveAdvance() {
+        var countdown = Countdown(remainingSeconds: 5e-10, totalSeconds: 100)
+        #expect(!countdown.isFinished, "stored values are taken as they are; only advance applies the tolerance")
+        countdown.advance(by: 1e-300)
+        #expect(countdown.isFinished && countdown.remainingSeconds == 0)
+    }
+}

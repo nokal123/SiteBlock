@@ -28,41 +28,141 @@ private func count(of needle: String, in text: String) -> Int {
     text.components(separatedBy: needle).count - 1
 }
 
-// An independent implementation of the five render steps, written from the design text only. Used to cross-check the
-// real renderer on thousands of generated files. It only supports inputs where the design is unambiguous: no whitespace-only
-// lines and single-space separators on lines that lose a name.
-private func referenceRender(original: String, blocked: [String]) -> String {
-    func trim(_ s: String) -> String { s.trimmingCharacters(in: CharacterSet(charactersIn: " \t")) }
-    let lines = original.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
-    var kept: [String] = []
+// What the generated files exercised, so a generator that quietly stops producing a case cannot make the cross-check pass vacuously.
+private struct ReferenceStats {
+    var droppedLines = 0
+    var rewrittenLines = 0
+    var rewrittenWithComment = 0
+    var nulDrops = 0
+    var normalizedMatches = 0
+    var pairedSections = 0
+    var strayEnds = 0
+    var orphanBegins = 0
+    var supersededBegins = 0
+}
+
+// Splits UTF-8 bytes into lines on "\n", "\r\n" and a lone "\r" (design step 1 and "Line breaks"). Working on bytes means a
+// line break can never hide inside a multi-byte character or behind a combining mark.
+private func referenceSplit(_ bytes: [UInt8]) -> [[UInt8]] {
+    var lines: [[UInt8]] = [[]]
     var index = 0
-    while index < lines.count {
-        let t = trim(lines[index])
-        if t.hasPrefix("# BEGIN SiteBlock") {
-            if let endIndex = lines[(index + 1)...].firstIndex(where: { trim($0) == "# END SiteBlock" }) { index = endIndex + 1 } else { index += 1 }
-            continue
+    while index < bytes.count {
+        let byte = bytes[index]
+        if byte == 0x0A {
+            lines.append([])
+        } else if byte == 0x0D {
+            lines.append([])
+            if index + 1 < bytes.count, bytes[index + 1] == 0x0A { index += 1 }
+        } else {
+            lines[lines.count - 1].append(byte)
         }
-        if t == "# END SiteBlock" { index += 1; continue }
-        kept.append(lines[index])
         index += 1
     }
-    let blockedSet = Set(blocked.map { $0.lowercased() })
-    var out: [String] = []
-    for line in kept {
-        let t = trim(line)
-        if t.isEmpty || t.hasPrefix("#") { out.append(line); continue }
-        let body = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-        let fields = body.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        guard fields.count >= 2 else { out.append(line); continue }
-        let names = Array(fields.dropFirst())
-        let remaining = names.filter { !blockedSet.contains($0.lowercased()) }
-        if remaining.count == names.count { out.append(line); continue }
-        if remaining.isEmpty { continue }
-        out.append(([fields[0]] + remaining).joined(separator: " "))
+    return lines
+}
+
+// A line without its leading and trailing ASCII spaces and tabs (the generated files contain no other kind of padding).
+private func referenceTrim(_ line: [UInt8]) -> [UInt8] {
+    var slice = line[...]
+    while let first = slice.first, first == 0x20 || first == 0x09 { slice = slice.dropFirst() }
+    while let last = slice.last, last == 0x20 || last == 0x09 { slice = slice.dropLast() }
+    return Array(slice)
+}
+
+// A name the way the design says it is compared (step 3): ASCII letters lowercased, then one trailing "." removed. Bytes only, so a
+// non-ASCII look-alike never matches, and Swift's Unicode-aware String comparison cannot fold anything together.
+private func referenceComparable(_ name: [UInt8]) -> [UInt8] {
+    var bytes = name
+    if bytes.last == 0x2E { bytes.removeLast() }
+    return bytes.map { (0x41...0x5A).contains($0) ? $0 + 0x20 : $0 }
+}
+
+// Design step 2, read literally: each END line closes the nearest BEGIN line above it that is not already closed, and only that BEGIN,
+// the END and the lines between them are removed. Every BEGIN left unclosed, and every END with no open BEGIN above it, is removed alone.
+private func referenceRemoveSections(_ lines: [[UInt8]], stats: inout ReferenceStats) -> [[UInt8]] {
+    let beginPrefix = Array("# BEGIN SiteBlock".utf8)
+    let endText = Array("# END SiteBlock".utf8)
+    func isBegin(_ line: [UInt8]) -> Bool { referenceTrim(line).starts(with: beginPrefix) }
+    func isEnd(_ line: [UInt8]) -> Bool { referenceTrim(line) == endText }
+    var removed = [Bool](repeating: false, count: lines.count)
+    var closed = Set<Int>()
+    for index in lines.indices where isEnd(lines[index]) {
+        if let begin = (0..<index).last(where: { isBegin(lines[$0]) && !closed.contains($0) }) {
+            closed.insert(begin)
+            for covered in begin...index { removed[covered] = true }
+            stats.pairedSections += 1
+        } else {
+            removed[index] = true
+            stats.strayEnds += 1
+        }
     }
-    while let last = out.last, last.isEmpty { out.removeLast() }
-    var text = out.isEmpty ? "" : out.joined(separator: "\n") + "\n"
-    if !blocked.isEmpty { text += "\n" + section(blocked) }
+    for index in lines.indices where isBegin(lines[index]) && !closed.contains(index) {
+        removed[index] = true
+        stats.orphanBegins += 1
+        if closed.contains(where: { $0 > index }) { stats.supersededBegins += 1 }
+    }
+    return zip(lines, removed).filter { !$0.1 }.map { $0.0 }
+}
+
+// Design step 3, read literally. Returns nil when the line must be dropped, the same line when nothing in it is blocked, otherwise the
+// rewritten line. Only the parts of a rewritten line the design pins are rebuilt here: the address, the remaining names, and the
+// comment as " #comment". The generator never makes a rewritten line whose layout the design leaves open (extra spaces, tabs or leading
+// whitespace between its fields, or text after a NUL), and this function records an issue if it ever does.
+private func referenceStripNames(from line: [UInt8], blocked: Set<[UInt8]>, stats: inout ReferenceStats) -> [UInt8]? {
+    let trimmed = referenceTrim(line)
+    // A blank line or a comment line has no names.
+    if trimmed.isEmpty || trimmed.first == 0x23 { return line }
+    // The line ends at the first NUL or "#".
+    let cut = line.firstIndex(where: { $0 == 0x00 || $0 == 0x23 }) ?? line.count
+    let body = Array(line[..<cut])
+    let tail = Array(line[cut...])
+    // Fields are separated only by ASCII spaces and tabs; the first is the address.
+    let fields = body.split(whereSeparator: { $0 == 0x20 || $0 == 0x09 }).map { Array($0) }
+    guard fields.count >= 2 else { return line }
+    let names = Array(fields.dropFirst())
+    let remaining = names.filter { !blocked.contains(referenceComparable($0)) }
+    if remaining.count == names.count { return line }
+    if names.contains(where: { blocked.contains(referenceComparable($0)) && !blocked.contains($0) }) { stats.normalizedMatches += 1 }
+    if remaining.isEmpty {
+        stats.droppedLines += 1
+        if tail.first == 0x00 { stats.nulDrops += 1 }
+        return nil
+    }
+    var rewritten = fields[0]
+    for name in remaining { rewritten += [0x20] + name }
+    var compactBody = Array(body)
+    while let last = compactBody.last, last == 0x20 || last == 0x09 { compactBody.removeLast() }
+    if compactBody != Array(fields.joined(separator: [0x20])) || tail.first == 0x00 {
+        Issue.record("the generator made a rewritten line whose layout the design does not pin: \(String(decoding: line, as: UTF8.self).debugDescription)")
+    }
+    if tail.first == 0x23 {
+        rewritten += [0x20] + tail
+        stats.rewrittenWithComment += 1
+    }
+    stats.rewrittenLines += 1
+    return rewritten
+}
+
+// An independent implementation of the whole renderer, written from the design text only: the input guard on blocked hosts, the three
+// line-break kinds, steps 2 and 3 as read above, the trailing-empty-line trim, and the appended section. Used to cross-check the real
+// renderer on thousands of generated files. It supports the inputs where the design is unambiguous: no whitespace-only lines.
+private func referenceRender(original: String, blocked: [String], stats: inout ReferenceStats) -> String {
+    // Input guard: trim and lowercase each entry, then drop any entry that is empty or has a character outside a-z 0-9 - .
+    let usable = blocked.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { host in
+        !host.isEmpty && host.utf8.allSatisfy { (0x61...0x7A).contains($0) || (0x30...0x39).contains($0) || $0 == 0x2D || $0 == 0x2E }
+    }
+    let hosts = Array(Set(usable)).sorted()
+    let blockedBytes = Set(hosts.map { Array($0.utf8) })
+    let lines = referenceRemoveSections(referenceSplit(Array(original.utf8)), stats: &stats)
+    var kept: [[UInt8]] = []
+    for line in lines { if let stripped = referenceStripNames(from: line, blocked: blockedBytes, stats: &stats) { kept.append(stripped) } }
+    // Step 4: trailing empty lines go, and the text ends with one "\n" unless it is empty.
+    while let last = kept.last, last.isEmpty { kept.removeLast() }
+    var bytes: [UInt8] = []
+    for line in kept { bytes += line + [0x0A] }
+    var text = String(decoding: bytes, as: UTF8.self)
+    // Step 5: one empty line and the section, when anything is left to block.
+    if !hosts.isEmpty { text += "\n" + section(hosts) }
     return text
 }
 
@@ -79,32 +179,54 @@ private struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
-// Builds one random hosts file that starts with the stock header and then mixes comments, blank lines, user entries
-// (some naming blocked hosts), well-formed and broken managed sections, and stray markers.
+// Builds one random hosts file that starts with the stock header and then mixes comments, blank lines, user entries (some naming
+// blocked hosts in different cases or with a trailing dot), well-formed and broken managed sections, stray and superseded markers,
+// inline comments, NUL bytes, and all three kinds of line break.
 private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
     let addresses = ["1.2.3.4", "151.101.1.140", "0.0.0.0", "::", "10.0.0.5"]
-    let names = ["reddit.com", "www.reddit.com", "other.com", "i.redd.it", "nas.lan", "Reddit.Com", "REDD.IT", "redd.it"]
-    let comments = ["# some note", "# 1.2.3.4 reddit.com", "#reddit.com", "# reddit.com", "   # indented comment"]
-    let beginLines = [begin, "# BEGIN SiteBlock", "# BEGIN SiteBlock (edited)", "   # BEGIN SiteBlock — x  ", "\t# BEGIN SiteBlock"]
+    // Case variants, one trailing dot (the same name), two trailing dots (a different name), and look-alikes built from non-ASCII
+    // characters: a Kelvin sign is not an ASCII "k", and a combining mark or a no-break space makes a different name.
+    let names = ["reddit.com", "www.reddit.com", "other.com", "i.redd.it", "nas.lan", "Reddit.Com", "REDD.IT", "redd.it", "reddit.com.", "REDDIT.COM.", "www.reddit.com.", "reddit.com..", "kick.com", "\u{212A}ick.com", "reddit.com\u{301}", "reddit.com\u{A0}"]
+    let comments = ["# some note", "# 1.2.3.4 reddit.com", "#reddit.com", "# reddit.com", "   # indented comment", "\t#reddit.com.", "# END SiteBlock notes", "#BEGIN SiteBlock"]
+    let beginLines = [begin, "# BEGIN SiteBlock", "# BEGIN SiteBlock (edited)", "   # BEGIN SiteBlock — x  ", "\t# BEGIN SiteBlock", "# BEGIN SiteBlock entries I added myself"]
     let endLines = [end, "  # END SiteBlock  ", "\t# END SiteBlock"]
+    let inlineComments = ["", "", "", " # note", " #reddit.com", "#attached", " # keep"]
+    let leads = ["", " ", "\t", " \t "]
+    let separators = [" ", "\t", "  ", " \t "]
+    let trails = ["", " ", "\t", "\u{0}tail", "\u{0}reddit.com", "\u{0}"]
     var lines = defaultHosts.components(separatedBy: "\n").dropLast().map { $0 }
-    for _ in 0..<Int.random(in: 0...14, using: &rng) {
-        switch Int.random(in: 0..<10, using: &rng) {
+    for _ in 0..<Int.random(in: 0...16, using: &rng) {
+        switch Int.random(in: 0..<16, using: &rng) {
         case 0: lines.append("")
         case 1: lines.append(comments.randomElement(using: &rng)!)
-        case 2: lines.append(beginLines.randomElement(using: &rng)!)
-        case 3: lines.append(endLines.randomElement(using: &rng)!)
+        case 2, 3: lines.append(beginLines.randomElement(using: &rng)!)
+        case 4, 5: lines.append(endLines.randomElement(using: &rng)!)
+        case 6:
+            // One name only, so the line is either dropped or left alone and its odd spacing never has to be rebuilt.
+            let trail = trails.randomElement(using: &rng)!
+            let comment = trail.contains("\u{0}") ? "" : ["", "#c", " # reddit.com"].randomElement(using: &rng)!
+            lines.append(leads.randomElement(using: &rng)! + addresses.randomElement(using: &rng)! + separators.randomElement(using: &rng)! + names.randomElement(using: &rng)! + trail + comment)
+        case 7: lines.append(["1.2.3.4", "10.0.0.5 # reddit.com", "  ::  ", "\t0.0.0.0\t#x"].randomElement(using: &rng)!)
+        case 8:
+            // A blocked name in the address position is not a name on the line, so only the names after it count.
+            lines.append(["reddit.com 1.2.3.4", "reddit.com", "www.reddit.com 10.0.0.5 other.com", "REDDIT.COM 1.2.3.4"].randomElement(using: &rng)!)
         default:
             let count = Int.random(in: 1...3, using: &rng)
             let chosen = (0..<count).map { _ in names.randomElement(using: &rng)! }
-            lines.append(([addresses.randomElement(using: &rng)!] + chosen).joined(separator: " "))
+            lines.append(([addresses.randomElement(using: &rng)!] + chosen).joined(separator: " ") + inlineComments.randomElement(using: &rng)!)
         }
     }
-    let newline = Bool.random(using: &rng) ? "\n" : "\r\n"
-    var text = lines.joined(separator: newline)
+    // Most files use one kind of line break throughout; one join in five switches to a random kind, so mixed files appear too.
+    let newlines = ["\n", "\r\n", "\r"]
+    let dominant = ["\n", "\n", "\r\n", "\r"].randomElement(using: &rng)!
+    var text = ""
+    for (index, line) in lines.enumerated() {
+        text += line
+        if index < lines.count - 1 { text += Int.random(in: 0..<5, using: &rng) == 0 ? newlines.randomElement(using: &rng)! : dominant }
+    }
     switch Int.random(in: 0..<3, using: &rng) {
-    case 0: text += newline
-    case 1: text += newline + newline + newline
+    case 0: text += dominant
+    case 1: text += dominant + dominant + dominant
     default: break
     }
     return text
@@ -240,10 +362,15 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
         #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + "10.0.0.5 a\n10.0.0.6 b\n")
     }
 
-    // "A section starts at a BEGIN line and ends at the next END line": a second BEGIN inside it does not start a new section.
-    @Test func renderEndsASectionAtTheFirstEndEvenWhenAnotherBeginAppearsInside() {
+    // Design change: 02-core-components.md § HostsFileEditor, render step 2. The old rule said a section starts at a BEGIN line and
+    // ends at the next END line, so a second BEGIN inside it was swallowed, and the first BEGIN took every line down to the END with it,
+    // including the line "0.0.0.0 zzz.com" below. The design now pairs each END with the NEAREST open BEGIN above it and removes only
+    // that BEGIN, the END and the lines between them. Every other BEGIN (here the first one, which the second BEGIN superseded) is
+    // removed as a single line. The old assertion expected "0.0.0.0 zzz.com" to be deleted; under the current rule it sits outside
+    // any BEGIN/END pair, so it is a user line and must survive (no blocked host names it, so step 3 leaves it too).
+    @Test func renderPairsAnEndWithTheNearestBeginAboveItAndDropsTheEarlierBeginAsASingleLine() {
         let original = defaultHosts + begin + "\n0.0.0.0 zzz.com\n" + begin + "\n10.0.0.7 q\n" + end + "\n10.0.0.8 after\n"
-        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + "10.0.0.8 after\n")
+        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + "0.0.0.0 zzz.com\n10.0.0.8 after\n")
     }
 
     // The END marker must equal "# END SiteBlock" once trimmed, so a longer comment is not an END and the BEGIN stays orphaned.
@@ -449,19 +576,258 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
         #expect(elapsed < 20, "render took \(elapsed) seconds")
     }
 
-    // 600 generated files (random markers, bypass lines, comments, blank lines, CRLF or LF) rendered by the real code and by
-    // the reference written from the design steps. A disagreement means one of the two misreads the design.
+    // Design change: the reference renderer used to implement the old step 2 (a section ends at the first END, so a BEGIN inside it was
+    // swallowed) and the old step 3 (split on any whitespace, no NUL cut, no trailing-dot rule). It was rewritten from the current
+    // 02-core-components.md § HostsFileEditor: step 2 pairs each END with the nearest open BEGIN above it; step 3 ends the line at the
+    // first NUL or "#", splits fields only on ASCII space and tab, ASCII-lowercases each name and removes one trailing "."; untouched
+    // lines stay byte for byte and a rewritten line keeps " #comment". The input guard (trim, lowercase, drop entries with characters
+    // outside a-z 0-9 - .) and the lone "\r" line break are part of the reference too. Against the old reference the real renderer
+    // disagreed on 17 of the 600 earlier files, all of them differences that the design change introduced on purpose.
+    //
+    // 1,500 generated files (random markers, stray and superseded BEGIN lines, bypass lines in several spellings, comments, NUL bytes,
+    // blank lines, and all three line-break kinds) rendered by the real code and by the reference. A disagreement means one of the two
+    // misreads the design.
     @Test func renderAgreesWithAnIndependentReferenceOnGeneratedFiles() {
         var rng = SeededGenerator(state: 2026_10_06)
-        let blockSets: [[String]] = [[], ["reddit.com"], ["i.redd.it", "reddit.com", "www.reddit.com"], ["other.com", "redd.it"], ["nas.lan"]]
-        for round in 0..<600 {
+        let blockSets: [[String]] = [
+            [], ["reddit.com"], ["i.redd.it", "reddit.com", "www.reddit.com"], ["other.com", "redd.it"], ["nas.lan"], ["kick.com"],
+            // Dirty entries: padding and upper case are cleaned up, and entries with a newline, space, "#" or nothing at all are dropped.
+            [" Reddit.COM ", "evil.com\n0.0.0.0 bank.com", "a b.com", "x.com#y", ""], ["REDD.IT", "www.reddit.com\t", "other.com\r"],
+        ]
+        var stats = ReferenceStats()
+        for round in 0..<1500 {
             let original = randomHostsFile(&rng)
             let blocked = blockSets[round % blockSets.count]
             let actual = HostsFileEditor.render(original: original, blockedHosts: blocked)
-            let expected = referenceRender(original: original, blocked: blocked)
+            let expected = referenceRender(original: original, blocked: blocked, stats: &stats)
             #expect(actual == expected, "round \(round): original \(original.debugDescription) blocked \(blocked)")
             #expect(HostsFileEditor.render(original: actual, blockedHosts: blocked) == actual, "round \(round) is not idempotent")
             #expect(HostsFileEditor.isCompliant(actual, blockedHosts: blocked), "round \(round) output is not compliant")
         }
+        // Guard against a vacuous run: the generator must really have produced each situation the reference is meant to judge.
+        #expect(stats.droppedLines > 100, "dropped lines: \(stats.droppedLines)")
+        #expect(stats.rewrittenLines > 50, "rewritten lines: \(stats.rewrittenLines)")
+        #expect(stats.rewrittenWithComment > 10, "rewritten lines that kept a comment: \(stats.rewrittenWithComment)")
+        #expect(stats.nulDrops > 10, "lines dropped by a name that sat before a NUL: \(stats.nulDrops)")
+        #expect(stats.normalizedMatches > 50, "lines matched only after lowercasing or removing a trailing dot: \(stats.normalizedMatches)")
+        #expect(stats.pairedSections > 200, "paired sections: \(stats.pairedSections)")
+        #expect(stats.strayEnds > 50, "stray END lines: \(stats.strayEnds)")
+        #expect(stats.orphanBegins > 100, "unclosed BEGIN lines: \(stats.orphanBegins)")
+        #expect(stats.supersededBegins > 20, "BEGIN lines superseded by a later BEGIN: \(stats.supersededBegins)")
+    }
+}
+
+// True when the needle's Unicode scalars appear, in order and next to each other, in the text. Swift's own String search works on
+// grapheme clusters, so a needle that starts with a combining mark would not be found after a space that it combines with.
+private func containsScalars(_ text: String, _ needle: String) -> Bool {
+    let haystack = Array(text.unicodeScalars)
+    let wanted = Array(needle.unicodeScalars)
+    guard !wanted.isEmpty, haystack.count >= wanted.count else { return false }
+    return (0...(haystack.count - wanted.count)).contains { start in Array(haystack[start..<(start + wanted.count)]) == wanted }
+}
+
+// The text split on "\n" only, which is how the output is written. Splitting by scalars keeps a line break followed by a combining mark intact.
+private func outputLines(_ text: String) -> [String] {
+    var lines: [String] = []
+    var current = String.UnicodeScalarView()
+    for scalar in text.unicodeScalars {
+        if scalar == "\n" {
+            lines.append(String(current))
+            current = String.UnicodeScalarView()
+        } else {
+            current.append(scalar)
+        }
+    }
+    if !current.isEmpty { lines.append(String(current)) }
+    return lines
+}
+
+// The fields of a line, split only on ASCII space and tab and by Unicode scalars, so a space glued to a combining mark still splits.
+private func asciiFields(_ line: String) -> [String] {
+    var fields: [String] = []
+    var current = String.UnicodeScalarView()
+    for scalar in line.unicodeScalars {
+        if scalar == " " || scalar == "\t" {
+            if !current.isEmpty { fields.append(String(current)) }
+            current = String.UnicodeScalarView()
+        } else {
+            current.append(scalar)
+        }
+    }
+    if !current.isEmpty { fields.append(String(current)) }
+    return fields
+}
+
+// A line the design allows in the output for a hostile block list: one of the two markers, or "0.0.0.0 h" / ":: h" where h is a
+// non-empty lowercase host made only of a-z, 0-9, "-" and ".".
+private func isMarkerOrCleanAddressLine(_ line: String) -> Bool {
+    if line == begin || line == end { return true }
+    let parts = line.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+    guard parts.count == 2, parts[0] == "0.0.0.0" || parts[0] == "::" else { return false }
+    return !parts[1].isEmpty && parts[1].unicodeScalars.allSatisfy { ($0.value >= 0x61 && $0.value <= 0x7A) || ($0.value >= 0x30 && $0.value <= 0x39) || $0 == "-" || $0 == "." }
+}
+
+// Expected values come from 02-core-components.md § HostsFileEditor: the input guard, render step 2 (END pairs with the nearest open
+// BEGIN), render step 3 (resolver-style parsing), "Line breaks" and "Comments on rewritten lines".
+@Suite struct HostsFileEditorHostileInputTests {
+    private static let hostile = ["evil.com\n0.0.0.0 bank.com", "a b.com", "x.com#y", "", "UPPER.com"]
+
+    // "A hostile entry such as evil.com plus a newline and a second host line therefore produces no line at all."
+    @Test func managedSectionDropsEveryHostileEntryAndKeepsOnlyTheLowercasedCleanOne() {
+        let lines = outputLines(HostsFileEditor.managedSection(for: Self.hostile))
+        #expect(lines == [begin, "0.0.0.0 upper.com", ":: upper.com", end])
+    }
+
+    @Test func everyLineRenderWritesForAHostileBlockListIsAMarkerOrACleanAddressLine() {
+        for original in [defaultHosts, ""] {
+            let result = HostsFileEditor.render(original: original, blockedHosts: Self.hostile)
+            let written = original.isEmpty ? result : String(result.dropFirst(defaultHosts.count))
+            #expect(result.hasPrefix(original))
+            for line in outputLines(written) where !line.isEmpty { #expect(isMarkerOrCleanAddressLine(line), "unexpected line \(line.debugDescription)") }
+            #expect(containsScalars(result, "0.0.0.0 upper.com\n:: upper.com\n"))
+            for forbidden in ["evil.com", "bank.com", "a b.com", "x.com", "UPPER"] { #expect(!containsScalars(result, forbidden), "\(forbidden) leaked into the file") }
+        }
+        #expect(HostsFileEditor.render(original: defaultHosts, blockedHosts: Self.hostile) == defaultHosts + "\n" + section(["upper.com"]))
+    }
+
+    // Each of these alone leaves nothing to write, so the managed section is just the two markers, and render adds no host line.
+    @Test(arguments: ["evil.com\n0.0.0.0 bank.com", "evil.com\r\n:: bank.com", "a b.com", "a\tb.com", "x.com#y", "", "   ", "a_b.com", "bank.com\u{0}", "x.com\u{2028}y.com", "b\u{FC}cher.de", "*.example.com", "ex/ample.com", "a,b.com"])
+    func aHostileEntryOnItsOwnProducesNoHostLine(entry: String) {
+        #expect(outputLines(HostsFileEditor.managedSection(for: [entry])) == [begin, end])
+        let result = HostsFileEditor.render(original: defaultHosts, blockedHosts: [entry])
+        #expect(result.hasPrefix(defaultHosts))
+        for line in outputLines(String(result.dropFirst(defaultHosts.count))) where !line.isEmpty { #expect(isMarkerOrCleanAddressLine(line), "unexpected line \(line.debugDescription) for \(entry.debugDescription)") }
+        #expect(!result.contains("0.0.0.0 ") && !result.contains(":: "), "no address line may be written for \(entry.debugDescription)")
+    }
+
+    // The guard trims and lowercases first, then judges what is left.
+    @Test func theGuardTrimsAndLowercasesBeforeJudgingAnEntry() {
+        #expect(outputLines(HostsFileEditor.managedSection(for: [" \tPadded.COM  ", "Mixed-Case.Org"])) == [begin, "0.0.0.0 mixed-case.org", ":: mixed-case.org", "0.0.0.0 padded.com", ":: padded.com", end])
+    }
+
+    // The whole chain: a hostile name typed by a user is refused by the engine, so it never reaches the block list or the file.
+    @Test func anAddOfAHostileNameIsRejectedAndTheBlockedHostsStayCleanAllTheWayToTheHostsFile() {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        for input in ["evil.com\n0.0.0.0 bank.com", "evil.com\r\n:: bank.com", "a b.com", "evil.com 0.0.0.0 bank.com"] { expectFailure(engine.send(.add, domain: input), .invalidDomain) }
+        #expect(engine.state.blocked.map(\.domain) == ["reddit.com"])
+        #expect(engine.blockedHosts == DomainExpander.expand("reddit.com"))
+        for host in engine.blockedHosts { #expect(host.unicodeScalars.allSatisfy { ($0.value >= 0x61 && $0.value <= 0x7A) || ($0.value >= 0x30 && $0.value <= 0x39) || $0 == "-" || $0 == "." }, "\(host.debugDescription) is not clean") }
+        let rendered = HostsFileEditor.render(original: defaultHosts, blockedHosts: engine.blockedHosts)
+        #expect(rendered == defaultHosts + "\n" + section(DomainExpander.expand("reddit.com")))
+        #expect(!rendered.contains("bank.com") && !rendered.contains("evil.com"))
+    }
+}
+
+@Suite struct HostsFileEditorParsingTests {
+    // MARK: step 2, pairing
+
+    // 02-core-components.md step 2: a comment the user wrote, "# BEGIN SiteBlock entries I added myself", far above the real section
+    // starts an open BEGIN that the real section's BEGIN supersedes. It costs that one line and never the user's entries below it.
+    @Test func aStrayBeginCommentFarAboveTheRealSectionLosesOnlyItsOwnLine() {
+        var userLines = ""
+        for index in 0..<30 { userLines += "10.0.\(index).1 host\(index).lan\n" }
+        let original = defaultHosts + "# BEGIN SiteBlock entries I added myself\n" + userLines + "\n" + section(["reddit.com"])
+        #expect(HostsFileEditor.render(original: original, blockedHosts: ["reddit.com"]) == defaultHosts + userLines + "\n" + section(["reddit.com"]))
+        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + userLines)
+    }
+
+    @Test func nestedBeginsAreAllClosedByTheEndsThatFollowThemInnerFirst() {
+        let original = defaultHosts + begin + "\n10.0.0.1 x\n" + begin + "\n10.0.0.2 y\n" + end + "\n10.0.0.3 z\n" + end + "\n10.0.0.4 after\n"
+        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + "10.0.0.4 after\n")
+    }
+
+    @Test func anEndClosesOnlyTheNearestOpenBeginSoTheLinesBetweenAnEarlierBeginAndItStay() {
+        let original = defaultHosts + "# BEGIN SiteBlock mine\n10.0.0.1 keep-a\n" + begin + "\n0.0.0.0 old.com\n" + end + "\n10.0.0.2 keep-b\n"
+        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + "10.0.0.1 keep-a\n10.0.0.2 keep-b\n")
+    }
+
+    @Test func aSecondEndAfterAClosedSectionIsAStrayEndAndOnlyItsOwnLineGoes() {
+        let original = defaultHosts + begin + "\n10.0.0.1 inside\n" + end + "\n10.0.0.2 between\n" + end + "\n10.0.0.3 after\n"
+        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == defaultHosts + "10.0.0.2 between\n10.0.0.3 after\n")
+    }
+
+    // MARK: step 3, reading a line the way the resolver does
+
+    @Test func aBlockedNameWithATrailingDotIsRemovedFromTheLine() {
+        #expect(HostsFileEditor.render(original: defaultHosts + "151.101.1.141 reddit.com.\n", blockedHosts: ["reddit.com"]) == withSection(defaultHosts, ["reddit.com"]))
+        #expect(HostsFileEditor.render(original: defaultHosts + "151.101.1.141 REDDIT.COM.\n", blockedHosts: ["reddit.com"]) == withSection(defaultHosts, ["reddit.com"]))
+        #expect(HostsFileEditor.render(original: defaultHosts + "1.2.3.4 other.net reddit.com. other.org\n", blockedHosts: ["reddit.com"]) == defaultHosts + "1.2.3.4 other.net other.org\n" + "\n" + section(["reddit.com"]))
+    }
+
+    // Only one trailing dot is removed, so "reddit.com.." is a different name that the resolver would not match with the block.
+    @Test func aNameWithTwoTrailingDotsIsNotTheBlockedName() {
+        let line = "1.2.3.4 reddit.com..\n"
+        #expect(HostsFileEditor.render(original: defaultHosts + line, blockedHosts: ["reddit.com"]) == defaultHosts + line + "\n" + section(["reddit.com"]))
+    }
+
+    // The resolver stops reading the line at a NUL byte, so a blocked name in front of one is on the line and a name behind one is not.
+    @Test func aBlockedNameBeforeANulByteIsRemovedAndTheTextAfterTheNulIsNeverSearched() {
+        #expect(HostsFileEditor.render(original: defaultHosts + "151.101.1.142 www.reddit.com\u{0}x\n", blockedHosts: ["www.reddit.com"]) == withSection(defaultHosts, ["www.reddit.com"]))
+        let hidden = "1.2.3.4 other.com\u{0}reddit.com\n"
+        #expect(HostsFileEditor.render(original: defaultHosts + hidden, blockedHosts: ["reddit.com"]) == defaultHosts + hidden + "\n" + section(["reddit.com"]))
+    }
+
+    // "when step 3 removes a name from a user line, the line's trailing comment (if any) is kept as ' #comment'."
+    @Test func aRewrittenLineKeepsItsTrailingComment() {
+        #expect(HostsFileEditor.render(original: defaultHosts + "1.2.3.4 other.net reddit.com. # keep\n", blockedHosts: ["reddit.com"]) == defaultHosts + "1.2.3.4 other.net # keep\n" + "\n" + section(["reddit.com"]))
+        #expect(HostsFileEditor.render(original: defaultHosts + "1.2.3.4 reddit.com other.net#keep\n", blockedHosts: ["reddit.com"]) == defaultHosts + "1.2.3.4 other.net #keep\n" + "\n" + section(["reddit.com"]))
+        #expect(HostsFileEditor.render(original: defaultHosts + "1.2.3.4 other.net reddit.com#keep\n", blockedHosts: ["reddit.com"]) == defaultHosts + "1.2.3.4 other.net #keep\n" + "\n" + section(["reddit.com"]))
+    }
+
+    // A space followed by a combining mark is one Swift Character, so a parser that splits on Characters would not see the space.
+    // Fields are split on the ASCII space itself, so "\u{301}reddit.com" is its own field and is not the blocked name.
+    @Test func aCombiningMarkAfterASeparatorKeepsTheLineStableOnASecondRender() {
+        let original = defaultHosts + "x\twww.reddit.com \u{301}reddit.com\n"
+        let blocked = ["reddit.com", "www.reddit.com"]
+        let once = HostsFileEditor.render(original: original, blockedHosts: blocked)
+        #expect(HostsFileEditor.render(original: once, blockedHosts: blocked) == once)
+        #expect(HostsFileEditor.isCompliant(once, blockedHosts: blocked))
+        // The user's line keeps its address and the name that is not blocked, and loses the blocked name. Fields are read by ASCII space and tab only.
+        let userLines = outputLines(once).filter { $0.unicodeScalars.contains("\u{301}") }
+        #expect(userLines.count == 1, "expected exactly one user line with the combining mark: \(once.debugDescription)")
+        #expect(asciiFields(userLines.first ?? "") == ["x", "\u{301}reddit.com"])
+    }
+
+    // Fields are separated only by ASCII spaces and tabs. These characters look like separators, but to the resolver they are part of
+    // a name, so the lines hold no blocked name and stay byte for byte.
+    @Test(arguments: ["1.2.3.4\u{A0}reddit.com", "1.2.3.4 \u{B}reddit.com", "1.2.3.4 other.com\u{C}reddit.com", "1.2.3.4 reddit.com\u{3000}", "1.2.3.4\u{2003}reddit.com", "1.2.3.4 reddit.com\u{85}other.com"])
+    func charactersThatOnlyLookLikeSeparatorsDoNotSplitAName(line: String) {
+        #expect(HostsFileEditor.render(original: defaultHosts + line + "\n", blockedHosts: ["reddit.com"]) == defaultHosts + line + "\n" + "\n" + section(["reddit.com"]))
+    }
+
+    // A blocked name in the address position is the address, not a name, so the line is left alone.
+    @Test func aBlockedNameInTheAddressFieldIsNotAName() {
+        let line = "reddit.com 1.2.3.4\n"
+        #expect(HostsFileEditor.render(original: defaultHosts + line, blockedHosts: ["reddit.com"]) == defaultHosts + line + "\n" + section(["reddit.com"]))
+    }
+
+    // A Kelvin sign (U+212A) is not an ASCII "k", and only ASCII letters are lowercased, so it is not the blocked name "kick.com".
+    @Test func onlyAsciiLettersAreLowercasedWhenNamesAreCompared() {
+        let lookalike = "1.2.3.4 \u{212A}ick.com\n"
+        #expect(HostsFileEditor.render(original: defaultHosts + lookalike, blockedHosts: ["kick.com"]) == defaultHosts + lookalike + "\n" + section(["kick.com"]))
+        #expect(HostsFileEditor.render(original: defaultHosts + "1.2.3.4 KICK.com\n", blockedHosts: ["kick.com"]) == withSection(defaultHosts, ["kick.com"]))
+    }
+
+    // MARK: line breaks
+
+    // "\n, \r\n and a lone \r all count as line breaks on input. Output always uses \n."
+    @Test func aLoneCarriageReturnIsALineBreakOnInputAndTheOutputUsesLineFeeds() {
+        let original = "127.0.0.1\tlocalhost\r1.2.3.4 reddit.com other.com\r10.0.0.1 a\r"
+        let result = HostsFileEditor.render(original: original, blockedHosts: ["reddit.com"])
+        #expect(result == "127.0.0.1\tlocalhost\n1.2.3.4 other.com\n10.0.0.1 a\n" + "\n" + section(["reddit.com"]))
+        #expect(!result.unicodeScalars.contains("\r"))
+        #expect(HostsFileEditor.render(original: result, blockedHosts: ["reddit.com"]) == result)
+    }
+
+    @Test func aSectionWhoseLinesAreSeparatedByLoneCarriageReturnsIsRecognizedAndRemoved() {
+        let original = "x\r" + begin + "\r0.0.0.0 reddit.com\r" + end + "\ry\r"
+        #expect(HostsFileEditor.render(original: original, blockedHosts: []) == "x\ny\n")
+    }
+
+    // A "\r" followed by a "\n" is one break ("\r\n"), but "\n\r" and "\r\r" are two, so those keep a blank line between the user's lines.
+    @Test func carriageReturnAndLineFeedPairsCountAsOneBreakInThatOrderOnly() {
+        #expect(HostsFileEditor.render(original: "a\r\nb\n", blockedHosts: []) == "a\nb\n")
+        #expect(HostsFileEditor.render(original: "a\n\rb\n", blockedHosts: []) == "a\n\nb\n")
+        #expect(HostsFileEditor.render(original: "a\r\rb\n", blockedHosts: []) == "a\n\nb\n")
     }
 }

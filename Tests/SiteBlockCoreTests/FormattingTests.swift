@@ -117,9 +117,26 @@ import SiteBlockCore
         #expect(Formatting.parseDuration("\(count)d") == count * 86_400)
     }
 
-    // Spec gaps: the design does not say whether these combination edge cases parse.
-    @Test(.disabled("spec gap: 02-core-components.md § Formatting does not say whether a trailing unit-less number ('1h30'), uppercase units ('15M'), surrounding spaces (' 15m '), or repeated and out-of-order units ('1m1m', '30m1h') are accepted"))
-    func parseDurationHandlesUnspecifiedCombinationForms() {
-        #expect(Formatting.parseDuration("1h30") == nil)
+    // These forms used to be spec gaps (a disabled test). 02-core-components.md § Formatting now says: "Surrounding whitespace is trimmed
+    // and units are case-insensitive (15M works). Units may appear in any order, but each at most once."
+    @Test(arguments: [
+        (" 15m ", 900), ("15M", 900), ("\t15m\n", 900), ("  90  ", 90), ("90S", 90), ("1D", 86_400), ("2H", 7200), (" 1H30M ", 5400),
+        ("30m1h", 5400), ("1s1d", 86_401), ("2m1h", 3720), ("4s3m2h1d", 93_784), ("1M1H", 3660),
+    ])
+    func parseDurationTrimsSurroundingWhitespaceIgnoresCaseAndAcceptsAnyOrderOfUnits(text: String, expected: Int) {
+        #expect(Formatting.parseDuration(text) == expected, "\(text.debugDescription)")
+    }
+
+    // "Units may appear in any order, but each at most once. A number without a unit after a unit (1h30) ... return nil."
+    @Test(arguments: ["1h30", "1h30m5", "5s5", "1m1m", "1h1h", "30m30m", "1H1h", "1m2s1m", "1d1d", "1s1s", "10m5m", "1h30m1"])
+    func parseDurationRejectsARepeatedUnitAndATrailingNumberWithoutAUnit(text: String) {
+        #expect(Formatting.parseDuration(text) == nil, "\(text.debugDescription) should not parse")
+    }
+
+    // The padding rule from 02-core-components.md § Formatting: "clock pads every unit after the first to two digits and leaves the first
+    // unpadded: 5:03, 29:41, 1:05:09, 2d 03:04:05." This used to be a spec gap (only the layout was checked).
+    @Test(arguments: [(0, "0:00"), (3, "0:03"), (9, "0:09"), (60, "1:00"), (65, "1:05"), (303, "5:03"), (599, "9:59"), (600, "10:00"), (1781, "29:41"), (3909, "1:05:09"), (3661, "1:01:01"), (183_845, "2d 03:04:05"), (90_061, "1d 01:01:01")])
+    func clockPadsEveryUnitAfterTheFirstToTwoDigitsAndLeavesTheFirstUnpadded(seconds: Int, expected: String) {
+        #expect(Formatting.clock(seconds) == expected)
     }
 }

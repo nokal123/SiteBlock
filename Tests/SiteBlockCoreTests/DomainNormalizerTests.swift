@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import SiteBlockCore
 
-// Expected values come from Design Plans/02-core-components.md § DomainNormalizer (steps 1-8) and
+// Expected values come from Design Plans/02-core-components.md § DomainNormalizer (steps 1-9 and "Parsing details") and
 // 05-testing-and-operations.md § Unit Tests. Where the design is silent the test only asserts a safety
 // property (the call throws, or the output is a valid host name), never a value read from the code.
 
@@ -223,13 +223,12 @@ private struct SeededGenerator: RandomNumberGenerator {
 
     // MARK: rejected, where the design does not fix which code applies
 
-    // "localhost" is both a single label (needsDot, step 8 second bullet) and a reserved name (last bullet). The design does
-    // not say which wins, so the test only requires that it is rejected with one of the two.
-    @Test func normalizeRejectsBareLocalhost() {
-        let error = rejection("localhost")
-        #expect(error == .needsDot || error == .reserved)
-        #expect(rejection("LOCALHOST") == .needsDot || rejection("LOCALHOST") == .reserved)
-        #expect(rejection("http://localhost:3000/app") == .needsDot || rejection("http://localhost:3000/app") == .reserved)
+    // Design change: 02-core-components.md § DomainNormalizer, Parsing details, now says "Bare localhost throws .reserved". "localhost"
+    // is both a single label (needsDot) and a reserved name, and the design used to leave open which error wins, so this test used to
+    // accept either one. The design now names .reserved, so accepting .needsDot would let a wrong error pass.
+    @Test(arguments: ["localhost", "LOCALHOST", "Localhost", "localhost.", "http://localhost:3000/app", "www.localhost", "  localhost  "])
+    func normalizeRejectsBareLocalhostAsReservedExactly(input: String) {
+        #expect(rejection(input) == .reserved)
     }
 
     // The design lists no code for an empty label, so the test only requires a rejection.
@@ -244,11 +243,58 @@ private struct SeededGenerator: RandomNumberGenerator {
         #expect(rejection(input) != nil)
     }
 
-    // The design says "take everything after ://" without saying whether a "://" inside a query string counts. The
-    // behavior matters: "reddit.com/?next=https://other.com" could block other.com instead of reddit.com.
-    @Test(.disabled("spec gap: a '://' inside the query string of an otherwise bare name is not defined in 02-core-components.md § DomainNormalizer step 2"))
-    func normalizeHandlesSchemeSeparatorInsideQuery() throws {
-        #expect(try DomainNormalizer.normalize("reddit.com/?next=https://other.com") == "reddit.com")
+    // 02-core-components.md § DomainNormalizer, Parsing details: "`://` counts as a scheme separator only when it appears before any
+    // `/`, `?` or `#`. So `reddit.com/?next=https://other.com` normalizes to `reddit.com`." This used to be a spec gap (the test was
+    // disabled); the behavior matters, because reading the second "://" as the scheme would block other.com instead of reddit.com.
+    @Test(arguments: [
+        ("reddit.com/?next=https://other.com", "reddit.com"),
+        ("reddit.com?next=https://other.com", "reddit.com"),
+        ("reddit.com#https://other.com", "reddit.com"),
+        ("reddit.com/a://b", "reddit.com"),
+        ("https://reddit.com/?next=https://other.com", "reddit.com"),
+        ("reddit.com:8080/?u=ftp://other.org", "reddit.com"),
+        ("www.reddit.com/redirect?to=http://evil.example/path", "reddit.com"),
+    ])
+    func normalizeHandlesSchemeSeparatorInsideQuery(input: String, expected: String) throws {
+        #expect(try DomainNormalizer.normalize(input) == expected)
+    }
+
+    // An "@" that comes after the cut at "/", "?" or "#" belongs to the path, query or fragment, not to user info (step 2 runs before step 3).
+    @Test(arguments: [
+        ("https://www.youtube.com/@MrBeast", "youtube.com"),
+        ("tiktok.com/@user/video/1", "tiktok.com"),
+        ("reddit.com?e=a@b.com", "reddit.com"),
+        ("reddit.com#@x", "reddit.com"),
+        ("https://www.tiktok.com/@user?lang=en", "tiktok.com"),
+        ("youtube.com/watch?v=x#t=1@2", "youtube.com"),
+        ("reddit.com/a@b/c@d", "reddit.com"),
+        ("https://user:pw@reddit.com/@x", "reddit.com"),
+        ("user@reddit.com/@x?e=a@b.com#@y", "reddit.com"),
+        ("@reddit.com", "reddit.com"),
+    ])
+    func normalizeIgnoresAnAtSignInThePathQueryOrFragment(input: String, expected: String) throws {
+        #expect(try DomainNormalizer.normalize(input) == expected)
+    }
+
+    // 02-core-components.md § DomainNormalizer, Parsing details: "any whitespace, control or invisible character (including zero-width
+    // characters such as U+200B) throw .invalidCharacters". The code, not just "it throws", is the design's promise.
+    @Test(arguments: ["red\u{200B}dit.com", "red\u{200D}dit.com", "red\u{2060}dit.com", "red\u{FEFF}dit.com", "red\u{00AD}dit.com", "red\u{200E}dit.com", "red\u{0}dit.com", "red\u{7F}dit.com", "red\u{A0}dit.com", "red\u{2028}dit.com", "red dit.com", "red\tdit.com", "red\u{3000}dit.com"])
+    func normalizeRejectsWhitespaceControlAndInvisibleCharactersAsInvalidCharacters(input: String) {
+        #expect(rejection(input) == .invalidCharacters, "\(input.debugDescription)")
+    }
+
+    // Step 1 trims "surrounding whitespace and newlines", and Foundation counts U+200B as whitespace, so a zero-width space at the very
+    // edge of the input is trimmed away and "reddit.com" comes out. Whether an edge zero-width space should be trimmed or rejected is
+    // not stated: the "invisible character" rule is written for characters inside the name.
+    @Test(.disabled("spec gap: 02-core-components.md § DomainNormalizer does not say whether a zero-width space at the start or end of the input is trimmed by step 1 or rejected as an invisible character"))
+    func normalizeOfAZeroWidthSpaceAtTheEdgeOfTheInput() {
+        #expect(rejection("reddit.com\u{200B}") == .invalidCharacters)
+    }
+
+    // A port that is not all digits is invalid characters, not a name with a port.
+    @Test(arguments: ["reddit.com:abc", "reddit.com:80a", "reddit.com:a80", "reddit.com:-1", "reddit.com: 80", "reddit.com:8 0", "https://reddit.com:abc/path", "reddit.com:0x50", "reddit.com:\u{661}\u{662}"])
+    func normalizeRejectsAPortThatIsNotAllDigitsAsInvalidCharacters(input: String) {
+        #expect(rejection(input) == .invalidCharacters, "\(input.debugDescription)")
     }
 
     // MARK: error descriptions
@@ -288,7 +334,9 @@ private struct SeededGenerator: RandomNumberGenerator {
         let schemes = ["", "http://", "https://", "HTTPS://", "ftp://"]
         let userInfos = ["", "user@", "user:pw@", "a:b@", "evil.com@"]
         let ports = ["", ":80", ":8443", ":65535"]
-        let suffixes = ["", "/", "/a/b", "?q=1", "#f", "/p?q=1#f", "?next=/x"]
+        // The "@" suffixes (a handle in a path, an address in a query, a mention in a fragment) must never be taken for user info,
+        // because the cut at "/", "?" or "#" happens before the "@" is looked for (02-core-components.md § DomainNormalizer, Parsing details).
+        let suffixes = ["", "/", "/a/b", "?q=1", "#f", "/p?q=1#f", "?next=/x", "/@user", "/@u/video/1", "?e=a@b.com", "#@x", "/p?e=a@b#@c", "/@a@b"]
         let wwws = ["", "www.", "WWW.", "Www."]
         let dots = ["", "."]
         let pads = ["", " ", "\n", "\t "]
@@ -329,5 +377,128 @@ private struct SeededGenerator: RandomNumberGenerator {
             if !output.hasPrefix("www.") { #expect((try? DomainNormalizer.normalize(output)) == output, "not stable: \(output)") }
         }
         #expect(accepted > 0)
+    }
+}
+
+// 02-core-components.md § DomainNormalizer step 6: sizes are checked on the raw Unicode scalars BEFORE any Punycode encoding. More than
+// 63 scalars in one label throws .labelTooLong, and then more than 253 in the whole name throws .tooLong. A name that starts with
+// "www." may have 257, because step 8 strips those four characters. Checking first matters because Punycode takes time that grows with
+// the square of the label length, and the daemon runs it on the queue every command waits on.
+@Suite struct DomainNormalizerSizeCheckTests {
+    // A label of `count` distinct CJK characters starting at the given code point. Distinct characters are the worst case for Punycode,
+    // because every one of them is a separate insertion.
+    private func cjkLabel(count: Int, from start: UInt32 = 0x4E00) -> String {
+        var scalars = String.UnicodeScalarView()
+        for offset in 0..<count { scalars.append(Unicode.Scalar(start + UInt32(offset))!) }
+        return String(scalars)
+    }
+
+    // The fastest of a few runs, so a busy machine cannot fail the test while a quadratic encoder (seconds per run) still does.
+    private func fastestRun(of input: String, runs: Int = 3) -> (error: DomainError?, time: Duration) {
+        var best = Duration.seconds(1_000_000)
+        var error: DomainError?
+        for _ in 0..<runs {
+            let started = ContinuousClock.now
+            error = rejection(input)
+            best = min(best, started.duration(to: .now))
+        }
+        return (error, best)
+    }
+
+    @Test func aTwentyOneThousandCharacterDistinctLabelIsRejectedAsLabelTooLongInUnderFiftyMilliseconds() {
+        let label = cjkLabel(count: 21_000)
+        #expect(label.unicodeScalars.count == 21_000 && Set(label.unicodeScalars).count == 21_000)
+        let result = fastestRun(of: label + ".com")
+        #expect(result.error == .labelTooLong)
+        #expect(result.time < .milliseconds(50), "took \(result.time)")
+    }
+
+    // Longer labels, and several long labels in one name, are just as quick: the check does not depend on how the input is split.
+    @Test func aHugeNameMadeOfSeveralLongDistinctLabelsIsRejectedQuickly() {
+        let input = [cjkLabel(count: 5_000), cjkLabel(count: 5_000, from: 0x6000), cjkLabel(count: 5_000, from: 0x7000), "com"].joined(separator: ".")
+        let result = fastestRun(of: input)
+        #expect(result.error == .labelTooLong)
+        #expect(result.time < .milliseconds(50), "took \(result.time)")
+    }
+
+    // Many labels that are each short enough (60 scalars), so no single label is slow to encode, but the whole name is dozens of
+    // times over 253. The whole-name check runs before any encoding, so the answer is tooLong at once; without it every one of the
+    // 300 labels would be Punycode-encoded first (about 0.17 s, against about 0.002 s with the check).
+    @Test func aHugeNameMadeOfHundredsOfShortDistinctLabelsIsRejectedAsTooLongQuickly() {
+        let labels = (0..<300).map { cjkLabel(count: 60, from: 0x4E00 + UInt32($0)) }
+        let name = labels.joined(separator: ".") + ".com"
+        #expect(name.unicodeScalars.count > 18_000)
+        let result = fastestRun(of: name)
+        #expect(result.error == .tooLong)
+        #expect(result.time < .milliseconds(50), "took \(result.time)")
+    }
+
+    @Test func aHugeLabelInsideAFullUrlIsRejectedQuickly() {
+        let result = fastestRun(of: "https://user:pw@" + cjkLabel(count: 21_000) + ".com:8080/path?q=1#frag")
+        #expect(result.error == .labelTooLong)
+        #expect(result.time < .milliseconds(50), "took \(result.time)")
+    }
+
+    // The label limit is checked first, so one 64-scalar label reports labelTooLong even though the same name is also short enough overall.
+    @Test func aSixtyFourCharacterDistinctLabelIsLabelTooLong() {
+        #expect(rejection(cjkLabel(count: 64) + ".com") == .labelTooLong)
+    }
+
+    // 63 + 1 + 63 + 1 + 63 + 1 + 62 = 254 scalars with no label over 63, so the label check passes and the whole-name check fails. Before
+    // any encoding the name is judged by its scalars, so the answer is tooLong (an encoder-first design would say labelTooLong here,
+    // because each encoded label is longer than 63 characters).
+    @Test func aTwoHundredFiftyFourCharacterNonAsciiNameIsTooLong() {
+        let labels = [cjkLabel(count: 63), cjkLabel(count: 63, from: 0x5000), cjkLabel(count: 63, from: 0x6000), cjkLabel(count: 62, from: 0x7000)]
+        let name = labels.joined(separator: ".")
+        #expect(name.unicodeScalars.count == 254)
+        let result = fastestRun(of: name)
+        #expect(result.error == .tooLong)
+        #expect(result.time < .milliseconds(50), "took \(result.time)")
+    }
+
+    @Test func aTwoHundredFiftyFourCharacterAsciiNameIsTooLong() {
+        #expect(name254.count == 254)
+        #expect(rejection(name254) == .tooLong)
+        #expect(rejection(name254 + ".") == .tooLong, "the trailing dot is removed first, so this is the same 254 characters")
+    }
+
+    // 4 + 63 + 1 + 63 + 1 + 63 + 1 + 58 = 254 scalars, but it starts with "www.", which step 8 strips, so it is allowed up to 257 and the
+    // 250 characters left are a legal name.
+    @Test func aNameThatStartsWithWwwMayHaveFourMoreCharactersBecauseTheyAreStripped() throws {
+        let rest = "\(label63).\(label63).\(label63).\(String(repeating: "d", count: 58))"
+        let typed = "www." + rest
+        #expect(typed.count == 254 && rest.count == 250)
+        #expect(try DomainNormalizer.normalize(typed) == rest)
+        #expect(try DomainNormalizer.normalize(typed.uppercased()) == rest, "the case is folded before the size is judged")
+    }
+
+    // The full allowance: "www." plus a legal 253-character name is 257 characters and is accepted; one more character is not.
+    @Test func wwwPlusALegalTwoHundredFiftyThreeCharacterNameIsAccepted() throws {
+        #expect(name253.count == 253)
+        let typed = "www." + name253
+        #expect(typed.count == 257)
+        #expect(try DomainNormalizer.normalize(typed) == name253)
+        #expect(try DomainNormalizer.normalize("WWW." + name253 + ".") == name253)
+        #expect(rejection("www." + name254) == .tooLong)
+    }
+
+    // The allowance is only for a leading "www.". A name that merely starts with "www" has the plain limit of 253.
+    @Test func aNameThatOnlyLooksLikeItStartsWithWwwGetsNoExtraCharacters() {
+        let typed = "wwwa.\(label63).\(label63).\(label63).\(String(repeating: "d", count: 57))"
+        #expect(typed.count == 254)
+        #expect(rejection(typed) == .tooLong)
+        // And one character fewer is fine.
+        let fits = "wwwa.\(label63).\(label63).\(label63).\(String(repeating: "d", count: 56))"
+        #expect(fits.count == 253)
+        #expect((try? DomainNormalizer.normalize(fits)) == fits)
+    }
+
+    // A label of 200,000 copies of one character gets the same error. Reading 200,000 scalars takes a few tens of milliseconds even
+    // when nothing is wrong, and a repeated character is not the worst case for Punycode, so only a loose time bound is checked here
+    // (the tight bounds above use distinct characters, where encoding first would take minutes).
+    @Test func aHugeRepeatedCharacterLabelIsLabelTooLong() {
+        let result = fastestRun(of: String(repeating: "\u{4E2D}", count: 200_000) + ".com")
+        #expect(result.error == .labelTooLong)
+        #expect(result.time < .seconds(2), "took \(result.time)")
     }
 }

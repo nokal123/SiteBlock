@@ -22,10 +22,14 @@ private func decodeRequest(_ text: String) throws -> Request {
         #expect(Command.allCases.count == 12)
     }
 
-    @Test func theErrorCodesOnTheWireAreExactlyTheDesignsThirteen() {
-        let expected: Set<String> = ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "internal"]
+    // Design change: 01-overview-and-data.md § Response now lists 15 error codes, not 13. The two additions are `notAllowed` (setup
+    // refused for a caller who is neither root nor the console user) and `tooManySites` (an add beyond the site cap). The earlier
+    // version of this test pinned the 13-code list, so against the current design it would have reported the two new, correct
+    // codes as a defect. The expected set below is typed from the design's current list, not read from the enum.
+    @Test func theErrorCodesOnTheWireAreExactlyTheDesignsFifteen() {
+        let expected: Set<String> = ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "internal"]
         #expect(Set(ErrorCode.allCases.map(\.rawValue)) == expected)
-        #expect(ErrorCode.allCases.count == 13)
+        #expect(ErrorCode.allCases.count == 15)
     }
 
     @Test func aRequestEncodesToOneLineOfSortedKeyJSONAndSkipsUnusedFields() throws {
@@ -114,5 +118,57 @@ private func decodeRequest(_ text: String) throws -> Request {
             #expect(!data.contains(0x0A), "a response must be a single line")
             #expect(try JSONCoding.decoder.decode(Response.self, from: data) == response)
         }
+    }
+
+    // MARK: the success response, byte for byte
+
+    // The smallest successful reply. 01-overview-and-data.md § Response: `ok` and `status` are the only fields a bare success must
+    // carry; `error`, `errorCode` and `message` are optional. The wire format is the default encoder with sorted keys, so a nil
+    // optional is left out entirely (never written as null) and every object lists its keys alphabetically.
+    @Test func aMinimalSuccessResponseEncodesToExactlyTheDesignsJSON() throws {
+        let idle = StatusSnapshot(version: "1.0.0", passwordSet: false, blocked: [], delaySeconds: 1800, pendingDelay: nil, uninstallSecondsRemaining: nil, recoverySecondsRemaining: nil, lockoutSecondsRemaining: nil, hostsFileHealthy: true)
+        let statusJSON = #"{"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
+        #expect(try json(Response.success(status: idle)) == #"{"ok":true,"status":"# + statusJSON + "}")
+        #expect(try json(Response.success(status: idle, message: "Password set.")) == #"{"message":"Password set.","ok":true,"status":"# + statusJSON + "}")
+    }
+
+    // A success with every optional field filled in, written out by hand from the design's field names in sorted order.
+    @Test func aFullSuccessResponseEncodesToExactlyTheDesignsJSON() throws {
+        let response = Response.success(status: Self.sampleStatus(), message: "reddit.com will unblock in 30 minutes.")
+        let expected = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
+        #expect(try json(response) == expected)
+    }
+
+    // The same JSON typed by hand must decode into the matching values, so a client written from the design alone can read replies.
+    @Test func aSuccessResponseWrittenByHandFromTheDesignDecodes() throws {
+        let text = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
+        let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))
+        #expect(decoded == Response.success(status: Self.sampleStatus(), message: "reddit.com will unblock in 30 minutes."))
+        #expect(decoded.ok && decoded.error == nil && decoded.errorCode == nil)
+    }
+
+    // Keys in any order, extra whitespace, and explicit nulls for the absent optional fields are all ordinary JSON a client may send or a log may hold.
+    @Test func aResponseWithReorderedKeysWhitespaceAndExplicitNullsDecodes() throws {
+        let text = #" { "status" : { "version":"1.0.0", "passwordSet":false, "blocked":[ ], "delaySeconds":1800, "hostsFileHealthy":true, "pendingDelay":null, "lockoutSecondsRemaining":null }, "message":null, "error":null, "errorCode":null, "ok":true } "#
+        let idle = StatusSnapshot(version: "1.0.0", passwordSet: false, blocked: [], delaySeconds: 1800, pendingDelay: nil, uninstallSecondsRemaining: nil, recoverySecondsRemaining: nil, lockoutSecondsRemaining: nil, hostsFileHealthy: true)
+        #expect(try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8)) == Response.success(status: idle))
+    }
+
+    // A failure written by hand, using the two codes added in the current design.
+    @Test(arguments: [("tooManySites", ErrorCode.tooManySites), ("notAllowed", ErrorCode.notAllowed), ("wrongPassword", ErrorCode.wrongPassword)])
+    func aFailureResponseWrittenByHandDecodesToTheMatchingCode(wire: String, code: ErrorCode) throws {
+        let text = #"{"error":"A sentence.","errorCode":"\#(wire)","ok":false}"#
+        let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))
+        #expect(decoded == Response.failure(code, "A sentence."))
+        #expect(try json(decoded) == text)
+    }
+
+    // Every one of the design's 15 code strings, typed out here, must decode and re-encode to the same string.
+    @Test(arguments: ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "internal"])
+    func everyErrorCodeStringFromTheDesignDecodesAndEncodesBackToItself(wire: String) throws {
+        let text = #"{"errorCode":"\#(wire)","ok":false}"#
+        let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))
+        #expect(decoded.errorCode?.rawValue == wire)
+        #expect(try json(decoded) == text)
     }
 }
