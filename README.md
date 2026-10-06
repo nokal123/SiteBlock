@@ -1,0 +1,80 @@
+# SiteBlock
+
+SiteBlock blocks websites on your Mac for every browser at once, including Safari and Chrome, with no browser extension. It keeps a site blocked until you unblock it. Unblocking needs the SiteBlock password, and even then the site stays blocked for a waiting period (30 minutes by default) before it opens.
+
+## How it works
+
+Before any app on a Mac connects to a website, it looks up the site's numeric address, and macOS checks the file `/etc/hosts` before asking the internet. SiteBlock writes lines such as `0.0.0.0 youtube.com` into that file. `0.0.0.0` is an address that leads nowhere, so the browser shows a "can't connect" page. Because this happens below the browser, it applies to Safari, Chrome, Firefox and every other app.
+
+Three programs make this work:
+
+- `siteblockd` is a background service that runs as root (the administrator account allowed to change system files). It owns the block list and rewrites its part of `/etc/hosts` within two seconds if anyone edits it.
+- A second copy of `siteblockd` runs as a watchdog. The service and the watchdog each restart the other if it is stopped.
+- `SiteBlock.app` (the shield icon in the menu bar) and the `siteblock` Terminal command are how you control it.
+
+A site you block also blocks its common variants, because the hosts file cannot use wildcards. Blocking `youtube.com` also blocks `www.youtube.com`, `m.youtube.com`, `youtu.be`, `music.youtube.com`, YouTube Kids, and the servers that hold YouTube's thumbnails and page files.
+
+## Install
+
+Double-click **`Install SiteBlock.command`** in this folder. Terminal opens, builds SiteBlock, asks for your Mac password to install the background service, and then runs checks that block youtube.com and confirm it is blocked in Safari and Chrome.
+
+The same steps from Terminal:
+
+```bash
+cd ~/Projects/SiteBlock && scripts/build.sh && sudo scripts/install.sh && scripts/verify-install.sh
+```
+
+After installing, click the shield icon in the menu bar and set your SiteBlock password. This password is separate from your Mac password, and it cannot be shown again, so store it somewhere you trust (or give it to someone else to hold).
+
+## Everyday use
+
+**Block a site:** open the menu bar panel, type the site (for example `youtube.com`, or paste a full link) and press Block. Blocking never needs the password and takes effect at once. A tab that was already open on the site may keep working for a minute or two until the browser closes its existing connection; reloading after that shows the block.
+
+**Unblock a site:** press "Unblock…" next to it and enter the password. The site stays blocked for the waiting period and then opens. While it waits, the row says "Still blocked" with a countdown, and "Keep blocked" cancels the unblock without a password.
+
+**Change the waiting period:** open Settings. A longer wait applies at once. A shorter wait only takes effect after the current wait has passed, so it can't be shortened on impulse.
+
+The Terminal command does all of the same things:
+
+```
+siteblock status
+siteblock add youtube.com
+siteblock unblock youtube.com
+siteblock cancel youtube.com
+siteblock delay 2h
+siteblock passwd
+```
+
+## Forgotten password
+
+Run this in Terminal and enter your Mac password:
+
+```bash
+sudo siteblock recover
+```
+
+After 48 hours the SiteBlock password is cleared and you can set a new one. Your blocked sites stay blocked the whole time. `siteblock recover --cancel` stops the reset.
+
+## Uninstall
+
+Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait for the waiting period before removing SiteBlock, its background service, the menu bar app and its lines in `/etc/hosts`. `siteblock uninstall --cancel` stops a pending uninstall.
+
+## What SiteBlock can and cannot stop
+
+SiteBlock is built to stop the person who owns the Mac from undoing a block on impulse. It undoes hand edits to `/etc/hosts`, including lines elsewhere in the file that point a blocked site at a real address. It restarts its service if the service is stopped, restores its files if they are deleted, and rewrites its saved state if that is deleted or edited. Countdowns use a clock that cannot be changed, so moving the Mac's date forward does not skip a wait. Five wrong passwords lock password checks for 15 minutes.
+
+It cannot stop a determined administrator with time and knowledge, because the root account can always remove any program on its own Mac. It also does not stop a VPN (a service that sends all traffic through another computer) or a proxy that looks up site names remotely.
+
+For the strongest protection, use a standard (non-administrator) macOS account day to day and let someone else keep the administrator password. Then none of the root-level workarounds are available.
+
+## Logs
+
+The service writes to `/Library/Logs/SiteBlock/siteblockd.log` and the watchdog to `/Library/Logs/SiteBlock/watchdog.log`. A line saying "hosts file repaired" means something edited `/etc/hosts` and SiteBlock put its lines back.
+
+## For developers
+
+The design documents are in `Design Plans/`, starting with `00-INDEX.md`.
+
+Run the tests with `scripts/test.sh`. It adds the compiler flags that Swift Testing needs on a Mac that has only the Command Line Tools and not Xcode. The integration tests start the real `siteblockd` in sandbox mode, which uses a temporary folder in place of `/etc/hosts` and the system folders, so the tests need no administrator password.
+
+`scripts/dev-force-remove.sh` removes an installed copy at once, without the password or the wait. It exists for recovering a broken test install, and it is never installed on the system.
