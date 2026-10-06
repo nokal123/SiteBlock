@@ -59,6 +59,7 @@ Tests:
 - Deleting or overwriting `state.json` while the daemon runs is repaired within about 1 second with the blocks kept. After `SIGKILL`, a missing `state.json` is restored from `state.backup.json`.
 - A hand-set `uninstalling: true` without a finished uninstall countdown is ignored on restart; with a finished countdown the uninstall runs.
 - `add youtube.com` puts the `0.0.0.0` and `::` lines for every expanded YouTube name into the hosts file before the response returns.
+- While any site is blocked the section also holds `mask.icloud.com` and `mask-h2.icloud.com` exactly once each; they leave with the last unblocked site; a user line naming them is stripped while a site is blocked and left alone when nothing is blocked.
 - Hostile domain strings sent as raw JSON (newlines, `#`, spaces, control characters) never add a line to the hosts file.
 - A lockout survives a daemon restart.
 - Passwords and domains never appear in the log; a flood of rejected requests produces summary lines, not one line per request.

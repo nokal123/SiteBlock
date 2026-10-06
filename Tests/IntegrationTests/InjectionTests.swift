@@ -134,7 +134,7 @@ struct InjectionTests {
                 #expect(site.domain != "bank.com")
             }
             // Everything in the hosts file belongs to a domain the daemon reports as blocked.
-            #expect(hostNames == Set(ExpectedHosts.expand(all: status.blocked.map(\.domain))))
+            #expect(hostNames == Set(ExpectedHosts.hostsToWrite(blocking: ExpectedHosts.expand(all: status.blocked.map(\.domain)))))
         }
     }
 

@@ -1,0 +1,159 @@
+import Foundation
+import SiteBlockCore
+import Testing
+
+// The two iCloud Private Relay names the daemon adds to its hosts section while anything is blocked.
+// Design: 01-overview-and-data.md § How Blocking Works (the Private Relay paragraph: whenever at least one site is blocked, `mask.icloud.com` and `mask-h2.icloud.com` are written into the section); 02-core-components.md § Engine (`privateRelayHosts`, `hostsToWrite`: empty when nothing is blocked); 03-daemon-cli-app.md § HostsEnforcer (the runtime writes `hostsToWrite`).
+// The names are spelled out literally here, not read from the code.
+@Suite("iCloud Private Relay names")
+struct PrivateRelayTests {
+    static let relayNames = ["mask.icloud.com", "mask-h2.icloud.com"]
+    static let password = SandboxDaemon.password
+
+    // With one site blocked, both relay names have an IPv4 line and an IPv6 line, each exactly once, and the file is exactly the site's hosts plus the two names.
+    @Test func blockingASiteAlsoBlocksBothPrivateRelayNamesInBothAddressFamilies() throws {
+        try withDaemon(tick: BlockingTests.neverTick) { daemon in
+            try daemon.setUp()
+            let beforeAnyBlock = daemon.hosts()
+            for name in Self.relayNames { #expect(!beforeAnyBlock.lines.contains("0.0.0.0 \(name)"), "\(name) must not appear while nothing is blocked") }
+            try daemon.send(.add, domain: "reddit.com").requireOK()
+            // Read at once: only the command path (the tick never fires) can have written it.
+            let hosts = daemon.hosts()
+            for name in Self.relayNames {
+                #expect(hosts.count(of: "0.0.0.0 \(name)") == 1, "0.0.0.0 \(name)")
+                #expect(hosts.count(of: ":: \(name)") == 1, ":: \(name)")
+            }
+            #expect(hosts.text == ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com")))
+            let status = try daemon.status()
+            #expect(status.blocked.first?.hosts == ExpectedHosts.expand("reddit.com"), "the relay names belong to the section, not to any one site's host list")
+        }
+    }
+
+    // A second blocked site does not write the relay names a second time: the file holds exactly one IPv4 line and one IPv6 line for each name.
+    @Test func twoBlockedSitesStillShareOnePairOfRelayLines() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com", "youtube.com")
+            let hosts = daemon.hosts()
+            for name in Self.relayNames {
+                #expect(hosts.count(of: "0.0.0.0 \(name)") == 1)
+                #expect(hosts.count(of: ":: \(name)") == 1)
+            }
+            #expect(hosts.text == ExpectedHosts.text(blocking: ExpectedHosts.expand(all: ["reddit.com", "youtube.com"])))
+        }
+    }
+
+    // The relay names stay while an unblock is still counting down (the site is still blocked), and they leave together with the section once the LAST site is gone after the 2 s delay.
+    @Test func relayNamesStayWhileAnUnblockRunsAndLeaveWithTheSectionWhenTheLastSiteIsUnblocked() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            try daemon.requireTwoSecondDelay()
+            try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
+            let watch = Stopwatch()
+            pause(1.0)
+            let midway = daemon.hosts()
+            for name in Self.relayNames { #expect(midway.blocks(name), "\(name) must stay while the countdown runs") }
+
+            let removed = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
+            #expect(removed != nil, "the section did not go away; file:\n\(daemon.hostsText())")
+            #expect(watch.elapsed >= 1.8)
+            let after = daemon.hosts()
+            for name in Self.relayNames { #expect(!after.text.contains(name), "\(name) must go with the section") }
+            #expect(after.beginCount == 0 && after.endCount == 0)
+        }
+    }
+
+    // With two sites blocked, unblocking one keeps the section and the relay names, because a site is still blocked.
+    @Test func unblockingOneOfTwoSitesKeepsTheRelayNames() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com", "youtube.com")
+            try daemon.requireTwoSecondDelay()
+            try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
+            let afterwards = ExpectedHosts.text(blocking: ExpectedHosts.expand("youtube.com"))
+            let took = waitUntil(timeout: 4.0, interval: 0.02) { daemon.hostsText() == afterwards }
+            #expect(took != nil, "file now:\n\(daemon.hostsText())")
+            let hosts = daemon.hosts()
+            for name in Self.relayNames { #expect(hosts.blocks(name)) }
+        }
+    }
+
+    // 02 § HostsFileEditor render step 3 applied to the relay names: while a site is blocked, a user line that points one of them at a real address is a bypass line and is removed (macOS would otherwise use the first match).
+    @Test(arguments: [
+        "17.0.0.1 mask.icloud.com",
+        "17.0.0.1 mask-h2.icloud.com",
+        "17.0.0.1\tmask.icloud.com",
+        "17.0.0.1 MASK.ICLOUD.COM",
+        "17.0.0.1 mask.icloud.com.",
+        "17.0.0.1 mask.icloud.com mask-h2.icloud.com",
+        "17.0.0.1 mask.icloud.com # keep Private Relay on",
+    ])
+    func aBypassLineForARelayNameIsRemovedWhileASiteIsBlocked(bypass: String) throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let expected = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            try writeText(bypass + "\n" + expected, to: daemon.hostsPath)
+            let took = waitUntil(timeout: 1.0, interval: 0.01) { daemon.hostsText() == expected }
+            #expect(took != nil, "bypass line not removed within 1 s; file now:\n\(daemon.hostsText())")
+            #expect(daemon.logContains("hosts file repaired"))
+        }
+    }
+
+    // The same user line is left completely alone when nothing is blocked: with no section there are no relay names to protect, so the file is not rewritten and nothing is logged.
+    @Test(arguments: ["17.0.0.1 mask.icloud.com", "17.0.0.1 mask-h2.icloud.com", "17.0.0.1 mask.icloud.com mask-h2.icloud.com"])
+    func aUserLineForARelayNameIsLeftAloneWhenNothingIsBlocked(userLine: String) throws {
+        try withDaemon { daemon in
+            try daemon.setUp()
+            let edited = userLine + "\n" + StandardHosts.text
+            try writeText(edited, to: daemon.hostsPath)
+            pause(1.0)
+            #expect(daemon.hostsText() == edited, "the line must be left alone while nothing is blocked")
+            #expect(!daemon.logContains("hosts file repaired", within: 0.2))
+        }
+    }
+
+    // The line that survived while nothing was blocked is removed by the pass of the very next `add`, before the add response returns (tick set to never fire).
+    @Test func theLineThatSurvivedWhileNothingWasBlockedIsRemovedByTheNextAdd() throws {
+        try withDaemon(tick: BlockingTests.neverTick) { daemon in
+            try daemon.setUp()
+            let edited = "17.0.0.1 mask.icloud.com\n" + StandardHosts.text
+            try writeText(edited, to: daemon.hostsPath)
+            try daemon.send(.add, domain: "reddit.com").requireOK()
+            #expect(daemon.hostsText() == ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com")))
+        }
+    }
+
+    // Deleting only the relay lines from the section is repaired within 1 s, like any other hand edit of the section.
+    @Test func removingJustTheRelayLinesFromTheSectionIsRepairedWithinOneSecond() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let expected = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            var damaged = expected
+            for name in Self.relayNames {
+                damaged = damaged.replacingOccurrences(of: "0.0.0.0 \(name)\n", with: "").replacingOccurrences(of: ":: \(name)\n", with: "")
+            }
+            try #require(damaged != expected && !damaged.contains("icloud"))
+            try writeText(damaged, to: daemon.hostsPath)
+            let took = waitUntil(timeout: 1.0, interval: 0.01) { daemon.hostsText() == expected }
+            #expect(took != nil, "relay lines not restored within 1 s; file now:\n\(daemon.hostsText())")
+        }
+    }
+
+    // After a restart the relay names are written again at boot (before any client connects), because a block still exists; and a daemon that starts with every state file lost has nothing to block, so the section and the names are gone.
+    @Test func relayNamesComeBackAtBootAndGoWhenTheStateIsLost() throws {
+        try withDaemon(tick: BlockingTests.neverTick) { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let expected = daemon.hostsText()
+            daemon.terminate()
+            try writeText(StandardHosts.text, to: daemon.hostsPath)
+            try daemon.start(serve: false)
+            let back = waitUntil(timeout: 3.0, interval: 0.02) { daemon.hostsText() == expected }
+            #expect(back != nil, "boot pass did not restore the section with the relay names:\n\(daemon.hostsText())")
+            try daemon.waitUntilServing()
+
+            daemon.kill9()
+            try FileManager.default.removeItem(atPath: daemon.statePath)
+            try FileManager.default.removeItem(atPath: daemon.stateBackupPath)
+            try daemon.start()
+            #expect(daemon.hostsText() == StandardHosts.text, "no state means nothing blocked, so no section and no relay names")
+        }
+    }
+}

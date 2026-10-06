@@ -44,19 +44,27 @@ enum ExpectedHosts {
         Array(Set(domains.flatMap { expand($0) })).sorted()
     }
 
+    // The two names Apple documents as the signal that turns iCloud Private Relay off. 01-overview-and-data.md § How Blocking Works (the Private Relay paragraph) and 02-core-components.md § Engine (`privateRelayHosts`, `hostsToWrite`): whenever at least one site is blocked, the daemon also writes these two names into its hosts section. They are written out here from the design, not read from the code.
+    static let privateRelayHosts = ["mask-h2.icloud.com", "mask.icloud.com"]
+
+    // Everything the daemon writes into the section for a set of blocked hosts: the blocked hosts plus the two Private Relay names, sorted, without duplicates. With nothing blocked there is no section at all, so the result is empty.
+    static func hostsToWrite(blocking hosts: [String]) -> [String] {
+        hosts.isEmpty ? [] : Array(Set(hosts + privateRelayHosts)).sorted()
+    }
+
     // The two lines written for one host name.
     static func lines(for host: String) -> [String] {
         ["0.0.0.0 \(host)", ":: \(host)"]
     }
 
-    // The managed section for a set of hosts: BEGIN line, then for each host (sorted) the IPv4 line and the IPv6 line, then END line, ending with a newline.
+    // The managed section for the blocked hosts: BEGIN line, then for each host to write (the blocked hosts plus the Private Relay names, sorted) the IPv4 line and the IPv6 line, then END line, ending with a newline.
     static func section(for hosts: [String]) -> String {
         var text = beginMarker + "\n"
-        for host in Set(hosts).sorted() { text += lines(for: host).joined(separator: "\n") + "\n" }
+        for host in hostsToWrite(blocking: hosts) { text += lines(for: host).joined(separator: "\n") + "\n" }
         return text + endMarker + "\n"
     }
 
-    // The whole file: the user's own text (ending in one newline), one empty line, then the managed section. With nothing blocked it is just the user's text.
+    // The whole file: the user's own text (ending in one newline), one empty line, then the managed section. With nothing blocked it is just the user's text, because the section (and so the Private Relay names) is absent.
     static func text(original: String = StandardHosts.text, blocking hosts: [String]) -> String {
         hosts.isEmpty ? original : original + "\n" + section(for: hosts)
     }

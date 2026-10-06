@@ -95,7 +95,7 @@ struct BlockingTests {
 
     // One way of damaging the hosts file by hand.
     enum Tamper: CaseIterable, CustomTestStringConvertible {
-        case removeWholeSection, deleteFile, emptyFile, deleteOneLine, foreignLineInsideSection, changeAddress, duplicateSection, crlfLineEndings, truncateAtALineBoundary
+        case removeWholeSection, deleteFile, emptyFile, deleteOneLine, deleteRelayNameLines, foreignLineInsideSection, changeAddress, duplicateSection, crlfLineEndings, truncateAtALineBoundary
         var testDescription: String { String(describing: self) }
 
         // Damages the file; `expected` is the correct text before the damage.
@@ -105,6 +105,7 @@ struct BlockingTests {
             case .deleteFile: try FileManager.default.removeItem(atPath: path)
             case .emptyFile: try writeText("", to: path)
             case .deleteOneLine: try writeText(expected.replacingOccurrences(of: "0.0.0.0 i.redd.it\n", with: ""), to: path)
+            case .deleteRelayNameLines: try writeText(expected.replacingOccurrences(of: "0.0.0.0 mask.icloud.com\n:: mask.icloud.com\n", with: ""), to: path)
             case .foreignLineInsideSection: try writeText(expected.replacingOccurrences(of: ExpectedHosts.endMarker, with: "1.2.3.4 injected.example\n" + ExpectedHosts.endMarker), to: path)
             case .changeAddress: try writeText(expected.replacingOccurrences(of: "0.0.0.0 reddit.com", with: "127.0.0.1 reddit.com"), to: path)
             case .duplicateSection: try writeText(expected + "\n" + ExpectedHosts.section(for: ["reddit.com"]), to: path)
