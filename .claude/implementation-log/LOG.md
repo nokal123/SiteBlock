@@ -93,3 +93,38 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Gate pending.
 
 ---
+
+## 2026-10-07 — Chunk 6: Private Relay guard, system-name guard, launchctl enable
+
+**Implemented:**
+- `Sources/SiteBlockCore/Engine.swift`: `hostsToWrite` adds `mask.icloud.com` and `mask-h2.icloud.com` while any site is blocked. This is Apple's documented signal that turns iCloud Private Relay off, so Safari's lookups go through `/etc/hosts`.
+- `Sources/SiteBlockCore/HostsFileEditor.swift`: never writes `localhost`, `broadcasthost`, or names ending in `.local` or `.localhost`.
+- `Sources/siteblockd/LaunchdGuard.swift`: runs `launchctl enable` before re-bootstrapping a job.
+
+**User's summary:**
+> Pending. The user was away.
+
+**Gaps found:**
+- Not yet assessed.
+
+**Resolution:**
+- Gate pending.
+
+---
+
+## 2026-10-07 — Chunk 7: Countdown catch-up before commands; core extraction
+
+**Implemented:**
+- `Sources/siteblockd/DaemonRuntime.swift`: every command first advances all countdowns using the shared clock reading. Before this, a countdown started between two ticks could finish up to one tick (2 s) early.
+- `Sources/SiteBlockCore/ConnectionLimiter.swift` and `UninstallRule.swift` were moved out of the daemon so unit tests can reach them.
+
+**User's summary:**
+> Pending. The user was away.
+
+**Gaps found:**
+- Not yet assessed.
+
+**Resolution:**
+- Gate pending.
+
+---
