@@ -199,4 +199,34 @@ struct StateRepairTests {
             for line in HostsView(daemon.hostsText()).managedLines { #expect(InjectionTests.isCleanManagedLine(line), "unclean line \(line.debugDescription)") }
         }
     }
+
+    // 02 § HostsFileEditor "Input guard": "localhost, broadcasthost, or ends in .local or .localhost" are never written, because render step 3 would also delete the stock lines the Mac needs. Such names forged into a blocked site's hosts in state.json (any case, padded) are dropped when the daemon restarts: the hosts file equals the exact expected text and the stock localhost and broadcasthost lines are still there.
+    @Test func systemNamesForgedIntoTheStateFileAreDroppedAndTheStockLinesSurvive() throws {
+        let forged = ["localhost", "broadcasthost", "printer.local", "x.localhost", "LOCALHOST", " LocalHost ", "BroadcastHost", "Printer.LOCAL", "a.b.localhost"]
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            daemon.terminate()
+            for path in [daemon.statePath, daemon.stateBackupPath] {
+                try editJSONObject(at: path) { object in
+                    var sites = object["blocked"] as? [[String: Any]] ?? []
+                    sites[0]["hosts"] = (sites[0]["hosts"] as? [String] ?? []) + forged
+                    object["blocked"] = sites
+                }
+            }
+            try daemon.start()
+            let expected = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            let ok = waitUntil(timeout: 1.5, interval: 0.02) { daemon.hostsText() == expected }
+            #expect(ok != nil, "file now:\n\(daemon.hostsText())")
+            let text = daemon.hostsText()
+            for stock in ["127.0.0.1\tlocalhost", "255.255.255.255\tbroadcasthost", "::1             localhost"] {
+                #expect(HostsView(text).count(of: stock) == 1, "the stock line \(stock.debugDescription) must survive exactly once")
+            }
+            for name in ["localhost", "broadcasthost", "printer.local", "x.localhost", "b.localhost"] {
+                #expect(!text.lowercased().contains("0.0.0.0 \(name)") && !text.lowercased().contains(":: \(name)"), "\(name) must never be written into the section")
+            }
+            #expect(HostsView(text).beginCount == 1 && HostsView(text).endCount == 1)
+            // The block itself still works.
+            #expect(HostsView(text).blocks("reddit.com"))
+        }
+    }
 }

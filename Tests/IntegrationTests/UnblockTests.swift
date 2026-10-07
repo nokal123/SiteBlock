@@ -25,29 +25,33 @@ struct UnblockTests {
         }
     }
 
-    // 05 Integration Tests, fourth bullet (second half): with the right password the site stays in the hosts file for the full delay (2 s), then disappears.
+    // 05 Integration Tests, fourth bullet (second half): with the right password the site stays in the hosts file for the full delay (2 s), then disappears. The request is sent at a random point of the daemon's 0.2 s tick cycle, and the stopwatch starts BEFORE the request is sent, so the removal can never be seen earlier than the daemon's own countdown allows: 03 § DaemonRuntime "Before every command" and 01 § Data Model (Countdown) say a countdown never finishes early.
     @Test func unblockWithTheRightPasswordKeepsTheSiteBlockedForTheFullDelayThenRemovesIt() throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             try daemon.requireTwoSecondDelay()
             let blocked = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
-            let reply = try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
+            let phase = daemon.pauseToRandomTickPhase()
             let watch = Stopwatch()
+            let reply = try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
             let remaining = try #require(reply.status?.blocked.first?.unblockSecondsRemaining)
             #expect((1...2).contains(remaining), "the countdown starts at the 2 s delay, got \(remaining)")
             #expect(reply.message?.contains("reddit.com") == true)
             #expect(daemon.hostsText() == blocked, "the hosts file keeps the block while the countdown runs")
 
             pause(1.0 - watch.elapsed)
-            #expect(daemon.hostsText() == blocked, "1 s into a 2 s delay the site must still be blocked")
+            #expect(daemon.hostsText() == blocked, "1 s into a 2 s delay the site must still be blocked (request sent \(phase) s into a tick)")
             let midway = try daemon.status()
             #expect(midway.blocked.map(\.domain) == ["reddit.com"])
-            #expect(midway.blocked.first?.unblockSecondsRemaining == 1)
+            // About 1 s of the 2 s are left; the display rounds up, so it shows 1, or 2 when the stopwatch started a little before the daemon read the request.
+            let midwayRemaining = try #require(midway.blocked.first?.unblockSecondsRemaining)
+            #expect((1...2).contains(midwayRemaining), "about 1 s of 2 s should be left, the display shows \(midwayRemaining)")
 
             let removedAfter = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
             let tookTotal = watch.elapsed
             #expect(removedAfter != nil, "the block was not removed within 3.5 s after the 2 s delay; file:\n\(daemon.hostsText())")
-            #expect(tookTotal >= 1.8, "the block was removed after only \(tookTotal) s of a 2 s delay")
+            #expect(tookTotal >= 2.0, "the block was removed \(tookTotal) s after the request was sent, before the 2 s delay was over (request sent \(phase) s into a tick)")
+            #expect(tookTotal < 4.0, "the block was still there \(tookTotal) s after the request")
             let done = try daemon.status()
             #expect(done.blocked.isEmpty)
             #expect(done.passwordSet)
@@ -109,6 +113,11 @@ struct UnblockTests {
             #expect(reply.message == "Unblock cancelled; reddit.com stays blocked.")
             #expect(reply.status?.blocked.first?.unblockSecondsRemaining == nil)
             pause(3.2)
+            // The daemon must still be alive and answering: a crashed daemon would also leave the hosts file untouched.
+            #expect(daemon.isRunning)
+            let later = try daemon.status()
+            #expect(later.blocked.map(\.domain) == ["reddit.com"])
+            #expect(later.blocked.first?.unblockSecondsRemaining == nil, "the cancelled unblock must not come back")
             #expect(daemon.hosts().blocks("reddit.com"))
             let again = try daemon.send(.add, domain: "reddit.com")
             #expect(again.errorCode == .alreadyBlocked)

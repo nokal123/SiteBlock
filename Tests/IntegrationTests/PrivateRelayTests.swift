@@ -47,15 +47,19 @@ struct PrivateRelayTests {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             try daemon.requireTwoSecondDelay()
-            try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
+            // Sent at a random point of the 0.2 s tick cycle, with the stopwatch started BEFORE the request: the section may not go before 2.0 s (03 § DaemonRuntime "Before every command").
+            let phase = daemon.pauseToRandomTickPhase()
             let watch = Stopwatch()
-            pause(1.0)
+            try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
+            pause(1.0 - watch.elapsed)
             let midway = daemon.hosts()
             for name in Self.relayNames { #expect(midway.blocks(name), "\(name) must stay while the countdown runs") }
 
             let removed = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
+            let took = watch.elapsed
             #expect(removed != nil, "the section did not go away; file:\n\(daemon.hostsText())")
-            #expect(watch.elapsed >= 1.8)
+            #expect(took >= 2.0, "the section went \(took) s after the request, before the 2 s delay was over (request sent \(phase) s into a tick)")
+            #expect(took < 4.0)
             let after = daemon.hosts()
             for name in Self.relayNames { #expect(!after.text.contains(name), "\(name) must go with the section") }
             #expect(after.beginCount == 0 && after.endCount == 0)

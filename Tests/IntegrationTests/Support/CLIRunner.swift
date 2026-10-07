@@ -18,7 +18,11 @@ func runProgram(_ path: String, _ arguments: [String], environment: [String: Str
     let alphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
     let scratch = "/tmp/sbr-" + String((0..<8).map { _ in alphabet.randomElement()! })
     try FileManager.default.createDirectory(atPath: scratch, withIntermediateDirectories: false)
-    defer { try? FileManager.default.removeItem(atPath: scratch) }
+    Registry.add(directory: scratch)
+    defer {
+        try? FileManager.default.removeItem(atPath: scratch)
+        Registry.remove(directory: scratch)
+    }
     let inPath = scratch + "/in"
     let outPath = scratch + "/out"
     let errPath = scratch + "/err"

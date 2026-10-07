@@ -56,8 +56,10 @@ struct CLITests {
             let afterEmpty = try daemon.status()
             #expect(afterEmpty.blocked.first?.unblockSecondsRemaining == nil)
 
-            let good = try Self.cli(daemon, ["unblock", "reddit.com"], stdin: "\(Self.password)\n")
+            // Run at a random point of the 0.2 s tick cycle, with the stopwatch started BEFORE the tool is launched: the site may not go before 2.0 s (03 § DaemonRuntime "Before every command").
+            let phase = daemon.pauseToRandomTickPhase()
             let watch = Stopwatch()
+            let good = try Self.cli(daemon, ["unblock", "reddit.com"], stdin: "\(Self.password)\n")
             #expect(good.status == 0, "stderr: \(good.stderr)")
             #expect(good.stdout.contains("reddit.com") && good.stdout.contains("2 seconds"), "the confirmation names the site and the delay: \(good.stdout)")
             let pending = try Self.cli(daemon, ["status"])
@@ -66,8 +68,10 @@ struct CLITests {
             #expect(daemon.hostsText() == blocked)
 
             let removed = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
+            let took = watch.elapsed
             #expect(removed != nil)
-            #expect(watch.elapsed >= 1.8)
+            #expect(took >= 2.0, "the site went \(took) s after the tool was started, before the 2 s delay was over (started \(phase) s into a tick)")
+            #expect(took < 4.5)
             let after = try Self.cli(daemon, ["status"])
             #expect(!after.stdout.contains("reddit.com"), "status after the unblock: \(after.stdout)")
         }
@@ -85,6 +89,11 @@ struct CLITests {
             let cancel = try Self.cli(daemon, ["cancel", "reddit.com"])
             #expect(cancel.status == 0, "stderr: \(cancel.stderr)")
             pause(3.2)
+            // The daemon must still be alive and answering: a crashed daemon would also leave the hosts file untouched.
+            #expect(daemon.isRunning)
+            let later = try daemon.status()
+            #expect(later.blocked.map(\.domain) == ["reddit.com"])
+            #expect(later.blocked.first?.unblockSecondsRemaining == nil, "the cancelled unblock must not come back")
             #expect(daemon.hosts().blocks("reddit.com"))
         }
     }
@@ -236,7 +245,9 @@ struct CLITests {
             let wrongOld = try Self.cli(daemon, ["passwd"], stdin: "bad-old-pw\n\(newPassword)\n\(newPassword)\n")
             #expect(wrongOld.status == 1)
             let mismatch = try Self.cli(daemon, ["passwd"], stdin: "\(Self.password)\nfirst-new-1\nfirst-new-2\n")
-            #expect(mismatch.status != 0 && !mismatch.timedOut)
+            #expect(!mismatch.timedOut)
+            #expect(mismatch.status == 1, "03 § siteblock CLI: exit 1 when a typed password and its confirmation do not match; got \(mismatch.status). stderr: \(mismatch.stderr)")
+            #expect(!mismatch.stderr.isEmpty, "the mismatch is explained on standard error")
             let ok = try Self.cli(daemon, ["passwd"], stdin: "\(Self.password)\n\(newPassword)\n\(newPassword)\n")
             #expect(ok.status == 0, "stderr: \(ok.stderr)")
             let oldNow = try daemon.send(.unblock, domain: "reddit.com", password: Self.password)
@@ -277,6 +288,84 @@ struct CLITests {
             #expect(cancel.status == 0)
             let after = try Self.cli(daemon, ["status"])
             #expect(!after.stdout.lowercased().contains("uninstall"), "got: \(after.stdout)")
+        }
+    }
+
+    // 03 § siteblock CLI exit codes: "1 ... a typed password and its confirmation do not match". The mismatch is caught by the tool, so the daemon is still not set up afterwards, and a matching pair then works (exit 0).
+    @Test func setupWithAMismatchedConfirmationExitsExactlyOneAndSetsNothing() throws {
+        try withDaemon { daemon in
+            let mismatch = try Self.cli(daemon, ["setup"], stdin: "first-pass-1\nsecond-pass-2\n")
+            #expect(!mismatch.timedOut)
+            #expect(mismatch.status == 1, "exit code \(mismatch.status); stderr: \(mismatch.stderr)")
+            #expect(!mismatch.stderr.isEmpty, "the mismatch is explained on standard error")
+            let status = try daemon.status()
+            #expect(status.passwordSet == false, "a mismatched pair must not set a password")
+            let same = try Self.cli(daemon, ["setup"], stdin: "first-pass-1\nfirst-pass-1\n")
+            #expect(same.status == 0, "stderr: \(same.stderr)")
+            #expect(try daemon.status().passwordSet)
+        }
+    }
+
+    // How many non-empty lines the daemon's log holds.
+    static func logLines(_ daemon: SandboxDaemon) -> Int {
+        daemon.logText().components(separatedBy: "\n").filter { !$0.isEmpty }.count
+    }
+
+    // 03 § siteblock CLI exit codes: "An empty password ... [is a] usage error (64) and is never sent to the daemon, so a stray Enter does not use up one of the five password tries." Six empty entries in a row would start a lockout if each one reached the daemon. None may: every one exits 64, the failed-attempt count saved by the daemon stays 0, the daemon's log (which records every password check) does not grow, and the right password is accepted at once.
+    @Test func sixEmptyPasswordEntriesExit64NeverReachTheDaemonAndStartNoLockout() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let logBefore = Self.logLines(daemon)
+            for attempt in 1...6 {
+                let result = try Self.cli(daemon, ["unblock", "reddit.com"], stdin: "\n")
+                #expect(!result.timedOut, "attempt \(attempt) hung")
+                #expect(result.status == 64, "empty password, attempt \(attempt): exit \(result.status); stderr: \(result.stderr)")
+            }
+            let status = try daemon.status()
+            #expect(status.lockoutSecondsRemaining == nil, "six empty entries started a lockout, so they reached the daemon")
+            #expect(daemon.stateObject()?["failedAttempts"] as? Int == 0)
+            #expect(Self.logLines(daemon) == logBefore, "the daemon logged a password check that should never have been sent")
+            let good = try Self.cli(daemon, ["unblock", "reddit.com"], stdin: "\(Self.password)\n")
+            #expect(good.status == 0, "stderr: \(good.stderr)")
+        }
+    }
+
+    // The same rule for every command that asks for a password: an empty entry is a usage error and nothing reaches the daemon. The old password is typed correctly in the `passwd` rows that test an empty NEW password, so a request that did reach the daemon would be logged as a right password check.
+    @Test func anEmptyPasswordEntryIsRefusedByEveryPasswordCommandBeforeTheDaemonSeesIt() throws {
+        let right = "\(Self.password)\n"
+        let cases: [(arguments: [String], stdin: String)] = [
+            (["unblock", "reddit.com"], "\n"),
+            (["delay", "5m"], "\n"),
+            (["uninstall"], "\n"),
+            (["passwd"], "\nnew-secret-99\nnew-secret-99\n"),
+            (["passwd"], "\(right)\n\n"),
+        ]
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let logBefore = Self.logLines(daemon)
+            for item in cases {
+                let result = try Self.cli(daemon, item.arguments, stdin: item.stdin)
+                #expect(!result.timedOut, "siteblock \(item.arguments) hung")
+                #expect(result.status == 64, "siteblock \(item.arguments.joined(separator: " ")) with an empty password exited \(result.status); stderr: \(result.stderr)")
+            }
+            #expect(Self.logLines(daemon) == logBefore, "an empty password reached the daemon")
+            let status = try daemon.status()
+            #expect(status.delaySeconds == 2 && status.uninstallSecondsRemaining == nil && status.lockoutSecondsRemaining == nil)
+            #expect(status.blocked.first?.unblockSecondsRemaining == nil)
+            #expect(daemon.stateObject()?["failedAttempts"] as? Int == 0)
+            // The password was never changed: the original one still works.
+            try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
+        }
+    }
+
+    // The same rule for `setup`: an empty first password is a usage error and nothing is set.
+    @Test func setupWithAnEmptyPasswordExits64AndSetsNothing() throws {
+        try withDaemon { daemon in
+            let result = try Self.cli(daemon, ["setup"], stdin: "\n\n")
+            #expect(!result.timedOut)
+            #expect(result.status == 64, "exit code \(result.status); stderr: \(result.stderr)")
+            let status = try daemon.status()
+            #expect(status.passwordSet == false)
         }
     }
 

@@ -62,6 +62,10 @@ struct DaemonFlagsTests {
         ["--daemon", "--sandbox", "DIR", "--tick", "-1"],
         ["--daemon", "--sandbox", "DIR", "--tick"],
         ["--daemon", "--sandbox"],
+        // The watchdog's whole job is to call launchctl, which a sandbox forbids, so the two never go together (in either order).
+        ["--watchdog", "--sandbox", "DIR"],
+        ["--sandbox", "DIR", "--watchdog"],
+        ["--watchdog", "--sandbox", "DIR", "--tick", "1", "--policy-fast"],
     ])
     func wrongCombinationsWithASandboxExit64(flags: [String]) throws {
         let directory = try Self.scratchDirectory()
@@ -70,6 +74,15 @@ struct DaemonFlagsTests {
         let result = try runDaemonProgram(arguments, timeout: 6)
         #expect(!result.timedOut, "siteblockd \(flags) started a daemon instead of refusing")
         #expect(result.status == 64, "siteblockd \(flags.joined(separator: " ")) exited \(result.status); stderr: \(result.stderr)")
+    }
+
+    // The installed watchdog runs as root; started by an ordinary user without --sandbox it must refuse at once instead of failing halfway: exit code 77 (the Unix code for "permission denied"). The design names no exit code for this refusal (a spec gap: 03 § siteblockd Entry Point only says `--sandbox` is refused with 64 as root); 77 is the code the task and the program use. The test is switched off for a root test process, which would otherwise start the real watchdog.
+    @Test(.enabled(if: geteuid() != 0))
+    func theWatchdogWithoutASandboxRefusesToRunAsANormalUserWithExit77() throws {
+        let result = try runDaemonProgram(["--watchdog"], timeout: 6)
+        #expect(!result.timedOut, "siteblockd --watchdog kept running as a normal user")
+        #expect(result.status == 77 && !result.killedBySignal, "exited \(result.status); stderr: \(result.stderr)")
+        #expect(!result.stderr.isEmpty, "the reason goes to standard error")
     }
 
     // 03 § siteblockd Entry Point: --version prints the version and exits; the daemon, the CLI and a running daemon's status all report the same version string.

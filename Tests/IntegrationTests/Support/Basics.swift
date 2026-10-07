@@ -72,3 +72,33 @@ func permissions(of path: String) -> Int? {
     let attributes = try? FileManager.default.attributesOfItem(atPath: path)
     return (attributes?[.posixPermissions] as? NSNumber)?.intValue
 }
+
+// Sets the permission bits of a path (like `chmod 0555 path`). Throws when the change fails, so a test never goes on with permissions it did not get.
+func chmodPath(_ path: String, _ mode: mode_t) throws {
+    if chmod(path, mode) != 0 { throw TestFailure("chmod \(String(mode, radix: 8)) \(path) failed: \(String(cString: strerror(errno)))") }
+}
+
+// Which file a path points at and when it last changed: the inode number and the last-modified time. Writing the file in place changes the time, and renaming a new file over it changes the inode, so any rewrite makes two identities differ.
+struct FileIdentity: Equatable {
+    let inode: UInt64
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+}
+
+// The identity of the file at a path, or nil when it does not exist.
+func identity(of path: String) -> FileIdentity? {
+    var info = stat()
+    guard stat(path, &info) == 0 else { return nil }
+    return FileIdentity(inode: UInt64(info.st_ino), modifiedSeconds: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec)
+}
+
+// Deletes a folder tree even when a test left parts of it read-only (like `chmod -R u+rwx` followed by `rm -rf`). Folders are made owner-writable before their contents are listed and deleted; symbolic links are deleted without being followed.
+func forceRemoveTree(_ path: String) {
+    var info = stat()
+    guard lstat(path, &info) == 0 else { return }
+    if (info.st_mode & S_IFMT) == S_IFDIR {
+        _ = chmod(path, info.st_mode | 0o700)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] { forceRemoveTree(path + "/" + name) }
+    }
+    try? FileManager.default.removeItem(atPath: path)
+}

@@ -136,16 +136,18 @@ final class HostsEnforcer {
         return nil
     }
 
-    /// Writes the text to a randomly named temp file beside the hosts file and renames it over the hosts file, so readers always see either the old or the new file, never a half-written one. If the rename fails, it writes into the hosts file itself and removes the temp file. Returns false (after logging why) on any failure.
+    /// Writes the text to a randomly named temp file beside the hosts file and renames it over the hosts file, so readers always see either the old or the new file, never a half-written one. If the temp file cannot be created or the rename fails, it writes into the hosts file itself instead. Returns false (after logging why) only when that also fails.
     private func writeAtomically(_ text: String) -> Bool {
         let folder = URL(fileURLWithPath: paths.hosts).deletingLastPathComponent().path
+        let bytes = Array(text.utf8)
         // A random name means a folder or file planted at a fixed temp path cannot block the write.
         let temp = createTempFile(in: folder)
         if temp.fd < 0 {
-            logFailure("hosts file could not be updated: cannot create a temp file in \(folder): \(temp.failure)")
+            // Getting the block written matters more than writing it atomically, so a folder that refuses new files still gets the hosts file itself rewritten.
+            guard let inPlaceFailure = writeInPlace(bytes) else { return true }
+            logFailure("hosts file could not be updated: cannot create a temp file in \(folder): \(temp.failure); writing in place also failed: \(inPlaceFailure)")
             return false
         }
-        let bytes = Array(text.utf8)
         var failure: String?
         // The mode is set on the open file, so it is 0644 whatever the process umask is.
         if fchmod(temp.fd, 0o644) != 0 { failure = "cannot set permissions: \(String(cString: strerror(errno)))" }

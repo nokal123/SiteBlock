@@ -260,7 +260,79 @@ struct WireProtocolTests {
         }
     }
 
+    // 03 § SocketServer step 4: at most 4 open connections per non-root user ID. With three connections from this process sitting idle, a fourth is within the limit and must be admitted and answered. (A limit that counted one too few would refuse it.)
+    @Test func aFourthConnectionFromTheSameUserIsServedWhileThreeAreIdle() throws {
+        try withDaemon { daemon in
+            let idle = try (0..<3).map { _ in try RawConnection(path: daemon.socketPath) }
+            pause(0.3)
+            let reply = try daemon.client(timeout: 3).send(Request(command: .status))
+            #expect(reply.ok, "the fourth connection of one user was refused: \(reply.error ?? "no error sentence")")
+            #expect(reply.status?.delaySeconds == 2)
+            withExtendedLifetime(idle) {}
+        }
+    }
+
+    // 03 § SocketServer step 5: "A client that sends no complete line within 2 seconds receives badRequest ... and is disconnected." The 2 seconds are for the whole line, so a client that sends one blank every 0.4 s (never letting one single read wait 2 s) is still cut off at about 2 s, with badRequest, instead of holding its slot for ever.
+    @Test func aClientSendingOneByteEveryFourTenthsOfASecondIsCutOffAtAboutTwoSeconds() throws {
+        try withDaemon { daemon in
+            let connection = try RawConnection(path: daemon.socketPath)
+            let watch = Stopwatch()
+            var answer: RawReply?
+            var bytesSent = 0
+            while watch.elapsed < 6.0 {
+                // A blank never completes a line. Writing fails once the daemon has hung up; the read below then reports what it said.
+                connection.write(" ")
+                bytesSent += 1
+                let heard = connection.read(timeout: 0.4, stopAtNewline: true)
+                if !heard.data.isEmpty || heard.closedByPeer {
+                    answer = heard
+                    break
+                }
+            }
+            let cutAt = watch.elapsed
+            let reply = try #require(answer, "the daemon still held the connection after \(cutAt) s and \(bytesSent) bytes")
+            #expect(reply.errorCode == "badRequest", "got: \(reply.text.prefix(200))")
+            #expect(cutAt >= 1.8, "cut off after only \(cutAt) s")
+            #expect(cutAt <= 3.0, "cut off only after \(cutAt) s")
+            let status = try daemon.status()
+            #expect(status.delaySeconds == 2)
+        }
+    }
+
+    // 03 § SocketServer step 5 and 01 § Wire Protocol: a client that connects and sends nothing receives errorCode badRequest with the sentence "No request arrived within 2 seconds." between 1.8 and 2.6 s later, and is disconnected.
+    @Test func aSilentClientIsToldNoRequestArrivedWithinTwoSecondsAndDisconnected() throws {
+        try withDaemon { daemon in
+            let watch = Stopwatch()
+            let connection = try RawConnection(path: daemon.socketPath)
+            let reply = connection.read(timeout: 5)
+            let took = watch.elapsed
+            #expect(reply.ok == false)
+            #expect(reply.errorCode == "badRequest", "got: \(reply.text.prefix(200))")
+            #expect(reply.json?["error"] as? String == "No request arrived within 2 seconds.")
+            #expect(reply.newlineCount == 1 && reply.data.last == 10, "the reply is exactly one line")
+            #expect(reply.closedByPeer, "the daemon must hang up after the reply")
+            #expect(took >= 1.8, "answered after only \(took) s")
+            #expect(took <= 2.6, "answered only after \(took) s")
+        }
+    }
+
     // MARK: Concurrency
+
+    // Sends a request and returns the reply, trying again (up to six times, 20 ms apart) when no reply arrives at all. 03 § SocketServer step 4 closes a connection over the per-user limit "at once without a reply", and a client that connects again straight after its last reply can meet the daemon before it has given that earlier connection's slot back, so a refusal with no reply is expected now and then when several threads of one user hammer the daemon. A refused connection never reaches the handler, so trying again cannot run a command twice. A reply that says the command FAILED is returned as it is and never retried.
+    static func sendPatiently(_ client: DaemonClient, _ request: Request) -> Response? {
+        for _ in 0..<6 {
+            do {
+                return try client.send(request)
+            } catch {
+                retryNotes.add("\(request.command.rawValue): \(error)")
+                pause(0.02)
+            }
+        }
+        return nil
+    }
+
+    // What the retries above had to work around, so a failing test can show it.
+    static let retryNotes = Notes()
 
     // Runs `body` for every index on separate threads and collects the results in index order. At most `inFlight` calls run at the same moment: the daemon allows only 4 open connections per user (03 § SocketServer step 4), so tests stay at 3 and leave one slot of slack for a connection the daemon has not finished closing.
     static func concurrently<T>(_ count: Int, inFlight: Int = 3, _ body: @escaping (Int) -> T) -> [T] {
@@ -286,7 +358,7 @@ struct WireProtocolTests {
             try daemon.setUp()
             let domains = (1...10).map { "concurrent\($0).example.org" }
             let client = daemon.client()
-            let replies = Self.concurrently(10) { index in (try? client.send(Request(command: .add, domain: domains[index]))) }
+            let replies = Self.concurrently(10) { index in Self.sendPatiently(client, Request(command: .add, domain: domains[index])) }
             for (index, reply) in replies.enumerated() {
                 #expect(reply?.ok == true, "client \(index): \(String(describing: reply?.error))")
             }
@@ -309,7 +381,7 @@ struct WireProtocolTests {
             for round in 1...5 {
                 let domain = "race\(round).example.org"
                 domains.append(domain)
-                let replies = Self.concurrently(3) { _ in (try? client.send(Request(command: .add, domain: domain))) }
+                let replies = Self.concurrently(3) { _ in Self.sendPatiently(client, Request(command: .add, domain: domain)) }
                 #expect(replies.filter { $0?.ok == true }.count == 1, "round \(round): exactly one add wins")
                 #expect(replies.filter { $0?.errorCode == .alreadyBlocked }.count == 2, "round \(round): the others are alreadyBlocked")
                 pause(0.1)
@@ -324,10 +396,10 @@ struct WireProtocolTests {
             try daemon.setUp()
             let client = daemon.client()
             let outcomes = Self.concurrently(3) { index -> [Bool] in
-                if index > 0 { return (0..<60).map { _ in (try? client.send(Request(command: .status)))?.ok == true } }
-                return (0..<16).map { n in (try? client.send(Request(command: .add, domain: "load\(n).example.org")))?.ok == true }
+                if index > 0 { return (0..<60).map { _ in Self.sendPatiently(client, Request(command: .status))?.ok == true } }
+                return (0..<16).map { n in Self.sendPatiently(client, Request(command: .add, domain: "load\(n).example.org"))?.ok == true }
             }
-            #expect(outcomes.flatMap { $0 }.allSatisfy { $0 }, "some request failed")
+            #expect(outcomes.flatMap { $0 }.allSatisfy { $0 }, "some request failed even after retries; transport problems seen: \(Self.retryNotes.all.suffix(8))")
             let status = try daemon.status()
             #expect(status.blocked.count == 16)
             #expect(daemon.hosts().beginCount == 1 && daemon.hosts().endCount == 1)
@@ -353,6 +425,18 @@ struct WireProtocolTests {
             }
         }
     }
+}
+
+// A thread-safe list of text notes.
+final class Notes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+
+    // Adds one note.
+    func add(_ note: String) { lock.lock(); items.append(note); lock.unlock() }
+
+    // Every note so far.
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
 }
 
 // A thread-safe array that threads fill in by index.

@@ -25,20 +25,23 @@ enum Registry {
     // Forgets a process id once the child has been reaped, so the exit hook never signals a recycled id.
     static func remove(pid: pid_t) { lock.lock(); pids.remove(pid); lock.unlock() }
 
+    // True while the id is still recorded (the exit hook would still signal it).
+    static func contains(pid: pid_t) -> Bool { lock.lock(); defer { lock.unlock() }; return pids.contains(pid) }
+
     // Remembers a temp folder.
     static func add(directory: String) { lock.lock(); directories.insert(directory); lock.unlock() }
 
     // Forgets a folder that has been deleted.
     static func remove(directory: String) { lock.lock(); directories.remove(directory); lock.unlock() }
 
-    // Kills every recorded process and deletes every recorded folder.
+    // Kills every recorded process and deletes every recorded folder. A folder a test left read-only is made writable first, because `removeItem` alone cannot delete the contents of a read-only folder.
     static func cleanUpEverything() {
         lock.lock()
         let leftoverPids = pids
         let leftoverDirectories = directories
         lock.unlock()
         for pid in leftoverPids { kill(pid, SIGKILL) }
-        for directory in leftoverDirectories { try? FileManager.default.removeItem(atPath: directory) }
+        for directory in leftoverDirectories { forceRemoveTree(directory) }
     }
 }
 
@@ -88,11 +91,17 @@ final class SandboxDaemon {
     // The child's process id, or nil when it was never started.
     var pid: pid_t? { process?.processIdentifier }
 
-    // True while the child process is alive.
-    var isRunning: Bool { process?.isRunning ?? false }
+    // True while the child process is alive. Once the child has ended (and Foundation has collected its exit status) its id is dropped from the exit-hook registry, because the system may give that id to an unrelated process and the hook must never signal it.
+    var isRunning: Bool {
+        guard let child = process else { return false }
+        if child.isRunning { return true }
+        Registry.remove(pid: child.processIdentifier)
+        return false
+    }
 
     // Starts `siteblockd --daemon --sandbox <root> --tick <tick> --policy-fast`. With `serve` true it also waits up to 5 seconds until the daemon answers a status request.
     func start(serve: Bool = true) throws {
+        // `isRunning` also drops the id of an earlier child that has ended from the exit-hook registry.
         if isRunning { throw TestFailure("the daemon is already running") }
         let child = Process()
         child.executableURL = URL(fileURLWithPath: try Binaries.path("siteblockd"))
@@ -105,9 +114,10 @@ final class SandboxDaemon {
         child.standardOutput = log
         child.standardError = log
         try child.run()
-        try? log.close()
-        process = child
+        // Registered at once, before anything else can fail, so a trap in the test still gets this daemon killed by the exit hook.
         Registry.add(pid: child.processIdentifier)
+        process = child
+        try? log.close()
         if serve { try waitUntilServing() }
     }
 
@@ -122,7 +132,7 @@ final class SandboxDaemon {
         }
         if !answered {
             let state = isRunning ? "never answered" : "exited with \(String(describing: waitForExit(timeout: 1)?.status))"
-            throw TestFailure("the daemon \(state) within \(timeout) s. Log:\n\(logText)")
+            throw TestFailure("the daemon \(state) within \(timeout) s. Log:\n\(logText())")
         }
     }
 
@@ -137,7 +147,7 @@ final class SandboxDaemon {
     // Sends SIGTERM (the polite stop signal launchd uses) and waits up to 3 seconds; falls back to SIGKILL. Returns how it ended.
     @discardableResult
     func terminate() -> ExitInfo? {
-        guard let child = process, child.isRunning else { return nil }
+        guard let child = process, isRunning else { return nil }
         kill(child.processIdentifier, SIGTERM)
         if let info = waitForExit(timeout: 3) { return info }
         return kill9()
@@ -146,19 +156,40 @@ final class SandboxDaemon {
     // Sends SIGKILL, which no program can catch, and waits for the process to be gone. The socket file stays behind, as after a real crash.
     @discardableResult
     func kill9() -> ExitInfo? {
-        guard let child = process, child.isRunning else { return nil }
+        guard let child = process, isRunning else { return nil }
         kill(child.processIdentifier, SIGKILL)
         return waitForExit(timeout: 3)
     }
 
-    // Kills the child if it is still running and deletes the whole sandbox folder. Safe to call more than once.
+    // Kills the child if it is still running and deletes the whole sandbox folder, including any part a test left read-only. Safe to call more than once. The child's id leaves the exit-hook registry as soon as the child is gone, whether it ended by itself earlier or was killed here, so the hook never signals a process that reused the id.
     func teardown() {
         if let child = process, child.isRunning {
             kill(child.processIdentifier, SIGKILL)
             _ = waitForExit(timeout: 3)
         }
-        try? FileManager.default.removeItem(atPath: root)
+        _ = isRunning
+        forceRemoveTree(root)
         Registry.remove(directory: root)
+    }
+
+    // MARK: Timing helpers
+
+    // Waits a random time between 0 and one enforcement tick (at most one second), so the next command lands at a random point of the daemon's tick cycle. Returns the wait so a failure message can name it.
+    @discardableResult
+    func pauseToRandomTickPhase() -> Double {
+        let delay = Double.random(in: 0...min(tickSeconds, 1.0))
+        pause(delay)
+        return delay
+    }
+
+    // Freezes the child with SIGSTOP, as a sleeping Mac or a debugger would. The daemon runs no code until `resume()`, but the wall clock and the monotonic clock keep running.
+    func freeze() {
+        if let pid { kill(pid, SIGSTOP) }
+    }
+
+    // Lets a frozen child run again with SIGCONT.
+    func resume() {
+        if let pid { kill(pid, SIGCONT) }
     }
 
     // MARK: Talking to the daemon

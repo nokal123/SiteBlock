@@ -136,6 +136,72 @@ struct SecretsAndLogsTests {
         }
     }
 
+    // The log lines that are summaries of rejected requests.
+    static func summaryLines(_ daemon: SandboxDaemon) -> [String] {
+        daemon.logText().components(separatedBy: "\n").filter { $0.contains("rejected request") }
+    }
+
+    // The sentence the daemon writes for `count` rejected requests from this test process's user, as the design words it ("37 rejected requests from uid 501 in the last minute").
+    static func summarySentence(_ count: Int) -> String {
+        "\(count) rejected requests from uid \(getuid()) in the last minute"
+    }
+
+    // Sends one request that the daemon refuses at once for an invalid domain (alternating a name with a bad character and an IP address), and counts any reply that is not invalidDomain.
+    static func sendInvalidAdds(_ count: Int, to daemon: SandboxDaemon) throws -> Int {
+        var unexpected = 0
+        for n in 1...count {
+            let domain = n % 2 == 0 ? "bad_name_\(n).example" : "10.0.0.\(n % 250)"
+            let reply = try rawExchange(try requestLine(["command": "add", "domain": domain]), socketPath: daemon.socketPath)
+            if reply.errorCode != "invalidDomain" { unexpected += 1 }
+        }
+        return unexpected
+    }
+
+    // 03 § DaemonRuntime "Logging": rejected requests "are counted per user ID and logged as one summary line per minute, such as '37 rejected requests from uid 501 in the last minute'". One hundred and twenty invalid adds, then SIGTERM (the stop signal launchd sends): the log has exactly one summary line and it says exactly 120 for this user, and no line per request. A count that is off by one, per-request lines, or a summary that is lost at shutdown all fail here.
+    @Test func oneHundredTwentyInvalidAddsGiveExactlyOneSummaryLineWithTheExactCount() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let linesBefore = daemon.logText().components(separatedBy: "\n").filter { !$0.isEmpty }.count
+            let unexpected = try Self.sendInvalidAdds(120, to: daemon)
+            #expect(unexpected == 0, "\(unexpected) of the 120 invalid adds were not answered with invalidDomain")
+            let exit = daemon.terminate()
+            #expect(exit?.status == 0 && exit?.killedBySignal == false)
+            let summaries = Self.summaryLines(daemon)
+            #expect(summaries.count == 1, "expected one summary line, got \(summaries.count): \(summaries)")
+            #expect(summaries.first?.hasSuffix(" " + Self.summarySentence(120)) == true, "summary was: \(summaries.first ?? "none")")
+            let linesAfter = daemon.logText().components(separatedBy: "\n").filter { !$0.isEmpty }.count
+            #expect(linesAfter - linesBefore <= 3, "120 rejected requests wrote \(linesAfter - linesBefore) lines")
+        }
+    }
+
+    // The same count for refusals made by the engine itself (not by the connection thread): a site that is already blocked (alreadyBlocked) and a cancel with nothing pending (nothingPending) are "other rejected commands" too, so 40 + 20 of them are counted as 60.
+    @Test func refusalsMadeByTheEngineAreCountedInTheSummaryToo() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            for n in 1...40 { #expect(try daemon.send(.add, domain: "reddit.com").errorCode == .alreadyBlocked, "add \(n)") }
+            for n in 1...20 { #expect(try daemon.send(.cancelUnblock, domain: "reddit.com").errorCode == .nothingPending, "cancel \(n)") }
+            daemon.terminate()
+            let summaries = Self.summaryLines(daemon)
+            #expect(summaries.count == 1, "expected one summary line, got \(summaries.count): \(summaries)")
+            #expect(summaries.first?.hasSuffix(" " + Self.summarySentence(60)) == true, "summary was: \(summaries.first ?? "none")")
+        }
+    }
+
+    // All the kinds together are one count per user: 30 invalid domains (refused on the connection's own thread), 30 alreadyBlocked adds (refused by the engine) and 10 requests that are not JSON (malformed) make 70.
+    @Test func everyKindOfRejectedRequestFromOneUserAddsUpToOneCount() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            let unexpected = try Self.sendInvalidAdds(30, to: daemon)
+            #expect(unexpected == 0)
+            for n in 1...30 { #expect(try daemon.send(.add, domain: "reddit.com").errorCode == .alreadyBlocked, "add \(n)") }
+            for n in 1...10 { #expect(try rawExchange("not json \(n)\n", socketPath: daemon.socketPath).errorCode == "badRequest", "bad request \(n)") }
+            daemon.terminate()
+            let summaries = Self.summaryLines(daemon)
+            #expect(summaries.count == 1, "expected one summary line, got \(summaries.count): \(summaries)")
+            #expect(summaries.first?.hasSuffix(" " + Self.summarySentence(70)) == true, "summary was: \(summaries.first ?? "none")")
+        }
+    }
+
     // 03 § DaemonRuntime "Logging": status is the one command that is never logged (the menu bar app polls it every second), so polling adds no log lines at all.
     @Test func statusPollingWritesNothingToTheLog() throws {
         try withDaemon { daemon in

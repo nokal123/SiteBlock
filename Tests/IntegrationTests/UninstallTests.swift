@@ -8,29 +8,54 @@ import Testing
 struct UninstallTests {
     static let password = SandboxDaemon.password
 
-    // 05 Integration Tests, last bullet: after the delay (2 s) the managed section is gone and the daemon exits with code 0. Before the delay is over it must still be running and blocking.
+    // 05 Integration Tests, last bullet: after the delay (2 s) the managed section is gone and the daemon exits with code 0. Before the delay is over it must still be running and blocking. The request is sent at a random point of the 0.2 s tick cycle and the stopwatch starts BEFORE it is sent, so the exit can never be seen before 2.0 s (03 § DaemonRuntime "Before every command": a countdown never finishes early).
     @Test func uninstallAfterTheDelayRemovesTheHostsSectionAndTheDaemonExitsWithZero() throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             try daemon.requireTwoSecondDelay()
             let blocked = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
-            let reply = try daemon.send(.uninstall, password: Self.password).requireOK()
+            let phase = daemon.pauseToRandomTickPhase()
             let watch = Stopwatch()
+            let reply = try daemon.send(.uninstall, password: Self.password).requireOK()
             let remaining = try #require(reply.status?.uninstallSecondsRemaining)
             #expect((1...2).contains(remaining), "the uninstall waits the 2 s delay, got \(remaining)")
             pause(1.0 - watch.elapsed)
-            #expect(daemon.isRunning, "the daemon must keep running during the countdown")
+            #expect(daemon.isRunning, "the daemon must keep running during the countdown (request sent \(phase) s into a tick)")
             #expect(daemon.hostsText() == blocked, "blocks stay in place during the countdown")
 
             let exit = daemon.waitForExit(timeout: 5.0)
             let took = watch.elapsed
             let info = try #require(exit, "the daemon never exited after the uninstall delay")
             #expect(info.status == 0 && !info.killedBySignal, "exit code must be 0, got \(info.status) (signal: \(info.killedBySignal))")
-            #expect(took >= 1.8, "exited after only \(took) s of a 2 s delay")
+            #expect(took >= 2.0, "exited \(took) s after the request, before the 2 s delay was over (request sent \(phase) s into a tick)")
+            #expect(took < 4.0, "exited only after \(took) s")
             #expect(daemon.hostsText() == StandardHosts.text, "03 § Uninstaller step 2: the managed section is removed and the user's lines stay")
             #expect(!FileManager.default.fileExists(atPath: daemon.socketPath), "03 § Uninstaller (sandbox): the socket file is deleted")
             let saved = try #require(daemon.stateObject())
             #expect(saved["uninstalling"] as? Bool == true, "03 § Uninstaller step 1: the state is saved with uninstalling = true")
+        }
+    }
+
+    // 03 § DaemonRuntime "Before every command": every countdown is brought up to date before a command runs, and a countdown that finished is applied as a tick would apply it. With a tick that never fires, the only thing that can finish the uninstall countdown is the catch-up before the next command, so a command sent after the delay must make the daemon uninstall and exit with code 0, with the section gone and the file staying clean. Not one second early: the daemon must still be there at 1.0 s.
+    @Test func anUninstallCountdownFinishedByTheCatchUpBeforeACommandStillUninstalls() throws {
+        try withDaemon(tick: BlockingTests.neverTick) { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            try daemon.requireTwoSecondDelay()
+            let blocked = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            let watch = Stopwatch()
+            try daemon.send(.uninstall, password: Self.password).requireOK()
+            pause(1.0 - watch.elapsed)
+            #expect(daemon.isRunning)
+            #expect(daemon.hostsText() == blocked)
+            pause(2.2 - watch.elapsed)
+            // The reply to this command is not specified once the uninstall has begun (the daemon may answer or hang up), so only what is left behind is checked.
+            _ = try? daemon.send(.status)
+            let exit = try #require(daemon.waitForExit(timeout: 4.0), "the countdown ran out but no command made the daemon notice")
+            #expect(exit.status == 0 && !exit.killedBySignal)
+            #expect(daemon.hostsText() == StandardHosts.text, "the section is gone and the status poll did not write the blocks back")
+            #expect(!FileManager.default.fileExists(atPath: daemon.socketPath))
+            let saved = try #require(daemon.stateObject())
+            #expect(saved["uninstalling"] as? Bool == true)
         }
     }
 
@@ -75,6 +100,10 @@ struct UninstallTests {
             #expect(status.uninstallSecondsRemaining == nil)
             pause(3.0)
             #expect(daemon.isRunning, "the cancelled uninstall still ended the daemon")
+            // Alive means answering, not just a live process.
+            let later = try daemon.status()
+            #expect(later.blocked.map(\.domain) == ["reddit.com"])
+            #expect(later.uninstallSecondsRemaining == nil)
             #expect(daemon.hosts().blocks("reddit.com"))
             let saved = try #require(daemon.stateObject())
             #expect(saved["uninstalling"] as? Bool == false)
