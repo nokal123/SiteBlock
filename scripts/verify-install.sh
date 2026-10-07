@@ -3,10 +3,15 @@
 # connection attempt, and what Safari and Chrome actually show. Run it as your normal user (not with sudo) after
 # "sudo scripts/install.sh".
 #
-# It uses youtube.com as the test site and LEAVES IT BLOCKED. To unblock it later: siteblock unblock youtube.com
+# It never asks for a SiteBlock password and never blocks anything: the password is chosen the first time you block
+# a site. It uses youtube.com as the test site, so block youtube.com from the menu bar icon first. Checks 1, 2 and 6
+# always run. The blocking checks (3, 4, 5 and 7) run only when "siteblock status" lists youtube.com; otherwise each
+# prints SKIP and says what to do. Run the script again after blocking youtube.com to perform every check.
+# To unblock youtube.com afterwards: siteblock unblock youtube.com
 #
 # Every check runs even when an earlier one fails (there is no "set -e" on purpose). Each check prints PASS, FAIL,
-# SKIP or MANUAL CHECK, and a summary follows. The exit code is 1 when any check printed FAIL, otherwise 0.
+# SKIP or MANUAL CHECK, and a summary follows. The exit code is 1 when any check printed FAIL, otherwise 0. A SKIP
+# never makes the script fail.
 set -uo pipefail
 
 # Work from the repository root, wherever the script is started from.
@@ -76,57 +81,78 @@ check_jobs_loaded() {
     done
 }
 
-# Check 2: the command-line tool can talk to the daemon. The status text is kept in STATUS_TEXT for later checks.
+# Check 2: the command-line tool can talk to the daemon. The status text and the exit code are kept in STATUS_TEXT
+# and STATUS_CODE for the checks that follow.
 STATUS_TEXT=""
+STATUS_CODE=1
 check_status() {
     heading 2 "siteblock status works"
-    local code
     STATUS_TEXT="$("$CLI" status 2>&1)"
-    code=$?
+    STATUS_CODE=$?
     echo "$STATUS_TEXT" | indent
-    if [[ $code -eq 0 ]]; then
+    if [[ $STATUS_CODE -eq 0 ]]; then
         pass "siteblock status exited 0"
     else
-        fail "siteblock status exited $code"
+        fail "siteblock status exited $STATUS_CODE"
     fi
 }
 
-# Check 3: block the test site and see the lines in the hosts file.
-# Blocking needs a password to exist; when none is set and a person is at the keyboard, the setup prompt is run for them.
-check_add() {
-    heading 3 "adding $TEST_DOMAIN blocks it in the hosts file"
-    if [[ "$STATUS_TEXT" == *"Password not set"* ]]; then
-        if [[ -t 0 ]]; then
-            echo "SiteBlock has no password yet. Choose one now (you need it later to unblock sites):"
-            "$CLI" setup
-        else
-            fail "no SiteBlock password is set, and this is not an interactive terminal. Run 'siteblock setup', then run this script again"
-            return
+# True when the status text saved by check 2 lists the test site as a blocked site. Each site line looks like
+# "  youtube.com (28 hosts)", so a line is a match when it starts with two spaces, the domain, and a space.
+test_site_is_blocked() {
+    [[ $STATUS_CODE -eq 0 ]] || return 1
+    local line
+    while IFS= read -r line; do
+        if [[ "$line" == "  $TEST_DOMAIN "* ]]; then
+            return 0
         fi
-    fi
+    done <<<"$STATUS_TEXT"
+    return 1
+}
 
-    local output code
-    output="$("$CLI" add "$TEST_DOMAIN" 2>&1)"
-    code=$?
-    echo "$output" | indent
-    if [[ $code -eq 0 ]]; then
-        pass "siteblock add $TEST_DOMAIN succeeded"
-    elif [[ "$output" == *"already blocked"* ]]; then
-        pass "$TEST_DOMAIN was already blocked (from an earlier run)"
+# Prints the SKIP line for a blocking check when the test site is not blocked. This script never blocks anything
+# itself, so the person has to do it. When "siteblock status" itself failed, the site's state is unknown, and
+# telling the person to block it would be the wrong advice.
+skip_until_blocked() {
+    if [[ $STATUS_CODE -ne 0 ]]; then
+        skip "cannot tell whether $TEST_DOMAIN is blocked, because siteblock status failed (see check 2)"
     else
-        fail "siteblock add $TEST_DOMAIN exited $code"
+        skip "Block $TEST_DOMAIN from the menu bar icon, then run scripts/verify-install.sh again."
     fi
+}
 
-    if grep -qx "0.0.0.0 $TEST_DOMAIN" "$HOSTS_FILE" 2>/dev/null && grep -qx ":: $TEST_DOMAIN" "$HOSTS_FILE" 2>/dev/null; then
-        pass "$HOSTS_FILE contains '0.0.0.0 $TEST_DOMAIN' and ':: $TEST_DOMAIN'"
+# Check 3: the hosts file has the lines that block the test site: the site itself, its www and m forms, and its short
+# link name youtu.be, each in the IPv4 form (0.0.0.0), plus the site itself in the IPv6 form (::). Needs the test
+# site to be blocked already.
+check_hosts_lines() {
+    heading 3 "the hosts file has the lines that block $TEST_DOMAIN"
+    if ! test_site_is_blocked; then
+        skip_until_blocked
+        return
+    fi
+    local line missing=0
+    for line in "0.0.0.0 $TEST_DOMAIN" "0.0.0.0 www.$TEST_DOMAIN" "0.0.0.0 m.$TEST_DOMAIN" "0.0.0.0 youtu.be" ":: $TEST_DOMAIN"; do
+        if grep -qxF "$line" "$HOSTS_FILE" 2>/dev/null; then
+            echo "    found: $line"
+        else
+            echo "    MISSING: $line"
+            missing=1
+        fi
+    done
+    if [[ $missing -eq 0 ]]; then
+        pass "$HOSTS_FILE contains every expected line for $TEST_DOMAIN"
     else
-        fail "$HOSTS_FILE does not contain both '0.0.0.0 $TEST_DOMAIN' and ':: $TEST_DOMAIN'"
+        fail "$HOSTS_FILE is missing at least one expected line for $TEST_DOMAIN"
     fi
 }
 
 # Check 4: the macOS name lookup (not just the file) returns 0.0.0.0 for the test site.
 check_lookup() {
     heading 4 "the system name lookup returns 0.0.0.0 for $TEST_DOMAIN"
+    if ! test_site_is_blocked; then
+        skip_until_blocked
+        return
+    fi
     local output="" attempt
     # The daemon clears the name cache before it replies, but a retry or two costs nothing and avoids a false alarm.
     for attempt in 1 2 3; do
@@ -147,6 +173,10 @@ check_lookup() {
 # Check 5: a real connection attempt fails. curl is told to ignore any proxy settings, since a proxy would do the lookup elsewhere.
 check_connection() {
     heading 5 "a real connection to $TEST_DOMAIN fails"
+    if ! test_site_is_blocked; then
+        skip_until_blocked
+        return
+    fi
     local url code
     for url in "https://$TEST_DOMAIN" "$TEST_PAGE_URL"; do
         curl --noproxy '*' --silent --show-error --output /dev/null --max-time 5 "$url" 2>/dev/null
@@ -159,7 +189,9 @@ check_connection() {
     done
 }
 
-# Check 6: the daemon says the hosts file is healthy, and the managed section is really in the file.
+# Check 6: the daemon says the hosts file is healthy, and the managed section is really in the file. SiteBlock
+# removes its section from the hosts file while nothing is blocked, so the BEGIN and END markers are expected only
+# once at least one site is blocked.
 check_hosts_healthy() {
     heading 6 "the daemon reports a healthy hosts file"
     local output code
@@ -172,7 +204,11 @@ check_hosts_healthy() {
     else
         pass "siteblock status shows no hosts file warning"
     fi
-    if grep -q "^# BEGIN SiteBlock" "$HOSTS_FILE" 2>/dev/null && grep -q "^# END SiteBlock" "$HOSTS_FILE" 2>/dev/null; then
+    if [[ $code -ne 0 ]]; then
+        skip "cannot tell whether $HOSTS_FILE should hold a SiteBlock section, because siteblock status failed"
+    elif [[ "$output" != *"Blocked sites ("* ]]; then
+        pass "no site is blocked yet, so SiteBlock keeps no section in $HOSTS_FILE (nothing to look for)"
+    elif grep -q "^# BEGIN SiteBlock" "$HOSTS_FILE" 2>/dev/null && grep -q "^# END SiteBlock" "$HOSTS_FILE" 2>/dev/null; then
         pass "$HOSTS_FILE has SiteBlock's BEGIN and END markers"
     else
         fail "$HOSTS_FILE is missing SiteBlock's BEGIN and END markers"
@@ -260,6 +296,10 @@ check_one_browser() {
 # Check 7: what the real browsers show.
 check_browsers() {
     heading 7 "Safari and Chrome cannot load $TEST_PAGE_URL"
+    if ! test_site_is_blocked; then
+        skip_until_blocked
+        return
+    fi
     check_one_browser "Safari" "Safari" \
         'tell application "Safari" to do JavaScript "document.title" in front document' \
         'tell application "Safari" to name of front document' \
@@ -272,7 +312,7 @@ check_browsers() {
     echo "You can close the $TEST_DOMAIN tabs that were opened. A browser tab that was already connected to a site before it was blocked may keep loading for a short while; reload it after a minute."
 }
 
-# Prints the result totals and the follow-up commands a person can run.
+# Prints the result totals and the follow-up commands a person can run. Skipped checks do not count as failures.
 print_summary() {
     echo
     echo "=============================================="
@@ -285,12 +325,18 @@ print_summary() {
     if [[ $MANUAL_COUNT -gt 0 ]]; then
         echo "Some checks need you to look at the screen; see the MANUAL CHECK lines above."
     fi
-    echo
-    echo "$TEST_DOMAIN stays blocked. To unblock it later (needs your SiteBlock password and a wait):"
-    echo "    siteblock unblock $TEST_DOMAIN"
-    echo
-    echo "To test that hand edits are undone, run this. It prints how many lines mention $TEST_DOMAIN after the repair; a number above 0 means SiteBlock put them back, and 0 means the repair did not happen:"
-    echo "    sudo sed -i '' '/$TEST_DOMAIN/d' /etc/hosts; sleep 3; grep -c $TEST_DOMAIN /etc/hosts"
+    if test_site_is_blocked; then
+        echo
+        echo "$TEST_DOMAIN stays blocked. To unblock it later (needs your SiteBlock password and a wait):"
+        echo "    siteblock unblock $TEST_DOMAIN"
+        echo
+        echo "To test that hand edits are undone, run this. It prints how many lines mention $TEST_DOMAIN after the repair; a number above 0 means SiteBlock put them back, and 0 means the repair did not happen:"
+        echo "    sudo sed -i '' '/$TEST_DOMAIN/d' /etc/hosts; sleep 3; grep -c $TEST_DOMAIN /etc/hosts"
+    elif [[ $STATUS_CODE -eq 0 ]]; then
+        echo
+        echo "The blocking checks were skipped because $TEST_DOMAIN is not blocked yet."
+        echo "Block $TEST_DOMAIN from the menu bar icon, then run scripts/verify-install.sh again."
+    fi
 }
 
 # Runs every check in order, then prints the summary. The exit code is 1 when any check failed.
@@ -300,7 +346,7 @@ main() {
     fi
     check_jobs_loaded
     check_status
-    check_add
+    check_hosts_lines
     check_lookup
     check_connection
     check_hosts_healthy

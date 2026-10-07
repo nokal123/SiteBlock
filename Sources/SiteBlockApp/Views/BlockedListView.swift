@@ -35,21 +35,18 @@ struct BlockedListView: View {
         }
     }
 
-    /// The message shown before anything is blocked. It is hidden while the password form is up, because that form is the one thing to do first.
-    @ViewBuilder
+    /// The message shown before anything is blocked.
     private var emptyState: some View {
-        if snapshot.passwordSet {
-            VStack(spacing: 6) {
-                Image(systemName: "shield")
-                    .font(.system(size: 26, weight: .light))
-                    .foregroundStyle(.tertiary)
-                Text("No sites blocked yet.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
+        VStack(spacing: 6) {
+            Image(systemName: "shield")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("No sites blocked yet.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
     }
 }
 
@@ -60,7 +57,7 @@ struct BlockedRow: View {
     let site: BlockedSiteStatus
     /// The current unblock delay, used to tell the user how long the wait will be.
     let delaySeconds: Int
-    /// False before a password exists, because the daemon would refuse an unblock anyway.
+    /// False while no password exists (after a password reset, before a new one is chosen), because the daemon would refuse an unblock anyway.
     let canUnblock: Bool
 
     /// Whether the list of host names is open.

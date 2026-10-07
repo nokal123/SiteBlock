@@ -72,12 +72,12 @@ Tests:
 
 ## Installed-System Verification
 
-`scripts/verify-install.sh` runs as the normal user after `sudo scripts/install.sh`. It uses `youtube.com`, the site the user wants blocked, and leaves it blocked when it finishes. If a password has not been set yet, the script stops and asks the user to set one first, because `add` refuses until a password exists.
+`scripts/verify-install.sh` runs as the normal user after `sudo scripts/install.sh`. It never asks for a SiteBlock password and never blocks anything on its own: the password is chosen at the first block. Checks 1 and 2 and the hosts-health check always run. The blocking checks (3 to 7) run only when `youtube.com` is already blocked; otherwise each prints SKIP with the sentence "Block youtube.com from the menu bar icon, then run scripts/verify-install.sh again." After the user blocks youtube.com, running the script again performs every check.
 
 Checks:
 1. Both launchd jobs are loaded (`launchctl print system/<label>`).
 2. `siteblock status` succeeds.
-3. `siteblock add youtube.com` succeeds, or reports it is already blocked.
+3. `siteblock status` lists `youtube.com` as blocked.
 4. `/etc/hosts` contains `0.0.0.0 youtube.com`, `0.0.0.0 www.youtube.com`, `0.0.0.0 m.youtube.com` and `0.0.0.0 youtu.be`.
 5. `dscacheutil -q host -a name www.youtube.com` returns `0.0.0.0` (the macOS system lookup that Safari uses).
 6. `curl --max-time 5 https://www.youtube.com` fails to connect.

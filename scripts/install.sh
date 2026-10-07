@@ -297,6 +297,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 echo "SiteBlock is installed."
 echo "Next steps:"
-echo "  1. Set your SiteBlock password: click the shield icon in the menu bar, or run: siteblock setup"
-echo "  2. Run scripts/verify-install.sh to check that blocking really works."
+echo "  1. Click the shield icon in the menu bar, type a site (for example youtube.com) and press Block."
+echo "     The first time, it asks you to choose your SiteBlock password."
+echo "  2. Then run scripts/verify-install.sh to check that the block works in Safari and Chrome."
 echo "Logs: $LOG_DIR"

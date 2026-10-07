@@ -143,7 +143,7 @@ In sandbox mode, steps 2, 4, 5 and 6 are replaced by deleting the sandbox's own 
 ```
 siteblock status
 siteblock setup                     # asks for a new password twice
-siteblock add <site> [<site> ...]
+siteblock add <site> [<site> ...]   # the first time, asks you to choose the password
 siteblock unblock <site>            # asks for the password
 siteblock cancel <site>             # cancel a pending unblock
 siteblock delay                     # show the current delay
@@ -162,6 +162,7 @@ siteblock version
 - `status` prints the delay, then each blocked site with its host count and any countdown, then any pending delay change, uninstall, recovery or lockout.
 - Exit codes: `0` success, `1` the daemon refused the command (the error sentence is printed to standard error) or a typed password and its confirmation do not match, `2` the daemon is not running, `64` usage error. An empty password and a duration that `parseDuration` rejects are usage errors (`64`) and are never sent to the daemon, so a stray Enter does not use up one of the five password tries.
 - `add` with several sites sends one request per site and keeps going after a failure, then exits `1` if any failed.
+- `add` first asks the daemon for `status`. When no password is set it prompts for a new password twice (as `setup` does), sends `setup`, and only then sends the `add` requests. When standard input is not a terminal it reads the new password from the first line (and an optional confirmation from the second), the same as `setup`.
 
 ---
 
@@ -177,13 +178,14 @@ siteblock version
 
 **Panel states:**
 1. **Not running:** "The SiteBlock service isn't running." and the Terminal command to reinstall.
-2. **Not set up:** two password fields (new and confirm) and a "Set password" button. Shows the minimum length rule and a warning that the password cannot be shown again.
-3. **Normal:**
+2. **Normal:** shown whether or not a password exists yet. The password is chosen at the first block, not at install or first launch.
+   - **First block:** when no password is set and the user presses "Block", the panel does not send `add` yet. It shows "Choose a SiteBlock password" with two password fields (new and confirm), the minimum length rule, a warning that the password cannot be shown again and is needed to unblock, and "Set password and block" and "Cancel" buttons. On submit it sends `setup` and then, only if that succeeds, `add` for the site that was typed. A mismatch or a weak password is shown inline and nothing is sent.
+   - When no password is set and sites are already blocked (after a finished recovery), the blocked list shows without "Unblock…" buttons and a banner offers "Choose a new password" with the same two fields.
    - A text field "Add a site (e.g. reddit.com)" and a "Block" button. Enter also submits. Errors appear in red under the field.
    - The blocked list. Each row shows the domain, a disclosure arrow that lists the expanded host names, and either an "Unblock…" button or, when pending, a live countdown such as "Unblocks in 29:41" with a "Keep blocked" button that cancels.
    - Pressing "Unblock…" replaces the row's button with a password field and "Start countdown" and "Cancel" buttons.
    - A footer with "Settings" and "Quit".
    - Banners at the top for a pending delay change, uninstall, recovery or lockout, each with its countdown and a cancel button where cancelling is allowed.
-4. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits for the current delay.
+3. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits for the current delay.
 
 **Behavioral notes:** The app holds no state of its own beyond what is on screen; the daemon is always the source of truth. Quitting the app does not stop any blocking. The app is launched at login by a LaunchAgent (see [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs), and it sets `LSUIElement` so it has no Dock icon.

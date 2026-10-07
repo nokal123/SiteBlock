@@ -18,7 +18,7 @@ let usageText = """
 usage:
   siteblock status
   siteblock setup                      asks for a new password twice
-  siteblock add <site> [<site> ...]
+  siteblock add <site> [<site> ...]    the first time, asks you to choose the password
   siteblock unblock <site>             asks for the password
   siteblock cancel <site>              cancel a pending unblock
   siteblock delay                      show the current unblock delay
@@ -72,7 +72,7 @@ func send(_ request: Request, prefix: String = "") -> SendResult {
 /// Builds the text `siteblock status` prints from a snapshot: the delay, then each blocked site with its host count and any countdown, then any pending delay change, uninstall, recovery or lockout.
 func formatStatus(_ status: StatusSnapshot) -> String {
     var lines = ["SiteBlock \(status.version) — unblock delay: \(Formatting.duration(status.delaySeconds))"]
-    if !status.passwordSet { lines.append("Password not set — run 'siteblock setup'.") }
+    if !status.passwordSet { lines.append("No password yet. You choose it the first time you block a site.") }
     if status.blocked.isEmpty {
         lines.append("No sites blocked.")
     } else {
@@ -182,23 +182,49 @@ private func readNewPassword(prompt: String, confirmPrompt: String) -> NewPasswo
     }
 }
 
+/// Asks for a new SiteBlock password twice, with a short explanation first when a person is at the keyboard (piped input needs none). Used by `setup` and by the first `add`, so both ask the same way and read piped input the same way.
+private func chooseNewPassword() -> NewPasswordInput {
+    if PasswordPrompt.isInteractive {
+        printError("Choose a SiteBlock password (at least \(PasswordHasher.minimumLength) characters). It cannot be shown again, and you need it to unblock sites.")
+    }
+    return readNewPassword(prompt: "New password: ", confirmPrompt: "Confirm password: ")
+}
+
 /// Sets the first password.
 private func runSetup() -> Int32 {
-    if PasswordPrompt.isInteractive {
-        printError("Choose a SiteBlock password (at least 6 characters). It cannot be shown again, and you need it to unblock sites.")
-    }
     let password: String
-    switch readNewPassword(prompt: "New password: ", confirmPrompt: "Confirm password: ") {
+    switch chooseNewPassword() {
     case .failed(let code): return code
     case .password(let entered): password = entered
     }
     return sendAndPrint(Request(command: .setup, password: password))
 }
 
-/// Blocks each given site with one request per site, carries on after a failure, and exits with 1 if any failed (or 2 as soon as the daemon is found not running).
+/// Chooses the SiteBlock password at the first block: asks for it (twice) and sends `setup`. Returns nil when the password was set, or the exit code to stop with when it was not (a mismatch gives 1, an empty entry gives 64, a refusal from the daemon gives 1).
+private func chooseFirstPassword() -> Int32? {
+    if PasswordPrompt.isInteractive {
+        printError("SiteBlock has no password yet. It is chosen with your first block.")
+    }
+    let password: String
+    switch chooseNewPassword() {
+    case .failed(let code): return code
+    case .password(let entered): password = entered
+    }
+    let code = sendAndPrint(Request(command: .setup, password: password))
+    return code == ExitCode.success ? nil : code
+}
+
+/// Blocks each given site with one request per site, carries on after a failure, and exits with 1 if any failed (or 2 as soon as the daemon is found not running). When no password is set yet, it first asks for one and sets it, because the password is chosen at the first block; if that fails, no site is sent.
 private func runAdd(_ sites: [String]) -> Int32 {
     if sites.isEmpty { return usageFailure("add needs at least one site") }
     if let flag = sites.first(where: { $0.hasPrefix("-") }) { return usageFailure("unknown option '\(flag)'") }
+    // Ask the daemon first whether a password exists. Nothing is prompted for when one does, so scripts that pipe nothing keep working.
+    switch send(Request(command: .status)) {
+    case .failed(let code): return code
+    case .accepted(let response):
+        // A response without a status is treated as "password set": the daemon then gives its own refusal for each add instead of this tool guessing.
+        if response.status?.passwordSet == false, let code = chooseFirstPassword() { return code }
+    }
     var anyFailed = false
     for site in sites {
         // With several sites, each error is prefixed with the site so it is clear which one failed.

@@ -31,13 +31,14 @@ if ! sudo scripts/install.sh; then
 fi
 
 echo
-echo "=== Step 3 of 3: checking that blocking works ==="
+echo "=== Step 3 of 3: checking the installation ==="
 scripts/verify-install.sh
 verify_status=$?
 
 echo
 if [[ $verify_status -eq 0 ]]; then
-    echo "SiteBlock is installed and the checks passed. You can open the shield icon in the menu bar."
+    echo "SiteBlock is installed and running. Click the shield icon in the menu bar to block your first site;"
+    echo "it will ask you to choose your SiteBlock password then."
 else
     echo "SiteBlock is installed, but at least one check failed. Read the FAIL lines above."
 fi

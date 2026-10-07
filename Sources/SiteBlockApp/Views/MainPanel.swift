@@ -42,7 +42,15 @@ private struct PanelRouter: View {
     }
 }
 
-/// The main screen: title row, warning banners, the add field (or the first-run password form), the blocked list, and the footer.
+/// Which inline password form is open on the home screen, if any.
+private enum PasswordFormMode: Equatable {
+    /// The form under the add field, opened by pressing Block before any password exists. The password is chosen at the first block, not at install or first launch.
+    case firstBlock
+    /// The form inside the "Choose a new password" banner, offered when a password reset has cleared the password while sites are still blocked.
+    case newPassword
+}
+
+/// The main screen: title row, warning banners, the add field, the blocked list, and the footer. It looks the same whether or not a password exists yet; when none does, pressing Block opens the "Choose a SiteBlock password" form under the add field first.
 private struct HomeView: View {
     @ObservedObject var model: StatusModel
     /// The latest status from the daemon.
@@ -53,9 +61,17 @@ private struct HomeView: View {
     /// The site name being typed.
     @State private var newSite = ""
     @FocusState private var addFocused: Bool
+    /// The password form that is open right now, or nil when none is.
+    @State private var passwordForm: PasswordFormMode?
 
     /// The typed site name without surrounding spaces or line breaks (a pasted address often has them).
     private var trimmedSite: String { newSite.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// True while the first-block password form is showing. It also needs "no password yet": if one was set in the meantime (for example from Terminal) the form has nothing left to do, so it goes away and Block works normally.
+    private var isChoosingFirstPassword: Bool { passwordForm == .firstBlock && !snapshot.passwordSet }
+
+    /// True when a password reset left sites blocked but no password to unblock them with, so the banner offering a new password should show.
+    private var needsNewPassword: Bool { !snapshot.passwordSet && !snapshot.blocked.isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,7 +79,10 @@ private struct HomeView: View {
             Divider()
             VStack(alignment: .leading, spacing: 12) {
                 if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback) { BannersView(model: model, snapshot: snapshot) }
-                if snapshot.passwordSet { addSection } else { SetupView(model: model) }
+                if needsNewPassword {
+                    NoPasswordBanner(model: model, isChoosing: passwordForm == .newPassword, choose: { passwordForm = .newPassword }, cancel: { passwordForm = nil })
+                }
+                addSection
                 BlockedListView(model: model, snapshot: snapshot)
             }
             .padding(16)
@@ -73,9 +92,11 @@ private struct HomeView: View {
         .onAppear(perform: refocus)
         // Each time the panel opens, put the cursor back in the add field.
         .onChange(of: model.openCount) { _, _ in refocus() }
+        // Once a password exists, no password form has anything left to do, so the one that was open is closed.
+        .onChange(of: snapshot.passwordSet) { _, isSet in if isSet { passwordForm = nil } }
     }
 
-    /// The text field and the Block button, with the daemon's answer underneath.
+    /// The text field and the Block button, with the daemon's answer underneath. While the first-block password form is open, the field and button are switched off so the site that will be blocked cannot change, and the form sits underneath.
     private var addSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -84,12 +105,31 @@ private struct HomeView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($addFocused)
                     .onSubmit(addSite)
+                    .disabled(isChoosingFirstPassword)
                 Button("Block", action: addSite)
                     .buttonStyle(.borderedProminent)
-                    .disabled(trimmedSite.isEmpty || model.isBusy)
+                    .disabled(trimmedSite.isEmpty || model.isBusy || isChoosingFirstPassword)
             }
             FeedbackLine(model: model, scope: .add)
+            if isChoosingFirstPassword { firstBlockForm }
         }
+    }
+
+    /// The "Choose a SiteBlock password" form for the first block, in a gray box. It names the site that will be blocked once the password is set; Cancel closes it and leaves the typed site in the field.
+    private var firstBlockForm: some View {
+        SetupView(
+            model: model,
+            detail: "\(trimmedSite) will be blocked as soon as the password is set.",
+            submitTitle: "Set password and block",
+            onSubmit: setPasswordAndBlock,
+            onCancel: {
+                passwordForm = nil
+                refocus()
+            }
+        )
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardBackground()
     }
 
     /// The bottom row: Settings on the left and Quit on the right.
@@ -120,13 +160,34 @@ private struct HomeView: View {
         }
     }
 
-    /// Asks the daemon to block the typed site. The field is emptied only when the daemon accepts it, so a typo can be fixed instead of retyped.
+    /// Asks the daemon to block the typed site. The field is emptied only when the daemon accepts it, so a typo can be fixed instead of retyped. When no password exists yet, nothing is sent: the password form opens instead, with the typed site kept, because the daemon refuses to block until a password is set.
     private func addSite() {
         let site = trimmedSite
-        guard !site.isEmpty, !model.isBusy else { return }
+        guard !site.isEmpty, !model.isBusy, !isChoosingFirstPassword else { return }
+        guard snapshot.passwordSet else {
+            passwordForm = .firstBlock
+            return
+        }
         Task {
             if await model.add(domain: site) { newSite = "" }
             addFocused = true
+        }
+    }
+
+    /// Sets the chosen password and then blocks the typed site; the site is sent only if the daemon accepted the password. Returns true when the password was set, so the form can go away; if the site itself was then refused, its reason shows under the add field and the site stays typed so it can be fixed. Returns false when the password was refused, so the form stays open with the reason inside it.
+    private func setPasswordAndBlock(_ password: String) async -> Bool {
+        switch await model.setupThenAdd(password: password, domain: trimmedSite) {
+        case .passwordNotSet:
+            return false
+        case .passwordSetSiteRefused:
+            passwordForm = nil
+            addFocused = true
+            return true
+        case .blocked:
+            newSite = ""
+            passwordForm = nil
+            addFocused = true
+            return true
         }
     }
 }

@@ -26,6 +26,30 @@ private struct BannerCard<Content: View>: View {
     }
 }
 
+/// The notice shown when a password reset has cleared the password while sites are still blocked. The sites stay blocked, but none can be unblocked until a new password exists. A button opens the same two-field "Choose a SiteBlock password" form that the first block uses.
+struct NoPasswordBanner: View {
+    @ObservedObject var model: StatusModel
+    /// Whether the password form is open in place of the button.
+    let isChoosing: Bool
+    /// Opens the password form.
+    let choose: () -> Void
+    /// Closes the password form without setting a password.
+    let cancel: () -> Void
+
+    var body: some View {
+        BannerCard(icon: "key.fill", tint: .orange) {
+            Text("SiteBlock has no password right now, so no site can be unblocked. Your blocked sites stay blocked.")
+            if isChoosing {
+                SetupView(model: model, detail: nil, submitTitle: "Set password", onSubmit: { await model.setup(password: $0) }, onCancel: cancel)
+            } else {
+                Button("Choose a new password", action: choose)
+                    .controlSize(.small)
+                    .disabled(model.isBusy)
+            }
+        }
+    }
+}
+
 /// The warnings for anything that is waiting or wrong: a hosts file problem, a password lockout, a pending delay change, a pending uninstall and a running password reset. Each waiting item shows a live countdown and, where cancelling is allowed, a button that cancels it.
 struct BannersView: View {
     @ObservedObject var model: StatusModel

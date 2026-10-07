@@ -26,7 +26,7 @@ enum FeedbackScope: Hashable {
     case password
     /// The uninstall form in Settings.
     case uninstall
-    /// The first-run "set a password" form.
+    /// The inline "Choose a SiteBlock password" form: the one that opens at the first block, and the one the "Choose a new password" banner opens after a reset.
     case setup
 }
 
@@ -40,6 +40,16 @@ struct Feedback: Equatable {
     let text: String
     /// True for an error (shown in red), false for a confirmation.
     let isError: Bool
+}
+
+/// How it went when the first password was set and the first site was blocked in one go.
+enum FirstBlockOutcome: Equatable {
+    /// The password was not set, so nothing else was sent. The reason is shown inside the password form.
+    case passwordNotSet
+    /// The password was set, but the daemon refused the site (for example it is not a valid site name). The reason is shown under the add field.
+    case passwordSetSiteRefused
+    /// The password was set and the site is blocked.
+    case blocked
 }
 
 /// The latest answer from a request: either the daemon's response or the reason none arrived, plus the moment it came back.
@@ -165,9 +175,22 @@ final class StatusModel: ObservableObject {
 
     // MARK: - Commands
 
-    /// Blocks a site at once. Blocking needs no password. Returns true when the daemon accepted it.
+    /// Blocks a site at once. No password is typed for this, but one must already be set: the daemon refuses with "set a password first" otherwise, which is why the panel asks for one before it calls this. Returns true when the daemon accepted it.
     func add(domain: String) async -> Bool {
         await run(Request(command: .add, domain: domain), scope: .add)
+    }
+
+    /// The first block: sets the SiteBlock password, and only when the daemon accepts it, blocks `domain`. If the password is refused (too short, or one is already set), no block is requested at all.
+    func setupThenAdd(password: String, domain: String) async -> FirstBlockOutcome {
+        // Both requests count as one piece of work, so the buttons stay disabled in the gap between them.
+        commandsInFlight += 1
+        isBusy = true
+        defer {
+            commandsInFlight -= 1
+            isBusy = commandsInFlight > 0
+        }
+        guard await setup(password: password) else { return .passwordNotSet }
+        return await add(domain: domain) ? .blocked : .passwordSetSiteRefused
     }
 
     /// Starts the unblock countdown for a site. The site stays blocked until the countdown ends. Returns true when the daemon accepted it.
@@ -195,7 +218,7 @@ final class StatusModel: ObservableObject {
         await run(Request(command: .changePassword, password: old, newPassword: new), scope: .password)
     }
 
-    /// Sets the first password.
+    /// Sets the SiteBlock password: the first one, or a new one after a forgotten-password reset has cleared the old one. Returns true when the daemon accepted it.
     func setup(password: String) async -> Bool {
         await run(Request(command: .setup, password: password), scope: .setup)
     }

@@ -18,7 +18,7 @@ A site you block also blocks its common variants, because the hosts file cannot 
 
 ## Install
 
-Double-click **`Install SiteBlock.command`** in this folder. Terminal opens, builds SiteBlock, asks for your Mac password to install the background service, and then runs checks that block youtube.com and confirm it is blocked in Safari and Chrome.
+Double-click **`Install SiteBlock.command`** in this folder. Terminal opens, builds SiteBlock, asks for your Mac password to install the background service, and checks that the service is running. Once you have blocked youtube.com from the menu bar, run `scripts/verify-install.sh` to confirm it is blocked in Safari and Chrome.
 
 The same steps from Terminal:
 
@@ -26,7 +26,7 @@ The same steps from Terminal:
 cd ~/Projects/SiteBlock && scripts/build.sh && sudo scripts/install.sh && scripts/verify-install.sh
 ```
 
-After installing, click the shield icon in the menu bar and set your SiteBlock password. This password is separate from your Mac password, and it cannot be shown again, so store it somewhere you trust (or give it to someone else to hold).
+Installing asks only for your Mac password. You choose your SiteBlock password the first time you block a site: click the shield icon in the menu bar, type a site and press Block, and the panel asks you to choose it. This password is separate from your Mac password, and it cannot be shown again, so store it somewhere you trust (or give it to someone else to hold).
 
 ## Everyday use
 
