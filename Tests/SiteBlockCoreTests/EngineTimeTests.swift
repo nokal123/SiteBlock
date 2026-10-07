@@ -87,6 +87,36 @@ import SiteBlockCore
         #expect(engine.state.blocked.map(\.domain) == ["c.com"])
     }
 
+    // 02-core-components.md § Engine, Tick rule: "advance every countdown by elapsed. Then ... remove sites whose unblock finished". Every
+    // site whose unblock finished goes in that one tick, not one site per tick. Here "a.com" has 1,200 s left and "b.com" 1,800 s when the
+    // tick arrives, and "c.com" has no unblock pending. The elapsed values include the exact end of the later countdown and a huge sleep.
+    @Test(arguments: [1800.0, 1800.5, 5000.0, 864_000.0])
+    func twoPendingUnblocksThatFinishOnOneBigTickBothLeaveBlockedAndBlockedHostsInThatTick(elapsed: Double) {
+        let engine = makeEngine(blocking: ["a.com", "b.com", "c.com"])
+        engine.send(.unblock, domain: "a.com", password: rightPassword)
+        _ = engine.tick(elapsed: 600)
+        engine.send(.unblock, domain: "b.com", password: rightPassword)
+        #expect(engine.pendingUnblock(of: "a.com") == Countdown(remainingSeconds: 1200, totalSeconds: 1800))
+        #expect(engine.pendingUnblock(of: "b.com") == Countdown(seconds: 1800))
+        #expect(engine.tick(elapsed: elapsed) == true)
+        #expect(engine.state.blocked.map(\.domain) == ["c.com"])
+        #expect(engine.blockedHosts == DomainExpander.expand("c.com"))
+        #expect(engine.hostsToWrite == (DomainExpander.expand("c.com") + Engine.privateRelayHosts).sorted())
+        for gone in ["a.com", "b.com"] { #expect(!engine.blockedHosts.contains(gone) && !engine.blockedHosts.contains("www.\(gone)")) }
+        #expect(engine.send(.status).status?.blocked.map(\.domain) == ["c.com"])
+        #expect(engine.tick(elapsed: 1) == false)
+    }
+
+    // When every blocked site has an unblock that finishes on the same tick, nothing is blocked afterwards and nothing is written.
+    @Test func everySiteWithAnUnblockThatFinishesOnOneTickLeavesNothingBlockedAndNothingToWrite() {
+        let engine = makeEngine(blocking: ["a.com", "b.com", "x.com", "twitter.com"])
+        for domain in ["a.com", "b.com", "x.com", "twitter.com"] { engine.send(.unblock, domain: domain, password: rightPassword) }
+        #expect(engine.tick(elapsed: 1800) == true)
+        #expect(engine.state.blocked.isEmpty)
+        #expect(engine.blockedHosts.isEmpty)
+        #expect(engine.hostsToWrite.isEmpty)
+    }
+
     @Test func aFinishedUnblockRemovesTheSiteSoItCanBeAddedAgainFromScratch() {
         let engine = makeEngine(blocking: ["reddit.com"])
         engine.send(.unblock, domain: "reddit.com", password: rightPassword)
@@ -303,6 +333,36 @@ import SiteBlockCore
         _ = engine.tick(elapsed: 450)
         _ = engine.tick(elapsed: 450)
         expectSuccess(engine.send(.unblock, domain: "reddit.com", password: rightPassword))
+    }
+
+    // 02-core-components.md § Engine, recoveryStart: "fail notRoot unless peerUID == 0. Fail notSetUp if no password is set. Start recovery."
+    // No password is checked, so the lockout, which only refuses password checks, does not stand in its way. This is the way out for
+    // an owner who forgot the password and locked themselves out while guessing.
+    @Test func recoveryStartFromRootDuringALockoutSucceedsAndStartsTheRecoveryCountdown() {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        exhaustPasswordAttempts(engine)
+        let lockout = engine.state.lockout
+        #expect(lockout == Countdown(seconds: 900))
+        let response = engine.send(.recoveryStart, uid: 0)
+        expectSuccess(response)
+        #expect(engine.state.recovery == Countdown(seconds: 172_800))
+        #expect(response.status?.recoverySecondsRemaining == 172_800)
+        #expect(response.status?.lockoutSecondsRemaining == 900, "starting a recovery does not end the lockout")
+        #expect(engine.state.lockout == lockout)
+        #expect(engine.state.failedAttempts == 0)
+        #expect(engine.state.passwordHash != nil)
+        // The password commands are still refused while the lockout runs.
+        expectFailure(engine.send(.unblock, domain: "reddit.com", password: rightPassword), .lockedOut)
+    }
+
+    // A caller that is not root gets notRoot during a lockout, not lockedOut: the root check comes first and there is no password check.
+    @Test(arguments: [uid_t(501), uid_t(1), UInt32.max])
+    func recoveryStartFromANonRootProcessDuringALockoutIsNotRootAndChangesNothing(uid: uid_t) {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        exhaustPasswordAttempts(engine)
+        let before = engine.state
+        expectFailure(engine.send(.recoveryStart, uid: uid), .notRoot)
+        #expect(engine.state == before)
     }
 
     @Test func theLockoutRulesComeBeforeTheNoPasswordRule() {

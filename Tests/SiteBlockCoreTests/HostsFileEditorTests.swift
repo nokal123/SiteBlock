@@ -12,6 +12,9 @@ private let end = "# END SiteBlock"
 // The stock macOS hosts file, with its tabs and its run of spaces before the second "localhost".
 private let defaultHosts = "##\n# Host Database\n#\n# localhost is used to configure the loopback interface\n# when the system is booting.  Do not change this entry.\n##\n127.0.0.1\tlocalhost\n255.255.255.255\tbroadcasthost\n::1             localhost\n"
 
+// The three stock lines the Mac needs, with the layout a hand-written file may use (a tab, a tab, and a single space).
+private let stockLines = "127.0.0.1\tlocalhost\n255.255.255.255\tbroadcasthost\n::1 localhost\n"
+
 // The managed section the design describes: BEGIN line, then "0.0.0.0 host" and ":: host" for each host in sorted order, then END.
 private func section(_ hosts: [String]) -> String {
     var text = begin + "\n"
@@ -39,6 +42,8 @@ private struct ReferenceStats {
     var strayEnds = 0
     var orphanBegins = 0
     var supersededBegins = 0
+    var droppedHostileEntries = 0
+    var droppedSystemNames = 0
 }
 
 // Splits UTF-8 bytes into lines on "\n", "\r\n" and a lone "\r" (design step 1 and "Line breaks"). Working on bytes means a
@@ -143,15 +148,53 @@ private func referenceStripNames(from line: [UInt8], blocked: Set<[UInt8]>, stat
     return rewritten
 }
 
+// The bytes the input guard allows in a host name: a-z, 0-9, "-" and ".".
+private func referenceIsAllowedHostByte(_ byte: UInt8) -> Bool {
+    (0x61...0x7A).contains(byte) || (0x30...0x39).contains(byte) || byte == 0x2D || byte == 0x2E
+}
+
+// True when the bytes end with the given text. Written by hand so no String or Foundation suffix test is shared with the library.
+private func referenceEndsWith(_ bytes: [UInt8], _ suffix: String) -> Bool {
+    let wanted = Array(suffix.utf8)
+    return bytes.count >= wanted.count && Array(bytes[(bytes.count - wanted.count)...]) == wanted
+}
+
+// The names the Mac itself relies on (design, Input guard): localhost, broadcasthost, and anything ending in .local or .localhost.
+private func referenceIsSystemName(_ host: [UInt8]) -> Bool {
+    host == Array("localhost".utf8) || host == Array("broadcasthost".utf8) || referenceEndsWith(host, ".local") || referenceEndsWith(host, ".localhost")
+}
+
+// The design's input guard, read literally and worked out on UTF-8 bytes: trim each entry, lowercase it, drop it when it is empty, holds a
+// byte outside a-z 0-9 - . or is a system name, then remove duplicates. The design says only "trim", so this trims the four ASCII
+// whitespace bytes (space, tab, line feed, carriage return); no generated entry has any other whitespace at its edges, so the
+// cross-check does not depend on that choice. Lowercasing touches only A-Z, so a non-ASCII look-alike (a Kelvin sign) stays non-ASCII
+// and is dropped, and nothing here uses Foundation's trimming or Swift's Unicode lowercasing, so this guard can disagree with the library's.
+private func referenceCleanHosts(_ entries: [String], stats: inout ReferenceStats) -> [String] {
+    var kept = Set<[UInt8]>()
+    for entry in entries {
+        var bytes = Array(entry.utf8)
+        while let first = bytes.first, [0x20, 0x09, 0x0A, 0x0D].contains(first) { bytes.removeFirst() }
+        while let last = bytes.last, [0x20, 0x09, 0x0A, 0x0D].contains(last) { bytes.removeLast() }
+        bytes = bytes.map { (0x41...0x5A).contains($0) ? $0 + 0x20 : $0 }
+        guard !bytes.isEmpty, bytes.allSatisfy(referenceIsAllowedHostByte) else {
+            stats.droppedHostileEntries += 1
+            continue
+        }
+        if referenceIsSystemName(bytes) {
+            stats.droppedSystemNames += 1
+            continue
+        }
+        kept.insert(bytes)
+    }
+    return kept.map { String(decoding: $0, as: UTF8.self) }.sorted()
+}
+
 // An independent implementation of the whole renderer, written from the design text only: the input guard on blocked hosts, the three
 // line-break kinds, steps 2 and 3 as read above, the trailing-empty-line trim, and the appended section. Used to cross-check the real
 // renderer on thousands of generated files. It supports the inputs where the design is unambiguous: no whitespace-only lines.
 private func referenceRender(original: String, blocked: [String], stats: inout ReferenceStats) -> String {
-    // Input guard: trim and lowercase each entry, then drop any entry that is empty or has a character outside a-z 0-9 - .
-    let usable = blocked.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { host in
-        !host.isEmpty && host.utf8.allSatisfy { (0x61...0x7A).contains($0) || (0x30...0x39).contains($0) || $0 == 0x2D || $0 == 0x2E }
-    }
-    let hosts = Array(Set(usable)).sorted()
+    // Input guard: trim and lowercase each entry, then drop any entry that is empty, has a character outside a-z 0-9 - . or is a system name.
+    let hosts = referenceCleanHosts(blocked, stats: &stats)
     let blockedBytes = Set(hosts.map { Array($0.utf8) })
     let lines = referenceRemoveSections(referenceSplit(Array(original.utf8)), stats: &stats)
     var kept: [[UInt8]] = []
@@ -429,9 +472,12 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
         #expect(HostsFileEditor.render(original: original, blockedHosts: ["reddit.com"]) == withSection(defaultHosts, ["reddit.com"]))
     }
 
-    // The design does not say whether an inline comment survives on a line that loses a name, so only the name list is checked.
-    @Test func renderKeepsTheOtherNamesOnALineWithAnInlineCommentWhenOneNameIsRemoved() {
+    // 02-core-components.md § HostsFileEditor, "Comments on rewritten lines": when step 3 removes a name from a user line, the line's trailing
+    // comment is kept as " #comment". So the whole rewritten line is pinned here, not only its name list: the address, the names that
+    // are left, and the comment (the comment text is " keep", so the line ends in " # keep").
+    @Test func renderKeepsTheOtherNamesAndTheInlineCommentOnALineWhenOneNameIsRemoved() {
         let result = HostsFileEditor.render(original: defaultHosts + "1.2.3.4 reddit.com other.com # keep\n", blockedHosts: ["reddit.com"])
+        #expect(result == defaultHosts + "1.2.3.4 other.com # keep\n" + "\n" + section(["reddit.com"]))
         let userLines = result.components(separatedBy: "\n").filter { $0.contains("other.com") }
         #expect(userLines.count == 1)
         let fields = (userLines.first ?? "").split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map { $0.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init) }
@@ -500,13 +546,18 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
         #expect(HostsFileEditor.render(original: "", blockedHosts: []) == "")
     }
 
-    // The design does not say whether the section of a file with no other content starts with a blank line, so only the
-    // properties that matter are checked: the section is there, exactly once, and the result is stable.
-    @Test func renderOfAnEmptyFileProducesAStableFileWithOneSection() {
-        let result = HostsFileEditor.render(original: "", blockedHosts: ["reddit.com"])
-        #expect(result.hasSuffix(section(["reddit.com"])))
-        #expect(count(of: "# BEGIN SiteBlock", in: result) == 1)
-        #expect(HostsFileEditor.render(original: result, blockedHosts: ["reddit.com"]) == result)
+    // 02-core-components.md § HostsFileEditor, render step 5: "append one empty line and the managed section". Step 4 leaves an empty file
+    // empty, so the result of rendering "" is that one empty line followed by the section: it starts with "\n# BEGIN" and has no
+    // other text in front. The section is there exactly once, and the result is stable.
+    @Test func renderOfAnEmptyFileStartsWithTheOneEmptyLineOfStepFiveThenTheSection() {
+        let result = HostsFileEditor.render(original: "", blockedHosts: ["a.com"])
+        #expect(result == "\n" + section(["a.com"]))
+        #expect(result.hasPrefix("\n# BEGIN"))
+        #expect(!result.hasPrefix("\n\n"))
+        let reddit = HostsFileEditor.render(original: "", blockedHosts: ["reddit.com"])
+        #expect(reddit.hasSuffix(section(["reddit.com"])))
+        #expect(count(of: "# BEGIN SiteBlock", in: reddit) == 1)
+        #expect(HostsFileEditor.render(original: reddit, blockedHosts: ["reddit.com"]) == reddit)
     }
 
     // MARK: isCompliant
@@ -581,7 +632,9 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
     // 02-core-components.md § HostsFileEditor: step 2 pairs each END with the nearest open BEGIN above it; step 3 ends the line at the
     // first NUL or "#", splits fields only on ASCII space and tab, ASCII-lowercases each name and removes one trailing "."; untouched
     // lines stay byte for byte and a rewritten line keeps " #comment". The input guard (trim, lowercase, drop entries with characters
-    // outside a-z 0-9 - .) and the lone "\r" line break are part of the reference too. Against the old reference the real renderer
+    // outside a-z 0-9 - . and drop the system names localhost, broadcasthost, .local and .localhost) and the lone "\r" line break are part of
+    // the reference too. The guard is written on UTF-8 bytes with its own trimming and lowercasing, so it does not share Foundation's
+    // whitespace set with the library and can disagree with it. Against the old reference the real renderer
     // disagreed on 17 of the 600 earlier files, all of them differences that the design change introduced on purpose.
     //
     // 1,500 generated files (random markers, stray and superseded BEGIN lines, bypass lines in several spellings, comments, NUL bytes,
@@ -591,8 +644,11 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
         var rng = SeededGenerator(state: 2026_10_06)
         let blockSets: [[String]] = [
             [], ["reddit.com"], ["i.redd.it", "reddit.com", "www.reddit.com"], ["other.com", "redd.it"], ["nas.lan"], ["kick.com"],
-            // Dirty entries: padding and upper case are cleaned up, and entries with a newline, space, "#" or nothing at all are dropped.
-            [" Reddit.COM ", "evil.com\n0.0.0.0 bank.com", "a b.com", "x.com#y", ""], ["REDD.IT", "www.reddit.com\t", "other.com\r"],
+            // Dirty entries: padding and upper case are cleaned up, and entries with a newline, space, colon, "#" or nothing at all are dropped.
+            // The two newline entries are made only of allowed characters plus the one line break, which is the shape of a real injection.
+            [" Reddit.COM ", "evil.com\n0.0.0.0 bank.com", "evil.com\nbank.com", "a b.com", "a:b.com", "x.com#y", ""], ["REDD.IT", "www.reddit.com\t", "other.com\r"],
+            // System names the Mac relies on are never blocked, so the stock localhost and broadcasthost lines in every generated file stay.
+            ["LOCALHOST", "broadcasthost", "printer.local", "x.localhost", "reddit.com"], ["localhost", " BroadcastHost ", "redd.it", "mac.LOCAL"],
         ]
         var stats = ReferenceStats()
         for round in 0..<1500 {
@@ -614,6 +670,8 @@ private func randomHostsFile(_ rng: inout SeededGenerator) -> String {
         #expect(stats.strayEnds > 50, "stray END lines: \(stats.strayEnds)")
         #expect(stats.orphanBegins > 100, "unclosed BEGIN lines: \(stats.orphanBegins)")
         #expect(stats.supersededBegins > 20, "BEGIN lines superseded by a later BEGIN: \(stats.supersededBegins)")
+        #expect(stats.droppedHostileEntries > 500, "block-list entries dropped for their characters: \(stats.droppedHostileEntries)")
+        #expect(stats.droppedSystemNames > 500, "block-list entries dropped as system names: \(stats.droppedSystemNames)")
     }
 }
 
@@ -690,14 +748,59 @@ private func isMarkerOrCleanAddressLine(_ line: String) -> Bool {
         #expect(HostsFileEditor.render(original: defaultHosts, blockedHosts: Self.hostile) == defaultHosts + "\n" + section(["upper.com"]))
     }
 
-    // Each of these alone leaves nothing to write, so the managed section is just the two markers, and render adds no host line.
-    @Test(arguments: ["evil.com\n0.0.0.0 bank.com", "evil.com\r\n:: bank.com", "a b.com", "a\tb.com", "x.com#y", "", "   ", "a_b.com", "bank.com\u{0}", "x.com\u{2028}y.com", "b\u{FC}cher.de", "*.example.com", "ex/ample.com", "a,b.com"])
+    // Each of these alone leaves nothing to write, so the managed section is just the two markers, and render adds no host line. The entries
+    // from "a.com\nb.com" to "a.com\u{B}b.com" are built only from allowed characters plus one bad one (a line break of each kind, a colon, an
+    // IPv6 address, a next-line character, a paragraph separator, a vertical tab), because that is how a real injection would look: if
+    // the guard let any of them through, the entry would write a line (or two) of clean-looking host text.
+    @Test(arguments: [
+        "evil.com\n0.0.0.0 bank.com", "evil.com\r\n:: bank.com", "a b.com", "a\tb.com", "x.com#y", "", "   ", "a_b.com", "bank.com\u{0}", "x.com\u{2028}y.com", "b\u{FC}cher.de", "*.example.com", "ex/ample.com", "a,b.com",
+        "a.com\nb.com", "a.com\rb.com", "a.com\r\nb.com", "a:b.com", "::1", "a.com\u{85}b.com", "a.com\u{2029}b.com", "a.com\u{B}b.com",
+    ])
     func aHostileEntryOnItsOwnProducesNoHostLine(entry: String) {
         #expect(outputLines(HostsFileEditor.managedSection(for: [entry])) == [begin, end])
         let result = HostsFileEditor.render(original: defaultHosts, blockedHosts: [entry])
         #expect(result.hasPrefix(defaultHosts))
         for line in outputLines(String(result.dropFirst(defaultHosts.count))) where !line.isEmpty { #expect(isMarkerOrCleanAddressLine(line), "unexpected line \(line.debugDescription) for \(entry.debugDescription)") }
         #expect(!result.contains("0.0.0.0 ") && !result.contains(":: "), "no address line may be written for \(entry.debugDescription)")
+    }
+
+    // 02-core-components.md § HostsFileEditor, Input guard: localhost, broadcasthost and names ending in .local or .localhost are never blocked,
+    // because step 3 would also delete the stock lines the Mac needs. These entries are made only of allowed characters, so only the
+    // system-name rule can drop them. Each one alone leaves nothing to write: no address line may appear, and the stock lines stay.
+    // Whether render still writes an empty BEGIN/END section when the guard drops every entry is not specified, so both are accepted.
+    @Test(arguments: ["localhost", "broadcasthost", "printer.local", "x.localhost", "LOCALHOST", " Localhost ", "BroadcastHost", "PRINTER.LOCAL", "a.b.localhost", "mac.local"])
+    func aSystemNameOnItsOwnProducesNoHostLineAndLeavesTheStockLines(entry: String) {
+        #expect(outputLines(HostsFileEditor.managedSection(for: [entry])) == [begin, end], "\(entry.debugDescription)")
+        let result = HostsFileEditor.render(original: stockLines, blockedHosts: [entry])
+        #expect(result == stockLines || result == stockLines + "\n" + section([]), "\(entry.debugDescription): \(result.debugDescription)")
+        #expect(!result.contains("0.0.0.0 ") && !result.contains(":: "), "no address line may be written for \(entry.debugDescription)")
+        #expect(HostsFileEditor.render(original: result, blockedHosts: [entry]) == result)
+    }
+
+    // The stock lines survive a block list that mixes system names with a real site, and the real site is still written. Without the system-name
+    // rule step 3 would delete all three lines.
+    @Test func theStockLocalhostAndBroadcasthostLinesSurviveABlockListThatNamesThem() {
+        let blocked = ["localhost", "broadcasthost", "LOCALHOST", "printer.local", "x.localhost", "reddit.com"]
+        #expect(HostsFileEditor.render(original: stockLines, blockedHosts: blocked) == stockLines + "\n" + section(["reddit.com"]))
+        #expect(outputLines(HostsFileEditor.managedSection(for: blocked)) == [begin, "0.0.0.0 reddit.com", ":: reddit.com", end])
+        #expect(HostsFileEditor.render(original: defaultHosts, blockedHosts: blocked) == defaultHosts + "\n" + section(["reddit.com"]))
+        // The same stock lines with their original layout (tabs, and a run of spaces) are kept byte for byte, and CRLF input is no different.
+        let crlf = stockLines.replacingOccurrences(of: "\n", with: "\r\n")
+        #expect(HostsFileEditor.render(original: crlf, blockedHosts: blocked) == stockLines + "\n" + section(["reddit.com"]))
+    }
+
+    // A user's own line for a system name is not touched either: the name is never in the block list, so step 3 has nothing to remove.
+    @Test func aUsersOwnLineForASystemNameIsKept() {
+        let original = stockLines + "10.0.0.5 printer.local localhost.lan\n"
+        #expect(HostsFileEditor.render(original: original, blockedHosts: ["printer.local", "reddit.com"]) == original + "\n" + section(["reddit.com"]))
+    }
+
+    // Only the exact name localhost and broadcasthost, and a name that ENDS in .local or .localhost, are system names. A name that merely
+    // contains or starts with them is an ordinary host, and the guard must still write it.
+    @Test func namesThatOnlyResembleSystemNamesAreStillWritten() {
+        let blocked = ["localhost.com", "xlocalhost", "broadcasthost.net", "x.local.com", "mylocal.com", "xlocal", "x.localhost.org", "notbroadcasthost", "local-host.com"]
+        #expect(HostsFileEditor.render(original: stockLines, blockedHosts: blocked) == stockLines + "\n" + section(blocked))
+        #expect(outputLines(HostsFileEditor.managedSection(for: blocked)) == [begin] + blocked.sorted().flatMap { ["0.0.0.0 \($0)", ":: \($0)"] } + [end])
     }
 
     // The guard trims and lowercases first, then judges what is left.

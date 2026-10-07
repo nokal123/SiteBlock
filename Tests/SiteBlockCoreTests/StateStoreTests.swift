@@ -67,6 +67,45 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
         }
     }
 
+    // 02-core-components.md § StateStore: "The version field is decoded but not checked." So a state with any version number, here 99,
+    // saves and loads back exactly as it was, and the file is not treated as corrupt or set aside.
+    @Test(arguments: [99, 0, 2, -1, Int.max])
+    func aStateWithAnyVersionNumberSavesAndLoadsBackUnchangedWithNoCorruptFile(version: Int) throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("state.json")
+            var state = fullState()
+            state.version = version
+            let store = StateStore(url: url)
+            try store.save(state)
+            let loaded = try #require(store.load(), "a state with version \(version) did not load")
+            #expect(loaded == state)
+            #expect(loaded.version == version)
+            #expect(StateStore(url: url).load() == state, "a new store object must read the same file")
+            #expect(try names(in: dir) == ["state.json"], "no corrupt file may be created")
+            #expect(try mode(of: url) == 0o600)
+        }
+    }
+
+    // The same, written by hand from the design's field names with version 99 on disk, and with the backup in play: the version never
+    // makes either file undecodable, so the primary is used and nothing is renamed.
+    @Test func aHandWrittenFileWithVersion99LoadsFromThePrimaryAndWithTheBackupToo() throws {
+        try withTempDirectory { dir in
+            let primary = dir.appendingPathComponent("state.json")
+            let backup = dir.appendingPathComponent("state-backup.json")
+            let json = #"{"version":99,"passwordHash":null,"blocked":[],"delaySeconds":1800,"pendingDelayChange":null,"pendingUninstall":null,"recovery":null,"failedAttempts":2,"lockout":null,"uninstalling":false}"#
+            try Data(json.utf8).write(to: primary)
+            let expected = PersistedState(version: 99, delaySeconds: 1800, failedAttempts: 2)
+            #expect(StateStore(url: primary).load() == expected)
+            #expect(StateStore(url: primary, backupURL: backup).load() == expected)
+            #expect(try names(in: dir).filter { $0.contains(".corrupt-") }.isEmpty)
+            // A version-99 backup is a usable backup as well.
+            try Data(json.utf8).write(to: backup)
+            try FileManager.default.removeItem(at: primary)
+            #expect(StateStore(url: primary, backupURL: backup).load() == expected)
+            #expect(try names(in: dir).filter { $0.contains(".corrupt-") }.isEmpty)
+        }
+    }
+
     @Test func aFractionalCountdownSurvivesSaveAndLoadBitForBit() throws {
         try withTempDirectory { dir in
             let store = StateStore(url: dir.appendingPathComponent("state.json"))
@@ -217,6 +256,11 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
         ("binary garbage", Data([0xFF, 0xFE, 0x00, 0x01, 0x80])),
         ("wrong field type", Data(#"{"version":1,"blocked":[],"delaySeconds":"soon","failedAttempts":0,"uninstalling":false}"#.utf8)),
         ("blocked is not a list", Data(#"{"version":1,"blocked":"nope","delaySeconds":1800,"failedAttempts":0,"uninstalling":false}"#.utf8)),
+        // 02-core-components.md § StateStore: "A file that is valid JSON but lacks any required field (for example {} or {"version":1})
+        // does not decode, so it is treated as corrupt." Both are well-formed JSON objects, so a reader that only checks that the
+        // bytes parse, or that fills missing fields with defaults, would accept them and lose the real state.
+        ("empty object", Data("{}".utf8)),
+        ("version only", Data(#"{"version":1}"#.utf8)),
     ])
     func loadOfACorruptFileRenamesItAndReturnsNil(label: String, bytes: Data) throws {
         try withTempDirectory { dir in
@@ -435,6 +479,26 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
             #expect(store.load() == nil)
             try Data("garbage".utf8).write(to: backup)
             #expect(store.load() == nil)
+        }
+    }
+
+    // A primary that is the bare object {} (or has only a version) is corrupt, so with a good backup the backup's state is returned and the
+    // bad primary is set aside; with no backup the answer is nil. The same bytes in the backup are no use as a fallback either.
+    @Test(arguments: ["{}", #"{"version":1}"#])
+    func aPrimaryThatLacksTheRequiredFieldsIsCorruptSoTheBackupIsUsedAndTheBadFileIsSetAside(bytes: String) throws {
+        try withStores { primary, backup in
+            try StateStore(url: primary, backupURL: backup).save(fullState(delay: 999))
+            try Data(bytes.utf8).write(to: primary)
+            #expect(StateStore(url: primary, backupURL: backup).load() == fullState(delay: 999))
+            #expect(!FileManager.default.fileExists(atPath: primary.path))
+            let aside = try names(in: primary.deletingLastPathComponent()).filter { $0.hasPrefix("state.json.corrupt-") }
+            #expect(aside.count == 1)
+            if let name = aside.first { #expect(try Data(contentsOf: primary.deletingLastPathComponent().appendingPathComponent(name)) == Data(bytes.utf8)) }
+        }
+        try withStores { primary, backup in
+            try Data(bytes.utf8).write(to: primary)
+            try Data(bytes.utf8).write(to: backup)
+            #expect(StateStore(url: primary, backupURL: backup).load() == nil)
         }
     }
 

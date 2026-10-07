@@ -231,10 +231,56 @@ private struct SeededGenerator: RandomNumberGenerator {
         #expect(rejection(input) == .reserved)
     }
 
-    // The design lists no code for an empty label, so the test only requires a rejection.
-    @Test(arguments: ["a..com", ".reddit.com", "reddit..com", "reddit.com..", ".", "..", "www.", "@", "reddit.com@", "https://", "http:///path", "?x=1", "#frag"])
-    func normalizeRejectsEmptyLabelsAndNamesThatBecomeEmpty(input: String) {
+    // 02-core-components.md § DomainNormalizer, Parsing details: "an empty label (`a..com`) ... throw `.invalidCharacters`". ".reddit.com"
+    // has an empty first label, and "reddit.com.." has one empty label left at the end once step 5 has removed ONE trailing dot.
+    @Test(arguments: ["a..com", ".reddit.com", "reddit..com", "reddit.com..", "a.b..com", "reddit...com"])
+    func normalizeRejectsAnEmptyLabelAsInvalidCharacters(input: String) {
+        #expect(rejection(input) == .invalidCharacters, "\(input.debugDescription)")
+    }
+
+    // 02-core-components.md § DomainNormalizer, Parsing details: "An empty result after parsing (`https://`, `.`) throws `.empty`." Each of
+    // these has nothing left once the scheme, the path, the query, the fragment, the user info or the one trailing dot is cut away.
+    @Test(arguments: ["https://", ".", "@", "reddit.com@", "?x=1", "#frag", "http:///path", "https://@", "/path", "user:pass@", "http://?x=1", "https://#top"])
+    func normalizeRejectsANameThatIsEmptyAfterParsingAsEmpty(input: String) {
+        #expect(rejection(input) == .empty, "\(input.debugDescription)")
+    }
+
+    // The design gives no code for these two, so the test only requires a rejection: a lone "www." leaves the single label "www", and
+    // two dots leave two empty labels after the one trailing dot is removed.
+    @Test(arguments: ["..", "www."])
+    func normalizeRejectsTheRemainingDotOnlyInputs(input: String) {
         #expect(rejection(input) != nil)
+    }
+
+    // 02-core-components.md steps 6 and 9: four labels of 57 "ü" are 4 * 57 + 3 = 231 scalars, under the 253 limit, and no label has more
+    // than 63 scalars, so the size check on the raw scalars passes. Each label then encodes to "xn--" + 59 characters = 63 characters, which
+    // is allowed for one label, but the four encoded labels with their three dots are 255 characters, over the whole-name limit of 253,
+    // which step 9 checks after the encoding. So the answer is tooLong, not labelTooLong and not an accepted name.
+    @Test func fourPunycodeLabelsThatAreEachLegalButTogetherTwoHundredFiftyFiveCharactersAreTooLong() throws {
+        let label = String(repeating: "\u{FC}", count: 57)
+        let name = [label, label, label, label].joined(separator: ".")
+        #expect(name.unicodeScalars.count == 231)
+        let encoded = try #require(Punycode.toASCII(label: label))
+        #expect(encoded.count == 63, "premise: one encoded label fits in 63 characters")
+        #expect(rejection(name) == .tooLong)
+        // Three of the same labels are 3 * 63 + 2 = 191 characters and are accepted, so the rejection above is the whole-name limit.
+        let three = [label, label, label].joined(separator: ".")
+        #expect(try DomainNormalizer.normalize(three) == [encoded, encoded, encoded].joined(separator: "."))
+    }
+
+    // 02-core-components.md § DomainNormalizer, Parsing details: "any whitespace, control or invisible character ... throw .invalidCharacters".
+    // The C1 control characters U+0080 to U+009F, which include the next-line character U+0085, and the paragraph separator U+2029 are
+    // not ASCII, so the Punycode step would turn a label holding one into a perfectly valid "xn--" name if the check did not come first.
+    @Test(arguments: ["red\u{85}dit.com", "red\u{80}dit.com", "red\u{9F}dit.com", "red\u{2029}dit.com", "red\u{90}dit.com", "red\u{9B}dit.com", "red\u{1F}dit.com"])
+    func normalizeRejectsC1ControlsAndTheParagraphSeparatorAsInvalidCharacters(input: String) {
+        #expect(rejection(input) == .invalidCharacters, "\(input.debugDescription)")
+    }
+
+    // 02-core-components.md § DomainNormalizer step 4: "Input that starts with `[` is an IPv6 literal and throws `.ipAddress`." Whatever
+    // is inside the brackets, even a name or an IPv4 address.
+    @Test(arguments: ["[abc]", "[example.com]", "[1.2.3.4]", "[", "[]", "https://[abc]/", "[abc]:80"])
+    func normalizeRejectsAnythingStartingWithABracketAsIpAddress(input: String) {
+        #expect(rejection(input) == .ipAddress, "\(input.debugDescription)")
     }
 
     // The design does not define unbracketed IPv6 text; it can never be a valid host name, so it must be rejected.
@@ -421,16 +467,37 @@ private struct SeededGenerator: RandomNumberGenerator {
         #expect(result.time < .milliseconds(50), "took \(result.time)")
     }
 
+    // The fastest of a few runs of the body, so a busy machine or a scheduler pause cannot inflate the figure.
+    private func fastest(runs: Int = 5, _ body: () -> Void) -> Duration {
+        var best = Duration.seconds(1_000_000)
+        for _ in 0..<runs {
+            let started = ContinuousClock.now
+            body()
+            best = min(best, started.duration(to: .now))
+        }
+        return best
+    }
+
     // Many labels that are each short enough (60 scalars), so no single label is slow to encode, but the whole name is dozens of
     // times over 253. The whole-name check runs before any encoding, so the answer is tooLong at once; without it every one of the
-    // 300 labels would be Punycode-encoded first (about 0.17 s, against about 0.002 s with the check).
-    @Test func aHugeNameMadeOfHundredsOfShortDistinctLabelsIsRejectedAsTooLongQuickly() {
+    // 300 labels would be Punycode-encoded first.
+    //
+    // The timing is a ratio, not a number of milliseconds, so it holds on a slow or busy machine: the rejection must be at least 20 times
+    // faster than the Punycode work that an encode-first design would do for the same name. That work is measured here, in the same
+    // process just before, by encoding the same 300 labels through the public encoder. (An accepted name cannot serve as the yardstick:
+    // a name over 253 scalars is never accepted, and an accepted name's labels must encode to 63 characters or fewer, so an accepted
+    // name is a few dozen scalars at most.) Measured on an unloaded machine: about 1 ms to reject, about 170 ms to encode, a ratio near
+    // 140, which leaves 7 times of headroom over the required 20.
+    @Test func aHugeNameMadeOfHundredsOfShortDistinctLabelsIsRejectedAsTooLongFarFasterThanEncodingItWouldTake() {
         let labels = (0..<300).map { cjkLabel(count: 60, from: 0x4E00 + UInt32($0)) }
         let name = labels.joined(separator: ".") + ".com"
         #expect(name.unicodeScalars.count > 18_000)
-        let result = fastestRun(of: name)
-        #expect(result.error == .tooLong)
-        #expect(result.time < .milliseconds(50), "took \(result.time)")
+        let rejected = fastestRun(of: name)
+        #expect(rejected.error == .tooLong)
+        var encodedCount = 0
+        let encoding = fastest { encodedCount = labels.compactMap { Punycode.toASCII(label: $0) }.count }
+        #expect(encodedCount == 300, "premise: every label really is encoded by the baseline")
+        #expect(rejected.time * 20 <= encoding, "rejecting took \(rejected.time) but encoding the same labels takes \(encoding): the size check must run before Punycode")
     }
 
     @Test func aHugeLabelInsideAFullUrlIsRejectedQuickly() {

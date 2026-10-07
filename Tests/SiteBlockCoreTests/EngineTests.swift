@@ -312,6 +312,36 @@ import SiteBlockCore
         #expect(engine.pendingUnblock(of: "reddit.com") == Countdown(seconds: 1800))
     }
 
+    // 02-core-components.md § Engine, cancel commands: "clear their countdown". Only the named site's. "a.com" is unblocked first and
+    // "b.com" 600 s later, so the two countdowns differ (1,200 s and 1,800 s left); cancelling either one, the second as well as the first,
+    // must leave the other counting down from where it was, and the cancelled site stays blocked.
+    @Test(arguments: ["a.com", "b.com"])
+    func cancelUnblockOfOneOfTwoPendingSitesClearsOnlyThatSitesCountdown(cancelled: String) {
+        let engine = makeEngine(blocking: ["a.com", "b.com"])
+        engine.send(.unblock, domain: "a.com", password: rightPassword)
+        _ = engine.tick(elapsed: 600)
+        engine.send(.unblock, domain: "b.com", password: rightPassword)
+        let other = cancelled == "a.com" ? "b.com" : "a.com"
+        let otherBefore = engine.pendingUnblock(of: other)
+        #expect(otherBefore != nil)
+        let response = engine.send(.cancelUnblock, domain: cancelled)
+        expectSuccess(response)
+        #expect(engine.pendingUnblock(of: cancelled) == nil)
+        #expect(engine.pendingUnblock(of: other) == otherBefore, "cancelling \(cancelled) must not touch \(other)")
+        #expect(engine.state.blocked.map(\.domain) == ["a.com", "b.com"])
+        let remaining = response.status?.blocked.map(\.unblockSecondsRemaining) ?? []
+        #expect(remaining == (cancelled == "a.com" ? [nil, 1800] : [1200, nil]), "status showed \(remaining)")
+        // The cancelled site never unblocks; the other one finishes on its own time.
+        let otherSeconds = other == "a.com" ? 1200.0 : 1800.0
+        #expect(engine.tick(elapsed: otherSeconds - 1) == false)
+        #expect(engine.state.blocked.map(\.domain) == ["a.com", "b.com"])
+        #expect(engine.tick(elapsed: 1) == true)
+        #expect(engine.state.blocked.map(\.domain) == [cancelled])
+        #expect(engine.blockedHosts == DomainExpander.expand(cancelled))
+        #expect(engine.tick(elapsed: 1_000_000) == false)
+        #expect(engine.state.blocked.map(\.domain) == [cancelled])
+    }
+
     @Test func unblockingOneSiteLeavesTheOtherSitesAlone() {
         let engine = makeEngine(blocking: ["reddit.com", "example.com"])
         engine.send(.unblock, domain: "reddit.com", password: rightPassword)
@@ -694,5 +724,114 @@ import SiteBlockCore
         expectFailure(engine.send(.unblock, domain: "reddit.com", password: badPassword), .wrongPassword)
         #expect(engine.state.lockout == Countdown(seconds: 7))
         #expect(engine.state.failedAttempts == 0)
+    }
+}
+
+// The argument a request can leave out, for the argument-rule tests below.
+enum RequiredField: String, Sendable {
+    case domain, password, newPassword, seconds
+}
+
+// One request with exactly one required field left out: the command and the field that is missing.
+struct OmittedField: Sendable, CustomTestStringConvertible {
+    let command: Command
+    let omitted: RequiredField
+
+    // The name shown in the test report.
+    var testDescription: String { "\(command.rawValue) without \(omitted.rawValue)" }
+
+    // Every password-taking command with each of its required fields left out in turn. The required fields are the ones listed in
+    // 01-overview-and-data.md § Commands: unblock (domain, password), setDelay (seconds, password), changePassword (password, newPassword),
+    // uninstall (password).
+    static let all: [OmittedField] = [
+        OmittedField(command: .unblock, omitted: .domain), OmittedField(command: .unblock, omitted: .password),
+        OmittedField(command: .setDelay, omitted: .seconds), OmittedField(command: .setDelay, omitted: .password),
+        OmittedField(command: .changePassword, omitted: .password), OmittedField(command: .changePassword, omitted: .newPassword),
+        OmittedField(command: .uninstall, omitted: .password),
+    ]
+}
+
+// The two situations in which a password check would have an effect on the failed-attempt counter or the lockout.
+enum ArgumentRuleSetup: Sendable, CustomTestStringConvertible {
+    case activeLockout, wrongPassword
+
+    // The name shown in the test report.
+    var testDescription: String {
+        switch self {
+        case .activeLockout: return "during an active lockout"
+        case .wrongPassword: return "with a wrong password"
+        }
+    }
+}
+
+// 02-core-components.md § Engine, "Argument rule": "a missing required argument fails with badRequest before any lockout or password check,
+// so a malformed request never costs a password attempt. setDelay also checks the range (invalidDelay) before the password." And the
+// command rules for unblock: normalize, find the site (notBlocked), and only then check the password.
+@Suite struct EngineArgumentRuleTests {
+    // An engine with one blocked site, and in the lockout setup already locked out by five wrong passwords.
+    private func argumentEngine(for setup: ArgumentRuleSetup) -> Engine {
+        let engine = makeEngine(blocking: ["reddit.com"])
+        if setup == .activeLockout {
+            exhaustPasswordAttempts(engine)
+            #expect(engine.state.lockout == Countdown(seconds: 900), "test setup: the engine must be locked out")
+            #expect(engine.state.failedAttempts == 0)
+        }
+        return engine
+    }
+
+    // Omitting exactly one required field must give badRequest whatever the password situation is: the lockout, or a wrong password that
+    // would otherwise be counted. The rest of the request is complete, and a password that is present is the right one during the
+    // lockout (a lockout refuses it anyway) and the wrong one in the other setup (which would cost an attempt if it were checked).
+    @Test(arguments: OmittedField.all, [ArgumentRuleSetup.activeLockout, .wrongPassword])
+    func aRequestMissingOneRequiredFieldIsABadRequestAndCostsNoPasswordAttempt(case request: OmittedField, setup: ArgumentRuleSetup) {
+        let engine = argumentEngine(for: setup)
+        let before = engine.state
+        let supplied = setup == .activeLockout ? rightPassword : badPassword
+        let domain: String? = request.command == .unblock && request.omitted != .domain ? "reddit.com" : nil
+        let seconds: Int? = request.command == .setDelay && request.omitted != .seconds ? 3600 : nil
+        let newPassword: String? = request.command == .changePassword && request.omitted != .newPassword ? "brand-new-pass" : nil
+        let password: String? = request.omitted == .password ? nil : supplied
+        let response = engine.send(request.command, domain: domain, password: password, newPassword: newPassword, seconds: seconds)
+        expectFailure(response, .badRequest)
+        #expect(engine.state == before, "\(request.testDescription) \(setup.testDescription) changed the state")
+        #expect(engine.state.failedAttempts == 0, "a malformed request must not count as a wrong password")
+        #expect(engine.state.lockout == before.lockout)
+        #expect(engine.state.passwordHash == before.passwordHash)
+        #expect(engine.pendingUnblock(of: "reddit.com") == nil)
+    }
+
+    // The site is looked up before the password is checked, so an unknown site gives notBlocked even in a lockout, which is a different
+    // answer from lockedOut, and it changes nothing.
+    @Test func unblockOfAnUnknownSiteDuringALockoutIsNotBlockedAndChangesNothing() {
+        let engine = argumentEngine(for: .activeLockout)
+        let before = engine.state
+        expectFailure(engine.send(.unblock, domain: "example.com", password: rightPassword), .notBlocked)
+        expectFailure(engine.send(.unblock, domain: "https://www.example.org/x", password: badPassword), .notBlocked)
+        #expect(engine.state == before)
+        #expect(engine.state.failedAttempts == 0)
+        // The blocked site itself still gets the lockout answer, so the notBlocked above was not a general "anything goes in a lockout".
+        expectFailure(engine.send(.unblock, domain: "reddit.com", password: rightPassword), .lockedOut)
+    }
+
+    // Normalizing comes first of all: an invalid name is invalidDomain in a lockout too.
+    @Test(arguments: ["1.2.3.4", "not a site", "reddit", "evil.com\n0.0.0.0 bank.com"])
+    func unblockOfAnInvalidNameDuringALockoutIsInvalidDomainAndChangesNothing(input: String) {
+        let engine = argumentEngine(for: .activeLockout)
+        let before = engine.state
+        expectFailure(engine.send(.unblock, domain: input, password: rightPassword), .invalidDomain)
+        #expect(engine.state == before)
+    }
+
+    // The range is checked before the password, and the password check is where the lockout answer comes from, so a bad range wins.
+    @Test(arguments: [59, 0, -1, 604_801, Int.max, Int.min])
+    func setDelayWithAnOutOfRangeValueDuringALockoutIsInvalidDelayAndChangesNothing(seconds: Int) {
+        let engine = argumentEngine(for: .activeLockout)
+        let before = engine.state
+        expectFailure(engine.send(.setDelay, password: rightPassword, seconds: seconds), .invalidDelay)
+        expectFailure(engine.send(.setDelay, password: badPassword, seconds: seconds), .invalidDelay)
+        #expect(engine.state == before)
+        #expect(engine.state.failedAttempts == 0)
+        // A value in range gets the lockout answer, so the invalidDelay above came from the range check.
+        expectFailure(engine.send(.setDelay, password: rightPassword, seconds: 60), .lockedOut)
     }
 }

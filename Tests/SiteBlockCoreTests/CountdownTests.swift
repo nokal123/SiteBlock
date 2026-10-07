@@ -88,10 +88,11 @@ import SiteBlockCore
 // 02-core-components.md § Models and Protocol Types (Countdown.advance): "A remainder below 1e-9 seconds (one nanosecond) is set to
 // exactly 0. ... A remainder of 1e-6 seconds is still running."
 @Suite struct CountdownToleranceTests {
-    // Starting at 1 + remainder and advancing by 1 leaves the stated remainder, give or take floating-point noise far below 1e-9.
-    // The remainders on either side of the 1e-9 line are kept clear of it (no value within a factor of two), because a value that
-    // close to the line would be decided by rounding noise, not by the design.
-    @Test(arguments: [(1e-6, true), (1e-3, true), (0.5, true), (2e-9, true), (5.4e-10, false), (1e-10, false), (1e-12, false), (1e-15, false)])
+    // Starting at 1 + remainder and advancing by 1 leaves the stated remainder. The subtraction is exact (both numbers are between 1 and 2),
+    // so the only noise is the rounding of 1 + remainder itself, at most about 1.1e-16 s. The values nearest the 1e-9 line, 9e-10 and
+    // 1.1e-9, are 1e-10 s from it, a thousand times more than that noise, so the design and not rounding decides them. 9e-10 is below a
+    // nanosecond, so it counts as finished; 1.1e-9 is above it, so it is still running.
+    @Test(arguments: [(1e-6, true), (1e-3, true), (0.5, true), (2e-9, true), (1.1e-9, true), (9e-10, false), (5.4e-10, false), (1e-10, false), (1e-12, false), (1e-15, false)])
     func aRemainderBelowOneNanosecondCountsAsFinishedAndAnyOtherRemainderIsStillRunning(remainder: Double, running: Bool) {
         var countdown = Countdown(remainingSeconds: 1 + remainder, totalSeconds: 100)
         countdown.advance(by: 1)
@@ -103,6 +104,17 @@ import SiteBlockCore
             #expect(countdown.remainingSeconds == 0, "the remainder must be set to exactly 0")
             #expect(countdown.displaySeconds == 0)
         }
+    }
+
+    // The line itself, with no rounding noise at all: the stored remainder is set directly and the advance is so small (1e-300 s, far below
+    // the spacing of doubles near 1e-9) that the remainder after it is exactly the stored value. "A remainder below 1e-9 seconds ... is set to
+    // exactly 0", so 9e-10 and the largest double under 1e-9 become 0, and 1e-9 itself and 1.1e-9 are not below the line and keep running.
+    @Test(arguments: [(9e-10, true), (1e-9.nextDown, true), (1e-9, false), (1e-9.nextUp, false), (1.1e-9, false)])
+    func aRemainderExactlyAtOrAboveOneNanosecondKeepsRunningAndOneBelowItFinishes(remainder: Double, finished: Bool) {
+        var countdown = Countdown(remainingSeconds: remainder, totalSeconds: 100)
+        countdown.advance(by: 1e-300)
+        #expect(countdown.isFinished == finished, "a remainder of \(remainder) s")
+        #expect(countdown.remainingSeconds == (finished ? 0 : remainder))
     }
 
     // The case the tolerance exists for: 18,000 ticks of 0.1 s on a 1,800 s countdown. In plain arithmetic the residue is not zero,
