@@ -108,7 +108,8 @@ final class ChromePolicyEnforcer {
 
     /// Opens the file without following a symlink, checks that it is a plain file of reasonable size, and reads its settings. A missing file gives `exists == false`. A file that cannot be opened, is not a plain file, is too big, is not a property list, or is not a dictionary gives `exists == true` and no contents, so it is replaced as if it were empty.
     private func readExisting(_ path: String) -> ExistingFile {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        // O_NONBLOCK keeps a named pipe planted at this path from freezing the daemon: without it, open() waits forever for a writer. The fstat check below then sees it is not a plain file and has it replaced.
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         if fd < 0 { return ExistingFile(exists: errno != ENOENT, contents: nil, attributesCorrect: false) }
         defer { close(fd) }
         var info = stat()

@@ -19,15 +19,15 @@ final class HostsEnforcer {
     /// Reads the hosts file, computes what it should contain for the blocked host names, and rewrites it when it differs. Returns true when the file is correct after the pass. `causedByCommand` should be true when the caller just changed the block list on purpose (a command, or a countdown that finished), so the rewrite is expected and is not logged.
     func enforce(blockedHosts: [String], causedByCommand: Bool = false) -> Bool {
         let current: String
-        if FileManager.default.fileExists(atPath: paths.hosts) {
-            guard let data = FileManager.default.contents(atPath: paths.hosts) else {
-                logFailure("hosts file could not be read: \(paths.hosts)")
-                return false
-            }
+        switch readHostsFile() {
+        case .failed(let reason):
+            logFailure("hosts file could not be read: \(paths.hosts): \(reason)")
+            return false
+        case .contents(let data):
             // Decode leniently: a stray non-UTF-8 byte in a comment must not stop blocking forever. Such bytes become U+FFFD when the file is rewritten.
             current = String(decoding: data, as: UTF8.self)
-        } else {
-            // A missing hosts file is treated as an empty one.
+        case .missingOrNotPlain:
+            // A missing hosts file, or something that is not a plain file (a symlink, a named pipe), is treated as empty, so the write below replaces it with a real file.
             current = ""
         }
 
@@ -126,11 +126,47 @@ final class HostsEnforcer {
         return failure
     }
 
-    /// Writes the text into the hosts file itself, for when the rename could not replace it. The file is opened with O_WRONLY and O_TRUNC (empty it first) and O_NOFOLLOW (refuse a symlink). It is not atomic, but it works in places where a rename does not. Returns nil on success, or the reason it failed.
+    /// What reading the hosts file found: its bytes, nothing usable (missing, a symlink, a named pipe or another non-file), or a real read failure.
+    private enum HostsRead {
+        case contents(Data)
+        case missingOrNotPlain
+        case failed(String)
+    }
+
+    /// Reads the hosts file without ever waiting on it. It opens with O_NONBLOCK, so a named pipe planted at the path cannot freeze the daemon, and O_NOFOLLOW, so a symlink is not followed; anything that is not a plain file counts as unusable and gets replaced. Files over 16 MB are refused as a failure rather than read into memory.
+    private func readHostsFile() -> HostsRead {
+        let fd = open(paths.hosts, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if fd < 0 {
+            // ENOENT is a missing file; ELOOP is a symlink refused by O_NOFOLLOW. Both are replaced by the write that follows.
+            if errno == ENOENT || errno == ELOOP { return .missingOrNotPlain }
+            return .failed(String(cString: strerror(errno)))
+        }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return .failed(String(cString: strerror(errno))) }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return .missingOrNotPlain }
+        guard info.st_size <= 16 * 1024 * 1024 else { return .failed("the file is larger than 16 MB") }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let count = read(fd, &buffer, buffer.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return .failed(String(cString: strerror(errno)))
+            }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+        }
+        return .contents(data)
+    }
+
+    /// Writes the text into the hosts file itself, for when the rename could not replace it. The file is opened with O_WRONLY and O_TRUNC (empty it first), O_NOFOLLOW (refuse a symlink) and O_NONBLOCK (a named pipe planted there fails at once instead of freezing the daemon), and anything that is not a plain file is refused. It is not atomic, but it works in places where a rename does not. Returns nil on success, or the reason it failed.
     private func writeInPlace(_ bytes: [UInt8]) -> String? {
-        let fd = open(paths.hosts, O_WRONLY | O_TRUNC | O_NOFOLLOW)
+        let fd = open(paths.hosts, O_WRONLY | O_TRUNC | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         if fd < 0 { return "cannot open \(paths.hosts): \(String(cString: strerror(errno)))" }
         defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return "\(paths.hosts) is not a plain file" }
         if let failure = writeAll(bytes, to: fd) { return failure }
         if fsync(fd) != 0 { return "cannot flush to disk: \(String(cString: strerror(errno)))" }
         return nil

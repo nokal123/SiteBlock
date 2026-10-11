@@ -5,12 +5,15 @@ import Testing
 // Chrome's mandatory URLBlocklist policy, written by the real siteblockd running in sandbox mode.
 // Design: 03-daemon-cli-app.md § 9 ChromePolicyEnforcer (files written, content rules, writing, tamper repair and logging, uninstall);
 // 04-infrastructure.md § Installed Paths and § Sandbox Mode (the sandbox copies live under root/ManagedPreferences/);
-// 01-overview-and-data.md § How Blocking Works (Chrome paragraph: the list is every host of every blocked site, so it differs from the
-// hosts file only by the iCloud Private Relay names, which Chrome has no use for).
+// 01-overview-and-data.md § How Blocking Works (Chrome paragraph).
 //
 // The two files are root/ManagedPreferences/com.google.Chrome.plist and root/ManagedPreferences/<console user>/com.google.Chrome.plist.
 // The console user is the owner of /dev/console; when that is root only the machine-wide copy is written. Every expected list below is
-// built by ExpectedHosts from the design's expansion rules, never read back from the daemon.
+// built by ExpectedHosts from the design's expansion rules and then shortened by `chromeList` below, never read back from the daemon.
+//
+// Design change in 03 § 9: the Chrome list is no longer every expanded host. It is the shortest list that covers them: lowercased, without
+// duplicates, and without any host whose parent domain (whole labels) is also in the list, because a URLBlocklist entry such as youtube.com
+// already blocks every subdomain. The expectations here were changed for that; the hosts file still holds every expanded name.
 
 private let policyFileName = "com.google.Chrome.plist"
 private let blocklistKey = "URLBlocklist"
@@ -139,6 +142,18 @@ private func isRight(_ path: String, list: [String]) -> Bool {
     isExactly(readPlist(path), [blocklistKey: list]) && permissions(of: path) == 0o644
 }
 
+// The design's covering rule, written independently of the library: lowercase, remove duplicates, drop every host that ends in "." plus another
+// host of the set (a parent domain, whole labels only), sort.
+private func shortestCover(_ hosts: [String]) -> [String] {
+    let all = Set(hosts.map { $0.lowercased() })
+    return all.filter { host in !all.contains(where: { $0 != host && host.hasSuffix("." + $0) }) }.sorted()
+}
+
+// What the Chrome list must hold when these domains are blocked: every host the design expands them to (ExpectedHosts), shortened by the covering rule. The Private Relay names are not part of it.
+private func chromeList(_ domains: [String]) -> [String] {
+    shortestCover(ExpectedHosts.expand(all: domains))
+}
+
 // The relative paths of every regular file under a folder (empty when the folder does not exist), sorted. Hidden files are included, so a leftover temp file with a dotted name is seen.
 private func regularFiles(under directory: String) -> [String] {
     guard let walker = FileManager.default.enumerator(atPath: directory) else { return [] }
@@ -152,7 +167,9 @@ private func regularFiles(under directory: String) -> [String] {
 
 @Suite("Chrome policy files")
 struct ChromePolicyTests {
-    static let youtube = ExpectedHosts.expand("youtube.com")
+    static let youtube = chromeList(["youtube.com"])
+    // The design's example for youtube.com alone, typed out, so the helper above is checked against the design and not only against itself.
+    static let youtubeFromDesign = ["i.ytimg.com", "s.ytimg.com", "youtu.be", "youtube-nocookie.com", "youtube.com", "youtube.googleapis.com", "youtubei.googleapis.com", "youtubekids.com", "yt3.ggpht.com"]
     static let password = SandboxDaemon.password
 
     // MARK: writing on a command
@@ -165,6 +182,7 @@ struct ChromePolicyTests {
             #expect(chrome.all.allSatisfy { !exists($0) }, "nothing is blocked yet, so no policy file may exist")
             try daemon.send(.add, domain: "youtube.com").requireOK()
             let expected = Self.youtube
+            #expect(expected == Self.youtubeFromDesign, "the test's own expected list does not match the design's example")
             for path in chrome.all {
                 #expect(listed(path) == expected, "\(path) holds \(String(describing: listed(path)))")
                 #expect(isExactly(readPlist(path), [blocklistKey: expected]), "\(path) must hold nothing but URLBlocklist")
@@ -174,8 +192,10 @@ struct ChromePolicyTests {
             }
             #expect(permissions(of: chrome.directory) == 0o755, "the ManagedPreferences folder must be mode 0755")
             if let userDirectory = chrome.userDirectory { #expect(permissions(of: userDirectory) == 0o755, "the per-user folder must be mode 0755") }
-            // The hosts file does hold the Private Relay names, so the difference between the two lists is real and not an empty comparison.
+            // The hosts file does hold the Private Relay names and every expanded name, so the difference between the two lists is real and not an empty comparison: Chrome gets only the nine covering entries.
             #expect(daemon.hosts().blocks("mask.icloud.com"))
+            #expect(daemon.hosts().blocks("www.youtube.com"))
+            #expect(chrome.all.allSatisfy { !(listed($0) ?? []).contains("www.youtube.com") }, "a host covered by youtube.com must not be listed")
             // When nobody is logged in only the machine-wide copy exists; otherwise the folder holds the machine file and one folder named after the console user.
             let expectedEntries = ([policyFileName] + (chrome.consoleUser.map { [$0] } ?? [])).sorted()
             #expect(daemon.listing(of: chrome.directory).sorted() == expectedEntries)
@@ -191,12 +211,12 @@ struct ChromePolicyTests {
             for domain in ["youtube.com", "reddit.com", "x.com"] {
                 try daemon.block(domain)
                 blocked.append(domain)
-                let expected = ExpectedHosts.expand(all: blocked)
+                let expected = chromeList(blocked)
                 for path in chrome.all { #expect(listed(path) == expected, "after adding \(domain), \(path) holds \(String(describing: listed(path)))") }
             }
             // One repair on top, so the temp-file path of a pass not caused by a command is covered too.
             for path in chrome.all { try ChromeTamper.notAPlistAtAll.bytes.write(to: URL(fileURLWithPath: path)) }
-            let expected = ExpectedHosts.expand(all: blocked)
+            let expected = chromeList(blocked)
             let repaired = waitUntil(timeout: 1.5, interval: 0.01) { chrome.all.allSatisfy { isRight($0, list: expected) } }
             #expect(repaired != nil)
             pause(0.6)
@@ -328,6 +348,27 @@ struct ChromePolicyTests {
         }
     }
 
+    // 03 § 9 "Key Methods": a file is rewritten "when the path is not a regular file". A named pipe (FIFO) in place of the file must be replaced by a regular file with the right list within 1.5 s, and the daemon must keep answering.
+    // Without O_NONBLOCK, opening a FIFO for reading waits forever for a writer, which froze the daemon's engine queue; this test caught that.
+    @Test(arguments: ChromePolicyFile.allCases)
+    func aNamedPipeInPlaceOfTheFileIsReplacedByARegularFile(file: ChromePolicyFile) throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "youtube.com")
+            let chrome = try daemon.chromePaths()
+            guard let path = chrome.path(file) else { return Self.expectNoUserCopy(daemon, chrome) }
+            pause(0.4)
+            try FileManager.default.removeItem(atPath: path)
+            try require(mkfifo(path, 0o644) == 0, "mkfifo failed: \(String(cString: strerror(errno)))")
+            let replaced = waitUntil(timeout: 1.5, interval: 0.01) {
+                (try? FileManager.default.attributesOfItem(atPath: path)[.type] as? FileAttributeType) == .typeRegular && isRight(path, list: Self.youtube)
+            }
+            // A short client timeout, so a frozen daemon costs one second here and not the default ten.
+            let answered = (try? daemon.client(timeout: 1).send(Request(command: .status)))?.ok == true
+            #expect(replaced != nil, "the pipe at \(path) was not replaced within 1.5 s")
+            #expect(answered, "the daemon stopped answering while the pipe was in place")
+        }
+    }
+
     // 03 "Writing": a pass that finds a file already right does not write it. Over 1.5 s (about seven passes) neither the inode nor the modification time of either file changes. A hand edit afterwards is repaired, which shows the passes were running.
     @Test func passesThatFindTheFilesRightDoNotWriteThem() throws {
         try withDaemon { daemon in
@@ -368,7 +409,7 @@ struct ChromePolicyTests {
             // The edits must not be treated as damage: wait until the passes have looked at them.
             pause(0.5)
             try daemon.block("reddit.com")
-            let expected = ExpectedHosts.expand(all: ["youtube.com", "reddit.com"])
+            let expected = chromeList(["youtube.com", "reddit.com"])
             for (index, path) in chrome.all.enumerated() {
                 let plist = readPlist(path)
                 var wanted = shared
@@ -445,7 +486,7 @@ struct ChromePolicyTests {
 
             try daemon.prepare(blocking: "reddit.com")
             try daemon.requireTwoSecondDelay()
-            #expect(chrome.all.allSatisfy { listed($0) == ExpectedHosts.expand("reddit.com") })
+            #expect(chrome.all.allSatisfy { listed($0) == chromeList(["reddit.com"]) })
             try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
             let gone = waitUntil(timeout: 5.0, interval: 0.02) { chrome.all.allSatisfy { !exists($0) } }
             #expect(gone != nil, "the policy files still exist after the unblock finished: \(chrome.all.map { String(describing: listed($0)) })")
@@ -464,8 +505,8 @@ struct ChromePolicyTests {
             try daemon.prepare(blocking: "youtube.com", "reddit.com")
             try daemon.requireTwoSecondDelay()
             let chrome = try daemon.chromePaths()
-            let both = ExpectedHosts.expand(all: ["youtube.com", "reddit.com"])
-            let redditOnly = ExpectedHosts.expand("reddit.com")
+            let both = chromeList(["youtube.com", "reddit.com"])
+            let redditOnly = chromeList(["reddit.com"])
             let watch = Stopwatch()
             try daemon.send(.unblock, domain: "youtube.com", password: Self.password).requireOK()
             var shortenedAt: Double?
@@ -506,7 +547,7 @@ struct ChromePolicyTests {
             defer { try? chmodPath(chrome.directory, 0o755) }
             try chmodPath(chrome.directory, 0o555)
             try daemon.send(.add, domain: "youtube.com").requireOK()
-            let hosts = ExpectedHosts.text(blocking: Self.youtube)
+            let hosts = ExpectedHosts.text(blocking: ExpectedHosts.expand("youtube.com"))
             #expect(daemon.hostsText() == hosts, "a Chrome write failure must not stop the hosts file from being enforced")
             #expect(daemon.logContains("Chrome", within: 1.5), "the failed write was not logged:\n\(daemon.logText())")
             #expect(regularFiles(under: chrome.directory) == [], "found \(regularFiles(under: chrome.directory))")
