@@ -71,6 +71,8 @@ When Xcode is installed, plain `swift test` also works, and the script detects `
 - State backup (restored from if the main state file is deleted while the daemon is stopped): `/usr/local/libexec/siteblock/state.backup.json`
 - Socket: `/var/run/siteblock.sock`
 - Hosts file: `/etc/hosts`
+- Chrome policy, machine-wide copy: `/Library/Managed Preferences/com.google.Chrome.plist`
+- Chrome policy, copy for the user logged in at the screen: `/Library/Managed Preferences/<console user>/com.google.Chrome.plist` (not written when nobody is logged in)
 - Log file: `/Library/Logs/SiteBlock/siteblockd.log` (watchdog: `watchdog.log`)
 - Daemon plist: `/Library/LaunchDaemons/com.nokal.siteblock.daemon.plist`
 - Watchdog plist: `/Library/LaunchDaemons/com.nokal.siteblock.watchdog.plist`
@@ -78,7 +80,7 @@ When Xcode is installed, plain `swift test` also works, and the script detects `
 - App: `/Applications/SiteBlock.app`
 - CLI: `/usr/local/bin/siteblock` (a copy, not a link, so it keeps working if the repository is deleted)
 
-`Paths.sandbox(root:)` puts every file under the given folder: `root/hosts`, `root/state/state.json`, `root/siteblock.sock`, `root/LaunchDaemons/…` and so on. A Unix socket path must be shorter than 104 bytes, so tests create their sandbox under `/tmp` with a short random name.
+`Paths.sandbox(root:)` puts every file under the given folder: `root/hosts`, `root/state/state.json`, `root/siteblock.sock`, `root/LaunchDaemons/…`, `root/ManagedPreferences/com.google.Chrome.plist`, `root/ManagedPreferences/<console user>/com.google.Chrome.plist` and so on. A Unix socket path must be shorter than 104 bytes, so tests create their sandbox under `/tmp` with a short random name.
 
 ---
 

@@ -3,7 +3,7 @@
 
 **Scope:** Create the Swift package and every file in `Sources/SiteBlockCore`. No executables beyond empty stubs, no tests (tests are written separately by the QA agent).
 
-**Prerequisites:** macOS 14+, Swift 6.2 Command Line Tools. Project root is `~/Projects/SiteBlock`.
+**Prerequisites:** macOS 14+, Swift 6.2 Command Line Tools. Project root is `~/Desktop/Work/Projects/SiteBlock`.
 
 **Code conventions for every file:**
 - Every type, method and function gets a short `///` comment above it saying what it does in plain English, not restating the signature. Comment non-obvious decisions inside methods too (why a branch order matters, why something fails safe).

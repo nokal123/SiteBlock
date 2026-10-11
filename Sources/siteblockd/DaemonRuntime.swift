@@ -84,6 +84,8 @@ final class DaemonRuntime {
     private let log: Logger
     private let store: StateStore
     private let enforcer: HostsEnforcer
+    // Keeps Chrome's mandatory URLBlocklist policy equal to the block list, for Chrome windows that never read the hosts file (see 03 § 9).
+    private let chromeEnforcer: ChromePolicyEnforcer
     // Counts requests turned away by the socket server or the command handler, so the log gets a summary line per minute instead of one line per bad request.
     private let rejections: RejectedRequestCounter
     // The serial queue that owns the engine, the store and the timers.
@@ -113,6 +115,7 @@ final class DaemonRuntime {
         let store = StateStore(url: URL(fileURLWithPath: paths.stateFile), backupURL: URL(fileURLWithPath: paths.stateBackup))
         self.store = store
         self.enforcer = HostsEnforcer(paths: paths, log: log)
+        self.chromeEnforcer = ChromePolicyEnforcer(paths: paths, log: log)
         self.rejections = RejectedRequestCounter(log: log)
 
         // Startup step 1: the state folder is root-only (mode 0700) because it holds the password hash.
@@ -168,8 +171,8 @@ final class DaemonRuntime {
         // Startup step 4: the engine tells the runtime when the uninstall countdown ends.
         engine.onUninstall = { [unowned self] in beginUninstall() }
 
-        // Startup step 5: enforce the hosts file at once, so blocks apply at boot before any client connects. This pass is not "caused by a command", so tampering that happened while the daemon was stopped is logged.
-        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: false)
+        // Startup step 5: enforce the hosts file and Chrome's policy at once, so blocks apply at boot before any client connects. This pass is not "caused by a command", so tampering that happened while the daemon was stopped is logged.
+        let healthy = enforceBlocks(causedByCommand: false)
         engine.setHostsHealthy(healthy)
         // If the state came from the backup, or the backup does not exist yet, write both files now.
         if !store.matchesLastSave() {
@@ -290,9 +293,9 @@ final class DaemonRuntime {
         // Failed commands can change state too (the wrong-password count, a lockout), so the comparison covers every outcome. A read-only command writes nothing.
         if engine.state != stateBefore { _ = saveState() }
 
-        // Enforce after every command, even a read-only one: the pass costs one file read when nothing is wrong, and it makes the reported hosts health current.
+        // Enforce after every command, even a read-only one: the pass only reads the hosts file and Chrome's policy files when nothing is wrong, and it makes the reported hosts health current.
         let blockListChanged = engine.hostsToWrite != hostsBefore
-        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: blockListChanged)
+        let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
 
         logOutcome(request.command, response, peerUID: peerUID)
@@ -300,6 +303,16 @@ final class DaemonRuntime {
         // Rebuild the snapshot so hostsFileHealthy reflects the enforcement pass that just ran, not the one before it.
         guard response.status != nil else { return response }
         return Response(ok: response.ok, error: response.error, errorCode: response.errorCode, status: engine.snapshot(hostsFileHealthy: healthy), message: response.message)
+    }
+
+    // MARK: - Enforcement
+
+    /// Makes the hosts file and Chrome's policy files match the engine's block list: the hosts file first, then Chrome. Both always run, so a failure in one never stops the other from being repaired. Returns true only when both ended correct, and the caller passes that to the engine as `hostsFileHealthy`. `causedByCommand` is true when the block list was just changed on purpose, so the rewrite is not logged as tampering.
+    private func enforceBlocks(causedByCommand: Bool) -> Bool {
+        let hostsHealthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: causedByCommand)
+        // Sites with a pending unblock stay in `blocked` until their countdown ends, so they stay in Chrome's list too.
+        let chromeHealthy = chromeEnforcer.enforce(blockedSites: engine.state.blocked, causedByCommand: causedByCommand)
+        return hostsHealthy && chromeHealthy
     }
 
     // MARK: - Tick
@@ -335,7 +348,7 @@ final class DaemonRuntime {
         _ = saveState()
         // A finished unblock changes the block list on purpose, so that rewrite is not reported as tampering.
         let blockListChanged = engine.hostsToWrite != hostsBefore
-        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: blockListChanged)
+        let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
     }
 
@@ -350,7 +363,7 @@ final class DaemonRuntime {
 
         // A countdown that finished (a site whose wait is over) changes the block list on purpose, so that rewrite is not reported as tampering.
         let blockListChanged = engine.hostsToWrite != hostsBefore
-        let healthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: blockListChanged)
+        let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
 
         // The state files must hold exactly what was last written. This is checked before any save below, so a hand edit is logged rather than silently overwritten by a routine save.
@@ -393,7 +406,7 @@ final class DaemonRuntime {
         guardQueue.sync {}
         server?.stop()
 
-        Uninstaller.run(paths: paths, enforcer: enforcer, saveUninstallingState: { [self] () -> Bool in
+        Uninstaller.run(paths: paths, enforcer: enforcer, chromeEnforcer: chromeEnforcer, saveUninstallingState: { [self] () -> Bool in
             // The engine set `uninstalling` before calling us, or the saved state already had it; saving the engine's state records that. A failed save is reported back so the uninstaller can stop before touching anything.
             var state = engine.state
             state.uninstalling = true

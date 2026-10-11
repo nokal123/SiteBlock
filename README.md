@@ -12,7 +12,7 @@ Three programs make this work:
 - A second copy of `siteblockd` runs as a watchdog. The service and the watchdog each restart the other if it is stopped.
 - `SiteBlock.app` (the shield icon in the menu bar) and the `siteblock` Terminal command are how you control it.
 
-While at least one site is blocked, SiteBlock also turns off iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers). Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. Private Relay comes back on its own once nothing is blocked. Chrome needs no change; it reads `/etc/hosts` even when its "Secure DNS" setting is on.
+While at least one site is blocked, SiteBlock also turns off iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers). Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. Private Relay comes back on its own once nothing is blocked. SiteBlock also writes your blocked sites into Chrome's own block list, a setting Chrome normally uses on company computers. Chrome then refuses those sites itself, in every window and profile, even in a Chrome window that sends its traffic through a proxy or SSH tunnel and so never checks `/etc/hosts`. While any site is blocked, Chrome's menu shows "Managed by your organization"; that only refers to this block list.
 
 A site you block also blocks its common variants, because the hosts file cannot use wildcards. Blocking `youtube.com` also blocks `www.youtube.com`, `m.youtube.com`, `youtu.be`, `music.youtube.com`, YouTube Kids, and the servers that hold YouTube's thumbnails and page files.
 
@@ -23,7 +23,7 @@ Double-click **`Install SiteBlock.command`** in this folder. Terminal opens, bui
 The same steps from Terminal:
 
 ```bash
-cd ~/Projects/SiteBlock && scripts/build.sh && sudo scripts/install.sh && scripts/verify-install.sh
+cd ~/Desktop/Work/Projects/SiteBlock && scripts/build.sh && sudo scripts/install.sh && scripts/verify-install.sh
 ```
 
 Installing asks only for your Mac password. You choose your SiteBlock password the first time you block a site: click the shield icon in the menu bar, type a site and press Block, and the panel asks you to choose it. This password is separate from your Mac password, and it cannot be shown again, so store it somewhere you trust (or give it to someone else to hold).

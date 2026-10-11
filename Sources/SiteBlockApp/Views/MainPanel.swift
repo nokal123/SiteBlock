@@ -208,14 +208,14 @@ private struct ConnectingView: View {
     }
 }
 
-/// The screen shown when the daemon cannot be reached. It says what went wrong and gives the Terminal command that installs the service again.
+/// The screen shown when the daemon cannot be reached. It says what went wrong, tells the user to double-click the installer in the project folder, and offers the Terminal command that does the same thing.
 private struct NotRunningView: View {
     @ObservedObject var model: StatusModel
     /// The sentence describing the problem, such as "The SiteBlock service isn't running."
     let message: String
 
-    /// The command that installs and starts the service. It changes into the project folder first, so it works from any Terminal window.
-    private static let reinstallCommand = "cd ~/Projects/SiteBlock && sudo scripts/install.sh"
+    /// The command that installs and starts the service. It is a path inside the project folder, so it only works from a Terminal window that is already in that folder; the screen says so next to it.
+    private static let reinstallCommand = "sudo scripts/install.sh"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -228,7 +228,16 @@ private struct NotRunningView: View {
                 Text(message)
                     .font(.headline)
                     .multilineTextAlignment(.center)
-                Text("While the service is stopped, nothing repairs the blocks or carries out unblocks. To start it again, run this in Terminal:")
+                Text("While the service is stopped, nothing repairs the blocks or carries out unblocks. To start it again:")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Open the SiteBlock project folder and double-click Install SiteBlock.command.")
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Or run this in Terminal, from the project folder:")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

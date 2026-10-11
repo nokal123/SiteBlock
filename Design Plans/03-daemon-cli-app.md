@@ -126,7 +126,7 @@ A real uninstall does not rely on the watchdog standing down: the daemon unloads
 **Steps, in order:**
 1. Save the state with `uninstalling = true`. If this save fails (for example, the disk is full), stop the uninstall and exit with a non-zero code. launchd restarts the daemon, which retries the uninstall from the saved finished countdown, so the uninstall never runs half-way with an old state file on disk.
 2. Unload the watchdog with `launchctl bootout system/com.nokal.siteblock.watchdog` and wait for it to finish (at most 10 seconds), so the watchdog cannot restore any file deleted in the steps below.
-3. Remove the managed section from the hosts file (enforce with an empty block list) and flush the name cache.
+3. Remove the managed section from the hosts file (enforce with an empty block list), clear Chrome's `URLBlocklist` (see § ChromePolicyEnforcer), and flush the name cache.
 4. Stop the menu bar app for the user at the screen. The console user's ID is the owner of `/dev/console`. When that ID is not 0, run `launchctl bootout gui/<uid>/com.nokal.siteblock.app` and `pkill -x SiteBlock`, ignoring failures.
 5. Delete the backup program, the state backup, `/usr/local/bin/siteblock`, the app LaunchAgent plist, both LaunchDaemon plists, `/etc/newsyslog.d/siteblock.conf`, and the socket file.
 6. Start a detached `/bin/sh` that waits 1 second, then runs `launchctl bootout system/com.nokal.siteblock.daemon`, then deletes `/Library/Application Support/SiteBlock` and `/Applications/SiteBlock.app`. The daemon is stopped by that `bootout`, so the shell must be detached (started with `setsid` through `posix_spawn` with `POSIX_SPAWN_SETSID`) to outlive it.
@@ -189,3 +189,28 @@ siteblock version
 3. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits for the current delay.
 
 **Behavioral notes:** The app holds no state of its own beyond what is on screen; the daemon is always the source of truth. Quitting the app does not stop any blocking. The app is launched at login by a LaunchAgent (see [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs), and it sets `LSUIElement` so it has no Dock icon.
+
+---
+
+### 9. ChromePolicyEnforcer (`Sources/siteblockd/ChromePolicyEnforcer.swift`)
+
+**Purpose:** Keeps Chrome's mandatory `URLBlocklist` policy equal to SiteBlock's block list, so Chrome refuses blocked sites even in windows whose traffic goes through a proxy and never touches `/etc/hosts`. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works.
+
+**Files written (production):**
+- `/Library/Managed Preferences/com.google.Chrome.plist` — the machine-wide copy, which macOS reports to Chrome as forced (mandatory).
+- `/Library/Managed Preferences/<console user>/com.google.Chrome.plist` — the per-user copy. Chrome watches this exact path and reloads its policies within seconds when it changes. The console user is the owner of `/dev/console`; when that is root (nobody logged in), only the machine-wide copy is written.
+
+Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644`. In sandbox mode the same two files live under `root/ManagedPreferences/` and `root/ManagedPreferences/<user>/`.
+
+**Key Methods:**
+- `func enforce(blockedSites: [BlockedSite], causedByCommand: Bool = false) -> Bool` — called on every enforcement pass right after the hosts file. It builds the wanted list with `ChromePolicy.urlBlocklist(for:)`, reads each file, and rewrites a file only when its `URLBlocklist` differs. Returns `false` (and logs) when a write fails.
+
+**Content rules (`Sources/SiteBlockCore/ChromePolicy.swift`, pure and unit-tested):**
+- `static func urlBlocklist(for sites: [BlockedSite]) -> [String]` — every host of every blocked site, lowercased, sorted, without duplicates. Sites with a pending unblock are included, because they stay blocked until the countdown ends.
+- `static func merged(existing: [String: Any]?, blocklist: [String]) -> [String: Any]?` — keeps every other key already in the file (so a real company policy is never lost) and sets `URLBlocklist` to the list. With an empty list it removes the `URLBlocklist` key, and when nothing else is left it returns `nil`, meaning the file is deleted.
+
+**Writing:** encode as an XML property list, write to a random temp file in the same folder (`O_CREAT|O_EXCL|O_NOFOLLOW`), `fchmod 0644`, `fchown 0:0` (production), `rename` over the target. A target that is a symlink is replaced, never followed. A file that is not a valid property list is treated as empty and replaced.
+
+**Tamper repair and logging:** a pass that rewrites a file not changed by a command logs "Chrome policy repaired".
+
+**Uninstall:** the uninstaller removes `URLBlocklist` from both files (deleting them when nothing else is left) in the same step that removes the hosts section.

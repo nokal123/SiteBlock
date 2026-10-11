@@ -8,8 +8,8 @@ enum Uninstaller {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Runs the uninstall steps in order. `saveUninstallingState` must write the state with `uninstalling` set and return false when the write fails. In sandbox mode the function ends the process with exit code 0 after removing the hosts section, the sandbox's own plist files and its socket. In production it returns after starting the detached cleanup shell, and the caller then waits for launchd to stop the daemon. If the state cannot be saved, the watchdog cannot be unloaded, or the cleanup shell cannot be started, it exits with code 1 before (or instead of) deleting anything further, so launchd restarts the daemon and the next start retries from the saved finished countdown.
-    static func run(paths: Paths, enforcer: HostsEnforcer, saveUninstallingState: () -> Bool, log: Logger) {
+    /// Runs the uninstall steps in order. `saveUninstallingState` must write the state with `uninstalling` set and return false when the write fails. In sandbox mode the function ends the process with exit code 0 after removing the hosts section, the Chrome policy block list, the sandbox's own plist files and its socket. In production it returns after starting the detached cleanup shell, and the caller then waits for launchd to stop the daemon. If the state cannot be saved, the watchdog cannot be unloaded, or the cleanup shell cannot be started, it exits with code 1 before (or instead of) deleting anything further, so launchd restarts the daemon and the next start retries from the saved finished countdown.
+    static func run(paths: Paths, enforcer: HostsEnforcer, chromeEnforcer: ChromePolicyEnforcer, saveUninstallingState: () -> Bool, log: Logger) {
         // Step 1: record that an uninstall is under way before anything is touched, so a crash part-way is finished on the next start. If the save fails (for example the disk is full), nothing has been changed yet, so stop here; the restarted daemon retries from the saved finished countdown. Going on with an old state file on disk could leave a half-removed install that the next start cannot recognize.
         guard saveUninstallingState() else {
             log.log("uninstall stopped: the uninstall marker could not be saved; exiting so it is retried")
@@ -26,8 +26,9 @@ enum Uninstaller {
             unloadWatchdog(log: log)
         }
 
-        // Step 3: take SiteBlock's lines out of the hosts file (an empty block list) and flush the name cache.
+        // Step 3: take SiteBlock's lines out of the hosts file (an empty block list) and flush the name cache. The same step empties Chrome's URLBlocklist policy (03 § 9): a file with nothing else in it is deleted, and a file with other settings keeps them. Both run in production and in sandbox mode.
         _ = enforcer.enforce(blockedHosts: [], causedByCommand: true)
+        _ = chromeEnforcer.enforce(blockedSites: [], causedByCommand: true)
 
         if paths.isSandbox {
             // A sandbox run has no launchd jobs and no installed files, so it only removes its own stand-ins and stops.
