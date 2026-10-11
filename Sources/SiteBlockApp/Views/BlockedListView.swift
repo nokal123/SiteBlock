@@ -7,11 +7,15 @@ struct BlockedListView: View {
     /// The latest status from the daemon.
     let snapshot: StatusSnapshot
 
-    /// The tallest the list may grow before it scrolls, in points. About nine ordinary rows fit.
-    private static let maxListHeight: CGFloat = 480
+    /// How many sites the list box shows at once; more sites scroll inside it.
+    private static let visibleRows: CGFloat = 4
+    /// The gap between two rows, in points.
+    private static let rowSpacing: CGFloat = 8
+    /// The height of one closed row, measured from the rows on screen. The box is sized from it so exactly four rows fit, whatever the system text size. It starts at a typical row height until the first measurement arrives.
+    @State private var rowHeight: CGFloat = 56
 
-    /// The measured height of all rows together. The scroll view uses it as its own height, because a SwiftUI scroll view inside a menu bar panel does not grow to fit its contents on its own and would otherwise shrink to a thin strip.
-    @State private var rowsHeight: CGFloat = 0
+    /// The list box's fixed height: four closed rows and the three gaps between them. It never changes with the number of sites, so the panel keeps its size; a scroll view in a menu bar panel also needs an explicit height, or it shrinks to a thin strip.
+    private var listHeight: CGFloat { rowHeight * Self.visibleRows + Self.rowSpacing * (Self.visibleRows - 1) }
 
     var body: some View {
         if snapshot.blocked.isEmpty {
@@ -25,17 +29,14 @@ struct BlockedListView: View {
                         .foregroundStyle(.secondary)
                 }
                 ScrollView {
-                    VStack(spacing: 8) {
+                    VStack(spacing: Self.rowSpacing) {
                         ForEach(snapshot.blocked, id: \.domain) { site in
                             BlockedRow(model: model, site: site, delaySeconds: snapshot.delaySeconds, canUnblock: snapshot.passwordSet)
                         }
                     }
-                    // Reports the rows' real height, which changes as rows open their host list or unblock form.
-                    .background(GeometryReader { proxy in Color.clear.preference(key: RowsHeightKey.self, value: proxy.size.height) })
                 }
-                // The list is exactly as tall as its rows, up to the cap; only a longer list scrolls. The 60-point floor keeps one row readable before the first measurement arrives.
-                .frame(height: min(max(rowsHeight, 60), Self.maxListHeight))
-                .onPreferenceChange(RowsHeightKey.self) { rowsHeight = $0 }
+                .frame(height: listHeight)
+                .onPreferenceChange(ClosedRowHeightKey.self) { measured in if measured > 0, measured < .infinity { rowHeight = measured } }
                 .scrollBounceBehavior(.basedOnSize)
             }
         }
@@ -56,11 +57,11 @@ struct BlockedListView: View {
     }
 }
 
-/// Carries the measured height of the blocked-site rows up to the list, so the scroll view can size itself to them.
-private struct RowsHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    /// Keeps the largest height reported in one layout pass.
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+/// Carries the height of the shortest row up to the list, which is the height of a closed row.
+private struct ClosedRowHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    /// Keeps the smallest height reported in one layout pass.
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
 }
 
 /// One blocked site. It shows the site name and either an "Unblock…" button or, once an unblock has been approved, a live countdown that says plainly the site is still blocked. A disclosure lists every host name SiteBlock writes for the site.
@@ -84,6 +85,9 @@ struct BlockedRow: View {
     /// Seconds until this site unblocks, or nil when no unblock is pending.
     private var pendingSeconds: Int? { site.unblockSecondsRemaining }
 
+    /// True when the row shows only its title line and the closed host list, with no countdown, no unblock form and no message, which is the row height the list box is sized from.
+    private var isPlainClosed: Bool { !showHosts && !enteringPassword && pendingSeconds == nil && model.feedback?.scope != .site(site.domain) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             titleLine
@@ -95,6 +99,8 @@ struct BlockedRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Only a plain closed row reports its height, because an open host list, an unblock form or a pending countdown makes a row taller, and the list sizes its box from closed rows.
+        .background(GeometryReader { proxy in Color.clear.preference(key: ClosedRowHeightKey.self, value: isPlainClosed ? proxy.size.height : .infinity) })
         // A waiting unblock gets an orange box so it stands out from ordinary rows at a glance.
         .cardBackground(tint: pendingSeconds == nil ? nil : .orange)
         .onChange(of: enteringPassword) { _, entering in if entering { passwordFocused = true } }

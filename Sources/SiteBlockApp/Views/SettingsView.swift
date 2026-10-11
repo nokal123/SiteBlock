@@ -179,10 +179,11 @@ struct SettingsView: View {
 
     // MARK: - Uninstall
 
-    /// The uninstall box. Uninstalling needs the password and then waits for the current delay, and the wait can be cancelled.
+    /// The uninstall box. Uninstalling needs the password and then waits 48 hours, or the unblock delay if that is longer, and the wait can be cancelled.
     private var uninstallSection: some View {
         SectionCard(title: "Uninstall") {
-            Text("Uninstalling removes SiteBlock and every block. It needs your password and then waits for the current delay (\(Formatting.duration(snapshot.delaySeconds))). You can cancel during the wait.")
+            // The installed service always uses the production policy, so its 48-hour minimum is the one that applies.
+            Text("Uninstalling removes SiteBlock and every block. It needs your password and then waits \(Formatting.duration(max(Policy.production.minUninstallSeconds, snapshot.delaySeconds))), and every site stays blocked until then. You can cancel during the wait.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
