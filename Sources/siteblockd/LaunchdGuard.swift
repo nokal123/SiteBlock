@@ -94,16 +94,16 @@ enum LaunchdGuard {
         }
     }
 
-    /// Sets the file's owner to root:wheel and its mode, but only when they are not already right, so a healthy system sees no writes.
-    private static func fixOwnerAndMode(_ path: String, mode: mode_t) {
+    /// Sets the file's owner to root:wheel and its mode, but only when they are not already right, so a healthy system sees no writes. The app guard uses it too, for the app's LaunchAgent plist.
+    static func fixOwnerAndMode(_ path: String, mode: mode_t) {
         var info = stat()
         guard stat(path, &info) == 0 else { return }
         if info.st_uid != 0 || info.st_gid != 0 { _ = chown(path, 0, 0) }
         if info.st_mode & 0o7777 != mode { _ = chmod(path, mode) }
     }
 
-    /// Writes the data to a temp file beside the target, sets mode and root:wheel ownership, and renames it into place, so the target is never half-written. Creates the target's own folder (but never its parents) when missing. Returns false on any failure.
-    private static func writeFile(_ data: Data, to path: String, mode: mode_t, createFolderMode: mode_t) -> Bool {
+    /// Writes the data to a temp file beside the target, sets mode and root:wheel ownership, and renames it into place, so the target is never half-written. Creates the target's own folder (but never its parents) when missing. Returns false on any failure. The app guard uses it too, for the app's LaunchAgent plist.
+    static func writeFile(_ data: Data, to path: String, mode: mode_t, createFolderMode: mode_t) -> Bool {
         let folder = URL(fileURLWithPath: path).deletingLastPathComponent().path
         if !FileManager.default.fileExists(atPath: folder) {
             // Only the folder itself is created, never its parents, so a missing state folder cannot be made with the wrong mode as a side effect.

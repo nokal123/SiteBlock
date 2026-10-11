@@ -46,7 +46,7 @@ enum LaunchdPlists {
         text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
     }
 
-    /// Returns the complete plist XML for a job. The two LaunchDaemons restart whenever they exit (`KeepAlive`), keep running children alive after they exit (`AbandonProcessGroup`, so the uninstall shell is not killed with the daemon), and wait at least 5 seconds between restarts. The app agent starts at login but is not restarted when the user quits it.
+    /// Returns the complete plist XML for a job. The two LaunchDaemons restart whenever they exit (`KeepAlive`), keep running children alive after they exit (`AbandonProcessGroup`, so the uninstall shell is not killed with the daemon), and wait at least 5 seconds between restarts. The app agent starts at login and is also restarted whenever the app exits (`KeepAlive`), with the same 5-second wait between restarts, because the app has no Quit button and the daemon's app guard keeps it in place (03 § 10).
     static func xml(for job: Job, paths: Paths) -> String {
         var entries: [(key: String, value: String)] = [("Label", "<string>\(escape(job.label))</string>")]
         switch job {
@@ -63,9 +63,10 @@ enum LaunchdPlists {
             entries.append(("ThrottleInterval", "<integer>5</integer>"))
         case .app:
             entries.append(("ProgramArguments", "<array>\n\t\t<string>\(escape(paths.appExecutable))</string>\n\t</array>"))
-            // The app runs at login only; quitting it keeps it closed until the next login.
+            // The app starts at login and launchd starts it again whenever it exits (03 § 10), so closing it cannot keep SiteBlock out of the menu bar.
             entries.append(("RunAtLoad", "<true/>"))
-            entries.append(("KeepAlive", "<false/>"))
+            entries.append(("KeepAlive", "<true/>"))
+            entries.append(("ThrottleInterval", "<integer>5</integer>"))
         }
         var lines = [
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",

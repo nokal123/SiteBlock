@@ -50,7 +50,7 @@ private enum PasswordFormMode: Equatable {
     case newPassword
 }
 
-/// The main screen: title row, warning banners, the add field, the blocked list, and the footer. It looks the same whether or not a password exists yet; when none does, pressing Block opens the "Choose a SiteBlock password" form under the add field first.
+/// The main screen: title row, warning banners, the add field, the blocked list, and (once a password exists) the footer with the Settings button. It looks the same whether or not a password exists yet; when none does, pressing Block opens the "Choose a SiteBlock password" form under the add field first.
 private struct HomeView: View {
     @ObservedObject var model: StatusModel
     /// The latest status from the daemon.
@@ -86,8 +86,11 @@ private struct HomeView: View {
                 BlockedListView(model: model, snapshot: snapshot)
             }
             .padding(16)
-            Divider()
-            footer
+            // The footer only holds the Settings button, which needs a password, so without one there is no footer row (and no divider above it).
+            if snapshot.passwordSet {
+                Divider()
+                footer
+            }
         }
         .onAppear(perform: refocus)
         // Each time the panel opens, put the cursor back in the add field.
@@ -132,18 +135,13 @@ private struct HomeView: View {
         .cardBackground()
     }
 
-    /// The bottom row: Settings on the left and Quit on the right.
+    /// The bottom row: the Settings button on the left. There is no Quit button, because the app always stays in the menu bar (03 § 8, § 10).
     private var footer: some View {
         HStack {
-            if snapshot.passwordSet {
-                Button(action: openSettings) {
-                    Label("Settings", systemImage: "gearshape")
-                }
+            Button(action: openSettings) {
+                Label("Settings", systemImage: "gearshape")
             }
             Spacer()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
-                .keyboardShortcut("q")
-                .help("Quits this menu bar app. Blocking keeps running.")
         }
         .buttonStyle(.borderless)
         .controlSize(.small)
@@ -249,8 +247,6 @@ private struct NotRunningView: View {
             HStack {
                 Button("Try again") { Task { await model.refresh() } }
                 Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .keyboardShortcut("q")
             }
             .buttonStyle(.borderless)
             .controlSize(.small)

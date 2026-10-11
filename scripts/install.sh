@@ -33,6 +33,7 @@ APP_SUPPORT_DIR="/Library/Application Support/SiteBlock"
 DAEMON_PROGRAM="$APP_SUPPORT_DIR/bin/siteblockd"
 BACKUP_DIR="/usr/local/libexec/siteblock"
 BACKUP_PROGRAM="$BACKUP_DIR/siteblockd"
+BACKUP_APP="$BACKUP_DIR/SiteBlock.app"
 LOG_DIR="/Library/Logs/SiteBlock"
 CLI_DIR="/usr/local/bin"
 CLI_DEST="$CLI_DIR/siteblock"
@@ -214,17 +215,24 @@ act mkdir -p "$CLI_DIR"
 step "Step 3: unloading any running SiteBlock jobs (watchdog first, then the daemon)"
 unload_services
 
-# Step 4: copy the programs. The daemon goes to two places: the one the jobs run, and the backup the guard restores from.
+# Step 4: copy the programs. The daemon and the menu bar app each go to two places: the one that is used, and a root-owned backup that the guards restore from.
+# This step runs only after step 3 has unloaded the daemon and the watchdog (and checked that both are gone). That order matters:
+# the daemon's app guard puts back a deleted or changed app within 5 seconds, so a daemon that was still running here would restore
+# the old app from the old backup in the middle of the copy.
 step "Step 4: copying programs"
+# The backup of the menu bar app comes first. ditto copies the bundle with its signature intact; the old backup is removed first so no old file survives inside it.
+act rm -rf "$BACKUP_APP"
+act ditto "$BUILD_DIR/SiteBlock.app" "$BACKUP_APP"
+act chown -R root:wheel "$BACKUP_APP"
 install_file 0755 "$BUILD_DIR/siteblockd" "$DAEMON_PROGRAM"
 install_file 0755 "$BUILD_DIR/siteblockd" "$BACKUP_PROGRAM"
 install_file 0755 "$BUILD_DIR/siteblock" "$CLI_DEST"
 # On an upgrade the old menu bar app may still be running and loaded; stop it so the new copy can be loaded in step 7.
+# The agent is booted out before the app is killed: the agent restarts the app whenever it exits (KeepAlive), so killing first would only start it again.
 if [[ -n "$AGENT_UID" ]]; then
     act_ignore launchctl bootout "gui/$AGENT_UID/$APP_LABEL"
 fi
 act_ignore pkill -x SiteBlock
-# ditto copies the bundle with its signature intact.
 act rm -rf "$APP_DEST"
 act ditto "$BUILD_DIR/SiteBlock.app" "$APP_DEST"
 act chown -R root:wheel "$APP_DEST"
@@ -248,7 +256,12 @@ if [[ -n "$AGENT_UID" ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
         act launchctl bootstrap "gui/$AGENT_UID" "$AGENT_PLIST"
     elif ! launchctl bootstrap "gui/$AGENT_UID" "$AGENT_PLIST"; then
-        echo "warning: could not start the menu bar app now. It will start at your next login, or run: open $APP_DEST"
+        # The daemon's app guard loads the agent itself within a few seconds of starting in step 6, so the agent may already be loaded; that is a success, not a failure.
+        if launchctl print "gui/$AGENT_UID/$APP_LABEL" >/dev/null 2>&1; then
+            echo "The menu bar app is already loaded (the daemon's app guard loaded it)."
+        else
+            echo "warning: could not start the menu bar app now. It will start at your next login, or run: open $APP_DEST"
+        fi
     fi
 else
     echo "Not started: this script was not run through sudo from a login session, so there is no user to start it for."

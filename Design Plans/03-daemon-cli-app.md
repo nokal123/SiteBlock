@@ -52,7 +52,7 @@ Exactly one of `--daemon`, `--watchdog`, `--version` or `--print-plist` is requi
 3. Run an enforcement pass with `HostsEnforcer`.
 4. Save the state if the tick reported a change, or if any countdown is running and 15 seconds have passed since the last save.
 5. Ask the `StateStore` whether the primary and backup state files still hold exactly the bytes it last wrote. If either file is missing or different, save again from the in-memory state and log "state file repaired". While the daemon runs, its in-memory state is the source of truth, so deleting or editing `state.json` by hand is undone within one tick.
-6. In production mode, every 5 seconds, call `LaunchdGuard.ensureLoaded(.watchdog)`.
+6. Every 5 seconds, on a separate guard timer: in production call `LaunchdGuard.ensureLoaded(.watchdog)`, then (in production and sandbox) run `AppGuard` (see § AppGuard). The timer is cancelled when an uninstall begins.
 
 **Before every command:** on the engine queue, advance every countdown by the time since the last tick or command, apply anything that finished (saving and enforcing as a tick would), and record now as the last tick time. Commands and ticks share this one clock reading, so a countdown started by a command is never charged for time that passed before it existed, and no stretch of time is counted twice.
 
@@ -184,11 +184,11 @@ siteblock version
    - A text field "Add a site (e.g. reddit.com)" and a "Block" button. Enter also submits. Errors appear in red under the field.
    - The blocked list. Each row shows the domain, a disclosure arrow that lists the expanded host names, and either an "Unblock…" button or, when pending, a live countdown such as "Unblocks in 29:41" with a "Keep blocked" button that cancels.
    - Pressing "Unblock…" replaces the row's button with a password field and "Start countdown" and "Cancel" buttons.
-   - A footer with "Settings" and "Quit".
+   - A footer with "Settings". There is no Quit button: the app always stays in the menu bar.
    - Banners at the top for a pending delay change, uninstall, recovery or lockout, each with its countdown and a cancel button where cancelling is allowed.
 3. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits 48 hours, or the unblock delay if that is longer, with every site still blocked during the wait.
 
-**Behavioral notes:** The app holds no state of its own beyond what is on screen; the daemon is always the source of truth. Quitting the app does not stop any blocking. The app is launched at login by a LaunchAgent (see [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs), and it sets `LSUIElement` so it has no Dock icon.
+**Behavioral notes:** The app holds no state of its own beyond what is on screen; the daemon is always the source of truth. Closing the app does not stop any blocking, and the app does not stay closed: its LaunchAgent has `KeepAlive` set, so launchd starts it again whenever it exits, and the daemon keeps that LaunchAgent loaded and the app bundle in place (see § AppGuard). The app is launched at login by a LaunchAgent (see [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs), and it sets `LSUIElement` so it has no Dock icon.
 
 ---
 
@@ -214,3 +214,19 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 **Tamper repair and logging:** a pass that rewrites a file not changed by a command logs "Chrome policy repaired".
 
 **Uninstall:** the uninstaller removes `URLBlocklist` from both files (deleting them when nothing else is left) in the same step that removes the hosts section.
+
+---
+
+### 10. AppGuard (`Sources/siteblockd/AppGuard.swift`)
+
+**Purpose:** Keeps the menu bar app installed and running, so it cannot be deleted, moved to the Trash or unloaded to make SiteBlock disappear from view. The blocking itself never depends on the app.
+
+**Behavior (every 5 seconds, on the guard timer that also checks the watchdog; production and sandbox):**
+1. **Bundle check.** The app is intact when `<app>/Contents/MacOS/SiteBlock` and `<app>/Contents/Info.plist` exist as regular files and the executable's size equals the backup's. When it is not intact (missing, moved to the Trash, partly deleted, replaced), the guard removes whatever is at the app path and copies the backup with `/usr/bin/ditto <backup> <app>` (which keeps the code signature), then, in production, sets the whole bundle to `root:wheel`. It logs "menu bar app restored".
+2. **Agent check (production only).** For the console user (owner of `/dev/console`, skipped when that is root), it runs `/bin/launchctl print gui/<uid>/com.nokal.siteblock.app`. When that fails (someone ran `launchctl bootout` on it), it rewrites the LaunchAgent plist if missing or different, runs `/bin/launchctl enable gui/<uid>/com.nokal.siteblock.app` (any user can `launchctl disable` their own agent, which would otherwise make every bootstrap fail), and runs `/bin/launchctl bootstrap gui/<uid> <plist>`. After a bundle restore it also runs `/bin/launchctl kickstart gui/<uid>/com.nokal.siteblock.app` so the restored app starts at once. It logs "menu bar app agent reloaded".
+3. A backup that is missing or itself incomplete (no executable or no `Info.plist`) is logged once a minute and nothing is restored from it, so a damaged backup cannot cause a restore every 5 seconds.
+
+**Paths:** the backup is `/usr/local/libexec/siteblock/SiteBlock.app` (sandbox: `root/libexec/siteblock/SiteBlock.app`); the app is `Paths.appBundle`.
+
+**Uninstall:** the guard timer is cancelled when an uninstall starts (as for the watchdog check), and the uninstaller deletes the backup bundle along with the other files, so nothing is restored after a real uninstall.
+

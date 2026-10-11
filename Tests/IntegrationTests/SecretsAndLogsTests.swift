@@ -19,9 +19,9 @@ struct SecretsAndLogsTests {
         return found
     }
 
-    // The first startup-free log line that contains the command name, or nil.
+    // The first startup-free log line that contains the command name, or nil. Lines from the app guard are skipped (03 § 10): a sandbox without a backup app logs "cannot check the menu bar app: the backup at <random sandbox path> ..." about a second after start, and the random path could by chance contain a short command name such as "add".
     static func firstLine(in lines: [String], naming name: String) -> String? {
-        for line in lines where line.contains(name) && !line.contains("starting") { return line }
+        for line in lines where line.contains(name) && !line.contains("starting") && !line.contains("menu bar app") { return line }
         return nil
     }
 

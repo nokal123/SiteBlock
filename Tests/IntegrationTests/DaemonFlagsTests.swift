@@ -123,15 +123,16 @@ struct DaemonFlagsTests {
         #expect(plist["ThrottleInterval"] as? Int == 5)
     }
 
-    // 04 § Launchd Jobs: the app's LaunchAgent starts the app at login, and quitting the app keeps it closed (KeepAlive false).
+    // 04 § Launchd Jobs and 03 § 10 (AppGuard): the app's LaunchAgent starts the app at login and launchd starts it again whenever it exits (KeepAlive true, with the same 5-second ThrottleInterval as the daemons), because the app has no Quit button. This test used to expect KeepAlive false; that changed on purpose with the app guard.
     @Test(.enabled(if: geteuid() != 0))
-    func theAppLaunchAgentPlistStartsTheAppAtLoginWithoutKeepAlive() throws {
+    func theAppLaunchAgentPlistStartsTheAppAtLoginAndKeepsItAlive() throws {
         let result = try runDaemonProgram(["--print-plist", "app"])
         #expect(result.status == 0, "stderr: \(result.stderr)")
         let plist = try Self.plist(result.stdout)
         #expect(plist["Label"] as? String == "com.nokal.siteblock.app")
         #expect(plist["ProgramArguments"] as? [String] == ["/Applications/SiteBlock.app/Contents/MacOS/SiteBlock"])
         #expect(plist["RunAtLoad"] as? Bool == true)
-        #expect(plist["KeepAlive"] as? Bool == false)
+        #expect(plist["KeepAlive"] as? Bool == true)
+        #expect(plist["ThrottleInterval"] as? Int == 5)
     }
 }

@@ -67,6 +67,7 @@ When Xcode is installed, plain `swift test` also works, and the script detects `
 
 - Daemon program: `/Library/Application Support/SiteBlock/bin/siteblockd`
 - Backup program (restored by the guard if the main one is deleted): `/usr/local/libexec/siteblock/siteblockd`
+- Backup app (restored by AppGuard if the app is deleted or moved to the Trash): `/usr/local/libexec/siteblock/SiteBlock.app`
 - State file: `/Library/Application Support/SiteBlock/state.json`
 - State backup (restored from if the main state file is deleted while the daemon is stopped): `/usr/local/libexec/siteblock/state.backup.json`
 - Socket: `/var/run/siteblock.sock`
@@ -90,7 +91,7 @@ Sandbox mode lets the real `siteblockd` program run as an ordinary user against 
 
 - uses `Paths.sandbox(root:)` for every file,
 - does not flush the macOS name cache,
-- does not call `launchctl` and does not run the watchdog check,
+- does not call `launchctl` and does not run the watchdog check (the app-bundle part of AppGuard still runs, against the sandbox's own app and backup),
 - accepts `--tick` and `--policy-fast`.
 
 The CLI and app reach a sandbox daemon when the `SITEBLOCK_SOCKET` environment variable points at the sandbox socket.
@@ -102,7 +103,7 @@ The CLI and app reach a sandbox daemon when the `SITEBLOCK_SOCKET` environment v
 Labels:
 - `com.nokal.siteblock.daemon` — runs `siteblockd --daemon`.
 - `com.nokal.siteblock.watchdog` — runs `siteblockd --watchdog` from the same program file.
-- `com.nokal.siteblock.app` — a LaunchAgent (started in each user's login session) that runs `/Applications/SiteBlock.app/Contents/MacOS/SiteBlock`. It sets `RunAtLoad` true and `KeepAlive` false, so quitting the app keeps it closed until the next login.
+- `com.nokal.siteblock.app` — a LaunchAgent (started in each user's login session) that runs `/Applications/SiteBlock.app/Contents/MacOS/SiteBlock`. It sets `RunAtLoad` true, `KeepAlive` true and `ThrottleInterval` 5, so launchd starts the app again (at most every 5 seconds) whenever it exits; the app has no Quit button. The daemon reloads this agent if it is unloaded (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § AppGuard).
 
 Both LaunchDaemon plists contain `Label`, `ProgramArguments`, `RunAtLoad` true, `KeepAlive` true, `ProcessType` `Interactive`, `AbandonProcessGroup` true (so the uninstall shell is not killed with the daemon), `StandardOutPath` and `StandardErrorPath` set to the log file, and `ThrottleInterval` `5` (launchd waits at least 5 seconds between restarts).
 
@@ -129,7 +130,7 @@ Both LaunchDaemon plists contain `Label`, `ProgramArguments`, `RunAtLoad` true, 
 1. Refuse to run unless the effective user is root, and refuse unless `build/` contains all three programs (it tells the user to run `scripts/build.sh` first).
 2. Create `/Library/Application Support/SiteBlock/bin` (mode `0755`), `/usr/local/libexec/siteblock`, `/Library/Logs/SiteBlock`, all owned by `root:wheel`.
 3. If the daemon and watchdog are loaded, `bootout` the watchdog first, then the daemon, so neither restarts the other during the copy. `state.json` is never touched.
-4. Copy `siteblockd` to both the main and backup paths (mode `0755`, `root:wheel`). Copy `siteblock` to `/usr/local/bin/siteblock`. Copy `SiteBlock.app` to `/Applications/` (replacing any older copy).
+4. Copy `SiteBlock.app` to its backup path `/usr/local/libexec/siteblock/SiteBlock.app` with `ditto` (owner `root:wheel`), replacing any older backup. Then copy `siteblockd` to both the main and backup paths (mode `0755`, `root:wheel`). Copy `siteblock` to `/usr/local/bin/siteblock`. Copy `SiteBlock.app` to `/Applications/` (replacing any older copy).
 5. Write both LaunchDaemon plists by running the root-owned installed copy, `"/Library/Application Support/SiteBlock/bin/siteblockd" --print-plist daemon` and `--print-plist watchdog`, so the plist text has one source in code. Write the LaunchAgent plist the same way with `--print-plist app`. The script never runs a program from `build/` or `/usr/local/bin` as root, because the user's account can replace files in those folders.
 5a. Write `/etc/newsyslog.d/siteblock.conf` (mode `0644`, `root:wheel`) so macOS's log rotation tool keeps each log file under 1 MB with 3 compressed old copies:
     ```

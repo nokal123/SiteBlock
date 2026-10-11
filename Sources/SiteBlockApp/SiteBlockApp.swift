@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The SiteBlock menu bar app: one shield icon that opens a panel for adding, viewing and unblocking sites. Quitting it never stops the blocking, because the blocking is done by the separate background service.
+/// The SiteBlock menu bar app: one shield icon that opens a panel for adding, viewing and unblocking sites. It has no Quit button and launchd starts it again if it exits; closing it never stops the blocking either, because the blocking is done by the separate background service.
 @main
 struct SiteBlockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate

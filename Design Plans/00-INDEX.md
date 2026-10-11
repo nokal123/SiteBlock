@@ -49,6 +49,7 @@
 19. `Sources/siteblockd/LaunchdPlists.swift` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs
 19a. `Sources/siteblockd/ChromePolicyEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromePolicyEnforcer
 19b. `Sources/SiteBlockCore/ChromePolicy.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromePolicyEnforcer
+19c. `Sources/siteblockd/AppGuard.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § AppGuard
 20. `Sources/siteblockd/Uninstaller.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Uninstaller
 21. `Sources/siteblock/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
 22. `Sources/SiteBlockApp/*` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App

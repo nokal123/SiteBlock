@@ -71,7 +71,7 @@ final class DaemonRuntime {
     private static let maxElapsedPerTick = 604_800.0
     // The state is saved at least this often while any countdown is running, so a crash loses at most this much progress.
     private static let saveInterval = Duration.seconds(15)
-    // How often the watchdog is checked in production.
+    // How often the guard timer runs: the watchdog check (production) and the app guard (production and sandbox).
     private static let guardIntervalSeconds = 5.0
     // After a failed attempt to repair the state files, wait this long before trying again, so a full disk does not fill the log.
     private static let repairRetryInterval = Duration.seconds(30)
@@ -90,7 +90,7 @@ final class DaemonRuntime {
     private let rejections: RejectedRequestCounter
     // The serial queue that owns the engine, the store and the timers.
     private let engineQueue = DispatchQueue(label: "siteblockd.engine")
-    // A separate queue for launchctl calls, so a slow launchctl cannot delay ticks or commands.
+    // A separate queue for launchctl calls and the app copy, so a slow launchctl or ditto cannot delay ticks or commands.
     private let guardQueue = DispatchQueue(label: "siteblockd.guard")
     private var engine: Engine
     private var server: SocketServer?
@@ -199,19 +199,23 @@ final class DaemonRuntime {
         timer.resume()
         tickTimer = timer
 
-        // In production the daemon also keeps the watchdog loaded. This is a separate timer on its own queue; sandbox runs skip it entirely.
-        if !paths.isSandbox { startGuardTimer() }
+        // The guard timer keeps the menu bar app in place (03 § 10) and, in production only, the watchdog loaded. It is a separate timer on its own queue, and it runs in sandbox mode too so the app guard can be tested there.
+        startGuardTimer()
 
         log.log("siteblockd ready; socket at \(paths.socket)")
     }
 
-    /// Starts the repeating check that keeps the watchdog job loaded (production only).
+    /// Starts the repeating check that runs every 5 seconds on the guard queue: it keeps the watchdog job loaded (production only) and then runs the app guard (production and sandbox).
     private func startGuardTimer() {
         let timer = DispatchSource.makeTimerSource(queue: guardQueue)
         timer.schedule(deadline: .now() + 1, repeating: DaemonRuntime.guardIntervalSeconds)
+        let appGuard = AppGuard(paths: paths, log: log, isCancelled: { [uninstallStarted] in uninstallStarted.isSet })
         timer.setEventHandler { [paths, log, uninstallStarted] in
-            // Once an uninstall begins, reloading the watchdog would fight the uninstall.
-            if !uninstallStarted.isSet { LaunchdGuard.ensureLoaded(.watchdog, paths: paths, log: log) }
+            // Once an uninstall begins, reloading the watchdog or restoring the app would fight the uninstall.
+            if uninstallStarted.isSet { return }
+            // The watchdog check calls launchctl, so it never runs in sandbox mode. It goes first because it is the quick and critical one; a slow app copy must not delay it.
+            if !paths.isSandbox { LaunchdGuard.ensureLoaded(.watchdog, paths: paths, log: log) }
+            appGuard.check()
         }
         timer.resume()
         guardTimer = timer
@@ -402,7 +406,7 @@ final class DaemonRuntime {
         log.log("uninstall starting")
         tickTimer?.cancel()
         guardTimer?.cancel()
-        // Wait for a guard run that is already in progress, so it cannot reload the watchdog after the plists are deleted.
+        // Wait for a guard run that is already in progress, so it cannot reload the watchdog or restore the app after the uninstaller has deleted them.
         guardQueue.sync {}
         server?.stop()
 

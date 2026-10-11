@@ -98,6 +98,7 @@ SiteBlock defends against the owner of the Mac acting on impulse. It does not de
 
 - Editing `/etc/hosts` by hand. The daemon rewrites its section within two seconds, and it also removes lines elsewhere in the file that point a blocked name at a real address (because macOS uses the first matching line, such a line would otherwise win).
 - Unloading the daemon or the watchdog. Each one reloads the other.
+- Deleting or trashing the menu bar app, quitting it, or unloading its startup entry. The daemon puts the app back from a root-owned backup and relaunches it within 5 seconds, and launchd restarts it whenever it exits. (The app is only the window; blocking never depended on it.)
 - Deleting the daemon's plist (its `launchd` configuration file) or its program file. The watchdog writes the plist again from a copy built into its own program and copies the program back from a backup location.
 - Deleting or editing the state file. The running daemon writes it back from memory within one tick, and a daemon that starts with no state file reads a backup copy kept in a second folder.
 - Moving the system clock forward. Countdowns are measured with a monotonic clock (a counter that only moves forward with real elapsed time and ignores the wall clock).

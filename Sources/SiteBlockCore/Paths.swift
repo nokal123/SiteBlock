@@ -12,6 +12,8 @@ public struct Paths: Sendable {
     public let cliPath: String
     /// The backup copy of the daemon program that the guard restores from.
     public let backupDaemon: String
+    /// The root-owned backup copy of the whole menu bar app bundle that the app guard restores from when the app is deleted, moved to the Trash or damaged.
+    public let appBackup: String
     /// The daemon program that the LaunchDaemons run.
     public let daemonProgram: String
     /// The folder holding the state file and the program. The watchdog recreates it when it is missing.
@@ -42,12 +44,13 @@ public struct Paths: Sendable {
     public let managedPreferencesDir: String
 
     /// Builds the layout shared by production and sandbox: each location is a fixed spot under the given folders.
-    private init(isSandbox: Bool, appBundle: String, cliPath: String, backupDaemon: String, stateDir: String, socket: String, hosts: String, logDir: String, launchDaemonsDir: String, launchAgentsDir: String, newsyslogConf: String, managedPreferencesDir: String) {
+    private init(isSandbox: Bool, appBundle: String, cliPath: String, backupDaemon: String, appBackup: String, stateDir: String, socket: String, hosts: String, logDir: String, launchDaemonsDir: String, launchAgentsDir: String, newsyslogConf: String, managedPreferencesDir: String) {
         self.isSandbox = isSandbox
         self.appBundle = appBundle
         self.appExecutable = appBundle + "/Contents/MacOS/SiteBlock"
         self.cliPath = cliPath
         self.backupDaemon = backupDaemon
+        self.appBackup = appBackup
         self.stateDir = stateDir
         self.daemonProgram = stateDir + "/bin/siteblockd"
         self.stateFile = stateDir + "/state.json"
@@ -81,7 +84,7 @@ public struct Paths: Sendable {
     /// The real system locations used by the installed service.
     public static let production = Paths(
         isSandbox: false, appBundle: "/Applications/SiteBlock.app", cliPath: "/usr/local/bin/siteblock",
-        backupDaemon: "/usr/local/libexec/siteblock/siteblockd", stateDir: "/Library/Application Support/SiteBlock",
+        backupDaemon: "/usr/local/libexec/siteblock/siteblockd", appBackup: "/usr/local/libexec/siteblock/SiteBlock.app", stateDir: "/Library/Application Support/SiteBlock",
         socket: "/var/run/siteblock.sock", hosts: "/etc/hosts", logDir: "/Library/Logs/SiteBlock",
         launchDaemonsDir: "/Library/LaunchDaemons", launchAgentsDir: "/Library/LaunchAgents",
         newsyslogConf: "/etc/newsyslog.d/siteblock.conf", managedPreferencesDir: "/Library/Managed Preferences"
@@ -94,7 +97,7 @@ public struct Paths: Sendable {
         while base.count > 1 && base.hasSuffix("/") { base.removeLast() }
         return Paths(
             isSandbox: true, appBundle: base + "/Applications/SiteBlock.app", cliPath: base + "/bin/siteblock",
-            backupDaemon: base + "/libexec/siteblock/siteblockd", stateDir: base + "/state",
+            backupDaemon: base + "/libexec/siteblock/siteblockd", appBackup: base + "/libexec/siteblock/SiteBlock.app", stateDir: base + "/state",
             socket: base + "/siteblock.sock", hosts: base + "/hosts", logDir: base + "/logs",
             launchDaemonsDir: base + "/LaunchDaemons", launchAgentsDir: base + "/LaunchAgents",
             newsyslogConf: base + "/newsyslog.d/siteblock.conf", managedPreferencesDir: base + "/ManagedPreferences"
