@@ -12,6 +12,7 @@
 7. [Install Script](#install-script)
 8. [Upgrade Behavior](#upgrade-behavior)
 9. [Repairing an Install](#repairing-an-install)
+10. [Packaging for Another Mac](#packaging-for-another-mac)
 
 ---
 
@@ -36,6 +37,7 @@ SiteBlock/
     ├── build.sh
     ├── test.sh
     ├── install.sh
+    ├── package.sh
     └── verify-install.sh
 ```
 
@@ -156,3 +158,23 @@ Running `install.sh` again replaces the programs and plists and restarts the job
 ## Repairing an Install
 
 Running `sudo scripts/install.sh` again repairs a broken install: it replaces the programs and plists and restarts both jobs, and it never removes the state files, so every block, the password and every countdown survive. The only way to remove SiteBlock is `siteblock uninstall` (or the Uninstall button in Settings), which needs the password and then waits 48 hours, or the unblock delay if that is longer. The repository holds no script that removes SiteBlock without them, because the person who owns the Mac is also the person the block protects.
+
+---
+
+## Packaging for Another Mac
+
+`scripts/package.sh` (runs as the normal user) builds fresh release programs with `scripts/build.sh` and writes `dist/SiteBlock-<version>.zip`, where the version comes from `siteblockd --version`. The zip holds one `SiteBlock` folder:
+
+```
+SiteBlock/
+├── build/                      ready-built, ad-hoc signed programs (Apple chips only)
+├── scripts/install.sh
+├── scripts/verify-install.sh
+├── Install SiteBlock.command   double-click installer for the other Mac
+└── INSTALL.txt                 plain-language instructions
+```
+
+The packaged `Install SiteBlock.command` differs from the repository's: it does not build. It removes the `com.apple.quarantine` extended attribute (the mark macOS puts on files that arrive from another computer) from its own folder, runs `sudo scripts/install.sh` and then `scripts/verify-install.sh`, and waits for Return. The programs carry only an ad-hoc signature, so the first opening needs right-click > Open (or System Settings > Privacy & Security > Open Anyway); `INSTALL.txt` explains this and gives the two-line Terminal fallback.
+
+Before zipping, the script checks every copied program with `codesign --verify --strict` and that each binary contains `arm64` code. The zip is made with `ditto -c -k --keepParent`, which keeps the app bundle's signature and the scripts' run permissions. `dist/` is ignored by git. The target Mac needs an Apple chip and macOS 14 or newer; nothing in the package is tied to the Mac that built it, and no blocked sites or password are carried over.
+

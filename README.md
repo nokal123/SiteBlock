@@ -28,6 +28,10 @@ cd ~/Desktop/Work/Projects/SiteBlock && scripts/build.sh && sudo scripts/install
 
 Installing asks only for your Mac password. You choose your SiteBlock password the first time you block a site: click the shield icon in the menu bar, type a site and press Block, and the panel asks you to choose it. This password is separate from your Mac password, and it cannot be shown again, so store it somewhere you trust (or give it to someone else to hold).
 
+## Installing on another Mac
+
+Run `scripts/package.sh`. It builds SiteBlock and writes `dist/SiteBlock-1.0.0.zip` (under 1 MB). Send that zip to the other Mac, which needs an Apple chip (M1 or newer) and macOS 14 or newer; it needs no developer tools. The `INSTALL.txt` inside tells the person there what to do: unzip, right-click "Install SiteBlock.command" and choose Open (macOS warns because SiteBlock is not signed with an Apple developer certificate), and enter that Mac's administrator password. They choose their own SiteBlock password at their first block; nothing from your Mac is copied. Only install it on a Mac whose user wants it, because it is deliberately hard to remove.
+
 ## Everyday use
 
 **Block a site:** open the menu bar panel, type the site (for example `youtube.com`, or paste a full link) and press Block. Blocking never needs the password and takes effect at once. A tab that was already open on the site may keep working for a minute or two until the browser closes its existing connection; reloading after that shows the block.
