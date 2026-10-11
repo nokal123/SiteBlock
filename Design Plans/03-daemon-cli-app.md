@@ -173,7 +173,7 @@ siteblock version
 **Files:**
 - `SiteBlockApp.swift` — the `@main` `App` with one `MenuBarExtra` using `.menuBarExtraStyle(.window)` (a panel that drops down from the icon). The icon is the SF Symbol (one of Apple's built-in icons) `shield.lefthalf.filled`, or `shield.slash` when the daemon cannot be reached.
 - `StatusModel.swift` — an `ObservableObject` that holds the latest `StatusSnapshot`, the connection state and the last error. It polls `status` once per second while the panel is open and every 30 seconds otherwise, on a background queue, and publishes on the main queue. It exposes one async method per command.
-- `Views/MainPanel.swift` — the panel layout, 360 points wide.
+- `Views/MainPanel.swift` — the panel layout, 440 points wide. The blocked list is exactly as tall as its rows, measured each layout, and scrolls only past 480 points (about nine rows).
 - `Views/SetupView.swift`, `Views/BlockedListView.swift`, `Views/SettingsView.swift`.
 
 **Panel states:**

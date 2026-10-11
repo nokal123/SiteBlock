@@ -7,8 +7,11 @@ struct BlockedListView: View {
     /// The latest status from the daemon.
     let snapshot: StatusSnapshot
 
-    /// The tallest the list may grow before it scrolls, in points. About six ordinary rows fit.
-    private static let maxListHeight: CGFloat = 320
+    /// The tallest the list may grow before it scrolls, in points. About nine ordinary rows fit.
+    private static let maxListHeight: CGFloat = 480
+
+    /// The measured height of all rows together. The scroll view uses it as its own height, because a SwiftUI scroll view inside a menu bar panel does not grow to fit its contents on its own and would otherwise shrink to a thin strip.
+    @State private var rowsHeight: CGFloat = 0
 
     var body: some View {
         if snapshot.blocked.isEmpty {
@@ -27,9 +30,12 @@ struct BlockedListView: View {
                             BlockedRow(model: model, site: site, delaySeconds: snapshot.delaySeconds, canUnblock: snapshot.passwordSet)
                         }
                     }
+                    // Reports the rows' real height, which changes as rows open their host list or unblock form.
+                    .background(GeometryReader { proxy in Color.clear.preference(key: RowsHeightKey.self, value: proxy.size.height) })
                 }
-                // With few rows the scroll view is only as tall as its rows; the cap matters only for long lists.
-                .frame(maxHeight: Self.maxListHeight)
+                // The list is exactly as tall as its rows, up to the cap; only a longer list scrolls. The 60-point floor keeps one row readable before the first measurement arrives.
+                .frame(height: min(max(rowsHeight, 60), Self.maxListHeight))
+                .onPreferenceChange(RowsHeightKey.self) { rowsHeight = $0 }
                 .scrollBounceBehavior(.basedOnSize)
             }
         }
@@ -48,6 +54,13 @@ struct BlockedListView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 18)
     }
+}
+
+/// Carries the measured height of the blocked-site rows up to the list, so the scroll view can size itself to them.
+private struct RowsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    /// Keeps the largest height reported in one layout pass.
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 /// One blocked site. It shows the site name and either an "Unblock…" button or, once an unblock has been approved, a live countdown that says plainly the site is still blocked. A disclosure lists every host name SiteBlock writes for the site.

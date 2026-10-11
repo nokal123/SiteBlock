@@ -2,7 +2,7 @@ import AppKit
 import SiteBlockCore
 import SwiftUI
 
-/// The whole panel that drops down from the menu bar icon. It is always 360 points wide, watches whether its window is open, and starts every opening from a clean screen.
+/// The whole panel that drops down from the menu bar icon. It is always 440 points wide, so long site names and countdowns fit on one line, watches whether its window is open, and starts every opening from a clean screen.
 struct MainPanel: View {
     @ObservedObject var model: StatusModel
 
@@ -10,7 +10,7 @@ struct MainPanel: View {
         PanelRouter(model: model)
             // Changing the id when the panel closes makes SwiftUI discard the screen's state, which empties any password that was typed and closes forms and Settings.
             .id(model.closeCount)
-            .frame(width: 360)
+            .frame(width: 440)
             .background(WindowVisibilityObserver { model.panelVisibilityChanged($0) })
     }
 }
