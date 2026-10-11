@@ -138,7 +138,7 @@ Both LaunchDaemon plists contain `Label`, `ProgramArguments`, `RunAtLoad` true, 
     /Library/Logs/SiteBlock/watchdog.log    root:wheel  644  3  1024  *  JN
     ```
 6. `launchctl bootstrap system` the daemon plist, then the watchdog plist.
-7. Load the app for the user who ran `sudo` with `launchctl bootstrap gui/$SUDO_UID /Library/LaunchAgents/com.nokal.siteblock.app.plist`.
+7. Load the app for the user who ran `sudo` with `launchctl bootstrap gui/$SUDO_UID /Library/LaunchAgents/com.nokal.siteblock.app.plist`. Without `SUDO_UID` (the script run as root from a macOS administrator password window), use the owner of `/dev/console`, the person at the screen; when that is root, skip this step.
 8. Wait up to 10 seconds for the socket to appear, run `siteblock status` as the invoking user (`sudo -u "#$SUDO_UID"`, or skip it when `SUDO_UID` is empty), and print next steps (set a password from the menu bar icon or with `siteblock setup`).
 
 `Install SiteBlock.command` at the repository root is a double-clickable wrapper. Finder opens it in Terminal, where it runs `scripts/build.sh` as the user, then `sudo scripts/install.sh` (Terminal asks for the Mac password), then `scripts/verify-install.sh`, and leaves the window open so the results can be read.

@@ -148,14 +148,26 @@ final class AppGuard {
 
     // MARK: - Agent check (production only)
 
-    /// Makes sure the app's LaunchAgent is loaded for the person at the screen. When `startNow` is true (the bundle was just restored) it also kick-starts the agent, so the app returns at once instead of after launchd's next retry. Does nothing when nobody is logged in.
+    /// Makes sure the app's LaunchAgent is loaded and its app is running for the person at the screen. It kick-starts the agent when the bundle was just restored (`startNow`) or when the agent is loaded but its app is not running, so the app returns at once. Does nothing when nobody is logged in.
     private func keepAgentLoaded(startNow: Bool) {
         guard let uid = AppGuard.consoleUser() else { return }
         let target = "gui/\(uid)/\(LaunchdPlists.Job.app.label)"
         // `launchctl print` exits 0 only for a loaded job. A failure means someone booted the agent out.
-        if runProcess("/bin/launchctl", ["print", target], timeout: AppGuard.launchctlTimeout) != 0 { reloadAgent(uid: uid, target: target) }
+        let printed = runProcessCapturingOutput("/bin/launchctl", ["print", target], timeout: AppGuard.launchctlTimeout)
+        if printed.status != 0 { reloadAgent(uid: uid, target: target) }
+        // A loaded agent whose app is not running happens when launchd still holds an older definition without KeepAlive (for example after an install that could not reload the agent). The job's own first "state =" line says whether its process runs.
+        let running = printed.status == 0 && AppGuard.jobIsRunning(printed.output)
         // Without -k this only starts a stopped job; a running app is left alone.
-        if startNow { _ = runProcess("/bin/launchctl", ["kickstart", target], timeout: AppGuard.launchctlTimeout) }
+        if startNow || (printed.status == 0 && !running) { _ = runProcess("/bin/launchctl", ["kickstart", target], timeout: AppGuard.launchctlTimeout) }
+    }
+
+    /// Reads `launchctl print` output and returns true when the job's first `state =` line says `running`. Later `state =` lines describe sub-sections (such as event triggers) and are ignored.
+    static func jobIsRunning(_ printOutput: String) -> Bool {
+        for line in printOutput.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("state = ") { return trimmed == "state = running" }
+        }
+        return false
     }
 
     /// Rewrites the LaunchAgent plist if it is missing or different, then loads it into the user's session. Logs "menu bar app agent reloaded" on success and a rate-limited failure line otherwise.

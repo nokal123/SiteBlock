@@ -190,9 +190,13 @@ else
     echo "found $BUILD_DIR/siteblockd, $BUILD_DIR/siteblock and $BUILD_DIR/SiteBlock.app"
 fi
 
-# Work out which user to start the menu bar app for: the person who ran sudo.
-# When this script runs as real root (no SUDO_UID), there is no user to start it for.
+# Work out which user to start the menu bar app for: the person who ran sudo, or, when the script runs
+# as real root without sudo (for example from a macOS administrator password window), the person
+# logged in at the screen, who owns /dev/console. Nobody at the screen (owner root) means no user.
 AGENT_UID="${SUDO_UID:-}"
+if [[ -z "$AGENT_UID" && $DRY_RUN -eq 0 ]]; then
+    AGENT_UID="$(stat -f %u /dev/console 2>/dev/null || true)"
+fi
 if [[ $DRY_RUN -eq 1 && -z "$AGENT_UID" ]]; then
     # A dry run is not under sudo; show the lines using the current user, which is who sudo would report.
     AGENT_UID="$(id -u)"
