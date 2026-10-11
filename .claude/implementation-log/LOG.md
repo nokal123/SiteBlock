@@ -128,3 +128,22 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Gate pending.
 
 ---
+
+## 2026-10-11 — Chunk 8: Chrome URLBlocklist policy; named-pipe safety
+
+**Implemented:**
+- `Sources/SiteBlockCore/ChromePolicy.swift` and `Sources/siteblockd/ChromePolicyEnforcer.swift` write the blocked sites into Chrome's mandatory `URLBlocklist` in `/Library/Managed Preferences/com.google.Chrome.plist` and `/Library/Managed Preferences/<console user>/com.google.Chrome.plist`, repaired every pass. This was the fix for a Chrome window started with `--proxy-server=socks5://127.0.0.1:1080`, which resolved names through an SSH tunnel and bypassed `/etc/hosts`.
+- The list is shortened to covering parent domains, staying under Chrome's 1,000-entry limit.
+- `HostsEnforcer` and `ChromePolicyEnforcer` open their files with `O_NONBLOCK`, so a named pipe planted at either path can no longer freeze the daemon.
+- Verified on the live system: headless Chrome with a blank profile gets `ERR_BLOCKED_BY_ADMINISTRATOR` for youtube.com, both directly and through the SOCKS proxy.
+
+**User's summary:**
+> Pending.
+
+**Gaps found:**
+- Not yet assessed.
+
+**Resolution:**
+- Gate pending.
+
+---
