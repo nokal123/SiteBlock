@@ -169,7 +169,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 
 **Properties:**
 - `private(set) var state: PersistedState`
-- `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000 and 500.
+- `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`, `minUninstallSeconds`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000, 500 and 172800 (the uninstall minimum). `Policy.fastForTests.minUninstallSeconds` is 2.
 - `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
 - `static let privateRelayHosts` — `["mask-h2.icloud.com", "mask.icloud.com"]`.
 - `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` when `blockedHosts` is not empty, sorted and without duplicates; empty when nothing is blocked. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
@@ -198,7 +198,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `unblock`: normalize, find the site (fail `notBlocked`), check the password, then set `pendingUnblock = Countdown(seconds: delaySeconds)`. If one is already pending, keep the existing countdown (do not restart it) and report its remaining time.
 - `setDelay`: validate the range (fail `invalidDelay`), check the password. A value greater than or equal to the current delay applies at once and clears `pendingDelayChange`. A smaller value replaces any existing `pendingDelayChange` with a new one whose countdown starts again at the current delay.
 - `changePassword`: check the old password, validate the new one (`weakPassword`), store a new hash.
-- `uninstall`: check the password, start `pendingUninstall` at `delaySeconds` unless one is already running.
+- `uninstall`: check the password, start `pendingUninstall` at `uninstallWaitSeconds` (the larger of `policy.minUninstallSeconds` and `delaySeconds`) unless one is already running.
 - `recoveryStart`: fail `notRoot` unless `peerUID == 0`. Fail `notSetUp` if no password is set. Start `recovery` at `recoverySeconds` unless already running.
 - Cancel commands clear their countdown, or fail `nothingPending` when there is none. `cancelUninstall` also fails `nothingPending` once the uninstall countdown has finished and `uninstalling` is `true`, because removal has already begun.
 

@@ -18,7 +18,8 @@ struct UninstallTests {
             let watch = Stopwatch()
             let reply = try daemon.send(.uninstall, password: Self.password).requireOK()
             let remaining = try #require(reply.status?.uninstallSecondsRemaining)
-            #expect((1...2).contains(remaining), "the uninstall waits the 2 s delay, got \(remaining)")
+            // Design change: an uninstall waits max(policy.minUninstallSeconds, delaySeconds). Under --policy-fast both are 2 s, so the timing of this test is the 2 s it always was.
+            #expect((1...2).contains(remaining), "the uninstall waits 2 s (the fast policy's minimum and its delay), got \(remaining)")
             pause(1.0 - watch.elapsed)
             #expect(daemon.isRunning, "the daemon must keep running during the countdown (request sent \(phase) s into a tick)")
             #expect(daemon.hostsText() == blocked, "blocks stay in place during the countdown")
@@ -56,6 +57,59 @@ struct UninstallTests {
             #expect(!FileManager.default.fileExists(atPath: daemon.socketPath))
             let saved = try #require(daemon.stateObject())
             #expect(saved["uninstalling"] as? Bool == true)
+        }
+    }
+
+    // Design change (01 § Commands, uninstall; § Fixed Policy Values; 02 § Engine): the wait is max(policy.minUninstallSeconds, delaySeconds), and --policy-fast sets the minimum to 2 s. With the delay raised to 5 s (a longer delay applies at once) the uninstall must wait 5 s, not the 2 s minimum: the stopwatch starts before the request, so an exit before 5.0 s cannot be an artefact of timing. The sites stay blocked all along.
+    @Test func anUninstallWaitsForTheDelayWhenTheDelayIsLongerThanTheTwoSecondMinimum() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            try daemon.requireTwoSecondDelay()
+            let raised = try daemon.send(.setDelay, password: Self.password, seconds: 5).requireOK()
+            try require(raised.status?.delaySeconds == 5, "premise: a longer delay applies at once")
+            let blocked = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            let phase = daemon.pauseToRandomTickPhase()
+            let watch = Stopwatch()
+            let reply = try daemon.send(.uninstall, password: Self.password).requireOK()
+            let remaining = try #require(reply.status?.uninstallSecondsRemaining)
+            #expect((4...5).contains(remaining), "the uninstall waits the 5 s delay, got \(remaining)")
+            pause(3.0 - watch.elapsed)
+            #expect(daemon.isRunning, "the daemon ended after 3 s although the wait is 5 s (request sent \(phase) s into a tick)")
+            #expect(daemon.hostsText() == blocked, "blocks stay in place during the whole wait")
+            let exit = daemon.waitForExit(timeout: 6.0)
+            let took = watch.elapsed
+            let info = try #require(exit, "the daemon never exited after the uninstall delay")
+            #expect(info.status == 0 && !info.killedBySignal, "exit code must be 0, got \(info.status) (signal: \(info.killedBySignal))")
+            #expect(took >= 5.0, "exited \(took) s after the request, before the 5 s delay was over (request sent \(phase) s into a tick)")
+            #expect(took < 8.0, "exited only after \(took) s")
+            #expect(daemon.hostsText() == StandardHosts.text)
+        }
+    }
+
+    // Same design change, other direction: lowering the delay to 1 s (it takes effect after the old 2 s) leaves the minimum of 2 s as the wait. The old rule (wait = delay) would end the daemon after 1 s, so the exit must not come before 2.0 s and the daemon must still be there at 1.3 s.
+    @Test func anUninstallAfterTheDelayWasLoweredBelowTheMinimumStillWaitsTheMinimum() throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "reddit.com")
+            try daemon.requireTwoSecondDelay()
+            try daemon.send(.setDelay, password: Self.password, seconds: 1).requireOK()
+            let lowered = waitUntil(timeout: 6.0, interval: 0.02) { (try? daemon.status().delaySeconds) == 1 }
+            try require(lowered != nil, "premise: the delay of 1 s never took effect")
+            let blocked = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            let phase = daemon.pauseToRandomTickPhase()
+            let watch = Stopwatch()
+            let reply = try daemon.send(.uninstall, password: Self.password).requireOK()
+            let remaining = try #require(reply.status?.uninstallSecondsRemaining)
+            #expect((1...2).contains(remaining), "the uninstall waits the 2 s minimum, got \(remaining)")
+            pause(1.3 - watch.elapsed)
+            #expect(daemon.isRunning, "the daemon ended after 1.3 s although the minimum wait is 2 s (request sent \(phase) s into a tick)")
+            #expect(daemon.hostsText() == blocked)
+            let exit = daemon.waitForExit(timeout: 5.0)
+            let took = watch.elapsed
+            let info = try #require(exit, "the daemon never exited after the uninstall wait")
+            #expect(info.status == 0 && !info.killedBySignal)
+            #expect(took >= 2.0, "exited \(took) s after the request, before the 2 s minimum was over (request sent \(phase) s into a tick)")
+            #expect(took < 4.0, "exited only after \(took) s")
+            #expect(daemon.hostsText() == StandardHosts.text)
         }
     }
 

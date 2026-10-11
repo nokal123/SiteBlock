@@ -535,8 +535,12 @@ import SiteBlockCore
 }
 
 @Suite struct EngineUninstallAndRecoveryCommandTests {
-    @Test func uninstallWithTheRightPasswordStartsACountdownOfTheCurrentDelay() {
-        let engine = makeEngine()
+    // Design change: an uninstall waits max(policy.minUninstallSeconds, delaySeconds) (01-overview-and-data.md § Commands (uninstall), § Fixed
+    // Policy Values; 02-core-components.md § Engine, "uninstall"). This test is about the delay side of that maximum, so it runs under
+    // shortUninstallPolicy, where the minimum (60 s) is below the 30 minute default delay and the countdown is the delay. Before the change
+    // the same engine under designPolicy gave 1800; under the 48 hour minimum it gives 172800 (see EngineUninstallWaitTests).
+    @Test func uninstallWithTheRightPasswordStartsACountdownOfTheCurrentDelayWhenTheDelayIsAboveTheMinimum() {
+        let engine = makeEngine(policy: shortUninstallPolicy)
         let response = engine.send(.uninstall, password: rightPassword)
         expectSuccess(response)
         #expect(engine.state.pendingUninstall == Countdown(seconds: 1800))
@@ -544,8 +548,9 @@ import SiteBlockCore
         #expect(engine.state.uninstalling == false)
     }
 
+    // Same design change. 7200 s is the delay in effect at the request and is above the (lowered) minimum, so it is the countdown.
     @Test func uninstallUsesTheDelayInEffectWhenItIsRequested() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         engine.send(.setDelay, password: rightPassword, seconds: 7200)
         engine.send(.uninstall, password: rightPassword)
         #expect(engine.state.pendingUninstall == Countdown(seconds: 7200))
@@ -566,8 +571,10 @@ import SiteBlockCore
         expectFailure(makeEngine().send(.uninstall), .badRequest)
     }
 
+    // Design change: the countdown is no longer the 1800 s delay under designPolicy, so this runs under shortUninstallPolicy to keep the
+    // original figures (600 s gone of 1800 s) and the same check: a second request does not restart the running countdown.
     @Test func aSecondUninstallKeepsTheRunningCountdown() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         engine.send(.uninstall, password: rightPassword)
         _ = engine.tick(elapsed: 600)
         expectSuccess(engine.send(.uninstall, password: rightPassword))
@@ -708,7 +715,8 @@ import SiteBlockCore
 
     // The design's Policy is a struct so sandbox mode and tests can shrink the numbers: every field must really be used.
     @Test func everyPolicyFieldChangesTheBehaviorItGoverns() {
-        let policy = Policy(defaultDelaySeconds: 50, minDelaySeconds: 5, maxDelaySeconds: 100, recoverySeconds: 3, lockoutSeconds: 7, maxFailedAttempts: 2, pbkdf2Iterations: 1)
+        // Design change: minUninstallSeconds is a policy field too (150 here, above the delay of 100 that this test sets, so the minimum is the wait).
+        let policy = Policy(defaultDelaySeconds: 50, minDelaySeconds: 5, maxDelaySeconds: 100, recoverySeconds: 3, lockoutSeconds: 7, maxFailedAttempts: 2, pbkdf2Iterations: 1, minUninstallSeconds: 150)
         let engine = makeEngine(blocking: ["reddit.com"], policy: policy)
         #expect(engine.state.passwordHash?.iterations == 1)
         expectFailure(engine.send(.setDelay, password: rightPassword, seconds: 4), .invalidDelay)
@@ -718,6 +726,10 @@ import SiteBlockCore
         #expect(engine.state.delaySeconds == 100)
         expectSuccess(engine.send(.recoveryStart, uid: 0))
         #expect(engine.state.recovery == Countdown(seconds: 3))
+        // The delay is now 100, so an uninstall that followed the delay would wait 100 s; the policy's minimum makes it 150 s.
+        expectSuccess(engine.send(.uninstall, password: rightPassword))
+        #expect(engine.state.pendingUninstall == Countdown(seconds: 150))
+        expectSuccess(engine.send(.cancelUninstall))
         let first = engine.send(.unblock, domain: "reddit.com", password: badPassword)
         expectFailure(first, .wrongPassword)
         #expect(engine.state.lockout == nil)

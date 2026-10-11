@@ -187,7 +187,10 @@ import SiteBlockCore
 
     @Test(arguments: [-1.0, -1800.0, -0.0, -Double.infinity, Double.infinity, Double.nan, -Double.greatestFiniteMagnitude, 0.0])
     func tickWithANegativeNotANumberOrInfiniteElapsedChangesNothingEvenWhenCountdownsAreAboutToFinish(elapsed: Double) {
-        let engine = makeEngine(blocking: ["reddit.com", "example.com"])
+        // Design change: an uninstall waits max(policy.minUninstallSeconds, delaySeconds), 172800 s under designPolicy (01-overview-and-data.md
+        // § Commands, § Fixed Policy Values). This test needs the uninstall to run out together with the unblock and the delay change after
+        // 1800 s, so it uses shortUninstallPolicy, where the uninstall waits the 1800 s delay as before.
+        let engine = makeEngine(blocking: ["reddit.com", "example.com"], policy: shortUninstallPolicy)
         engine.send(.unblock, domain: "reddit.com", password: rightPassword)
         engine.send(.setDelay, password: rightPassword, seconds: 600)
         engine.send(.uninstall, password: rightPassword)
@@ -465,9 +468,13 @@ import SiteBlockCore
     }
 }
 
+// Design change: an uninstall waits max(policy.minUninstallSeconds, delaySeconds) (01-overview-and-data.md § Commands, § Fixed Policy Values;
+// 02-core-components.md § Engine). The tests in this suite are about how an uninstall countdown ends (once, flag first, never after a
+// cancel), not about how long it is, and they tick through the 1800 s of the default delay, so they run under shortUninstallPolicy. The
+// 172800 s length itself is pinned in EngineUninstallWaitTests and EngineHalfSecondBoundaryTests.
 @Suite struct EngineUninstallTimeTests {
     @Test func theUninstallCountdownFinishesOnTheFullDelayCallsOnUninstallOnceAndSetsUninstalling() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         var calls = 0
         engine.onUninstall = { calls += 1 }
         engine.send(.uninstall, password: rightPassword)
@@ -481,7 +488,7 @@ import SiteBlockCore
 
     // 05-testing-and-operations.md: uninstall calls onUninstall exactly once, however many ticks follow.
     @Test func onUninstallIsNotCalledAgainByLaterTicks() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         var calls = 0
         engine.onUninstall = { calls += 1 }
         engine.send(.uninstall, password: rightPassword)
@@ -494,7 +501,7 @@ import SiteBlockCore
 
     // The design sets uninstalling = true and then calls onUninstall, so the callback already sees the flag.
     @Test func onUninstallSeesUninstallingAlreadySet() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         var seen: Bool?
         engine.onUninstall = { [unowned engine] in seen = engine.state.uninstalling }
         engine.send(.uninstall, password: rightPassword)
@@ -502,8 +509,10 @@ import SiteBlockCore
         #expect(seen == true)
     }
 
+    // Under the 48 hour minimum the 101000 s of ticking below is not enough to finish an uninstall, so this test would pass even with a
+    // cancel that did nothing. The short policy makes the countdown 1800 s, so a surviving countdown would be finished by those ticks.
     @Test func aCancelledUninstallNeverCallsOnUninstall() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         var calls = 0
         engine.onUninstall = { calls += 1 }
         engine.send(.uninstall, password: rightPassword)
@@ -515,14 +524,14 @@ import SiteBlockCore
     }
 
     @Test func finishingAnUninstallWithNoCallbackSetDoesNotCrash() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         engine.send(.uninstall, password: rightPassword)
         #expect(engine.tick(elapsed: 1800) == true)
         #expect(engine.state.uninstalling == true)
     }
 
     @Test func theUninstallCountdownUsesTheDelayThatWasInEffectWhenItWasRequested() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         var calls = 0
         engine.onUninstall = { calls += 1 }
         engine.send(.setDelay, password: rightPassword, seconds: 7200)
@@ -536,8 +545,10 @@ import SiteBlockCore
 
 @Suite struct EngineSnapshotAndPersistenceTests {
     // Every countdown shown to clients is rounded up so a running countdown never shows 0.
+    // Design change: under designPolicy the uninstall countdown would be 172800 s, the same as the recovery countdown, so a snapshot that
+    // swapped the two fields could not be told apart. shortUninstallPolicy keeps the uninstall at 1800 s, a figure no other countdown here has.
     @Test func theSnapshotShowsEveryRunningCountdownRoundedUp() {
-        let engine = makeEngine(blocking: ["reddit.com", "example.com"])
+        let engine = makeEngine(blocking: ["reddit.com", "example.com"], policy: shortUninstallPolicy)
         engine.send(.unblock, domain: "reddit.com", password: rightPassword)
         engine.send(.setDelay, password: rightPassword, seconds: 600)
         engine.send(.uninstall, password: rightPassword)
@@ -707,7 +718,9 @@ enum HalfSecondCountdown: CaseIterable, Sendable, CustomTestStringConvertible {
             total = 1800
         case .uninstall:
             expectSuccess(engine.send(.uninstall, password: rightPassword))
-            total = 1800
+            // Design change: with the 30 minute default delay under designPolicy the uninstall waits the 48 hour minimum, 172800 s
+            // (01-overview-and-data.md § Fixed Policy Values), not the 1800 s delay.
+            total = 172_800
         case .recovery:
             expectSuccess(engine.send(.recoveryStart, uid: 0))
             total = 172_800
@@ -849,8 +862,10 @@ enum HalfSecondCountdown: CaseIterable, Sendable, CustomTestStringConvertible {
 
     // 02-core-components.md § Engine, cancelUninstall: "also fails nothingPending once the uninstall countdown has finished and
     // uninstalling is true, because removal has already begun."
+    // Design change: an uninstall waits max(policy.minUninstallSeconds, delaySeconds), so this test ticks 1800 s under shortUninstallPolicy
+    // to finish it (under designPolicy the countdown is 172800 s and 1800 s would leave it running).
     @Test func cancelUninstallAfterTheUninstallCountdownFinishedFailsWithNothingPendingAndChangesNothing() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         engine.send(.uninstall, password: rightPassword)
         #expect(engine.tick(elapsed: 1800) == true)
         #expect(engine.state.uninstalling == true)
@@ -859,8 +874,10 @@ enum HalfSecondCountdown: CaseIterable, Sendable, CustomTestStringConvertible {
         #expect(engine.state == before, "removal has begun, so the cancel must not undo it")
     }
 
+    // Same design change. Under designPolicy the 1799.5 s of ticking would leave 171000 s on the countdown, so the test would no longer be
+    // "just before the end"; shortUninstallPolicy puts the end at 1800 s again.
     @Test func cancelUninstallJustBeforeTheCountdownFinishesStillCancels() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         var calls = 0
         engine.onUninstall = { calls += 1 }
         engine.send(.uninstall, password: rightPassword)

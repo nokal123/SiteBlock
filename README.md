@@ -59,7 +59,7 @@ After 48 hours the SiteBlock password is cleared and you can set a new one. Your
 
 ## Uninstall
 
-Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait for the waiting period before removing SiteBlock, its background service, the menu bar app and its lines in `/etc/hosts`. `siteblock uninstall --cancel` stops a pending uninstall.
+Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait 48 hours (or your unblock delay, if you have set it longer than that) before removing SiteBlock. Every site stays blocked during the wait. When it ends, SiteBlock removes its background service, the menu bar app and its lines in `/etc/hosts`. `siteblock uninstall --cancel` stops a pending uninstall.
 
 ## What SiteBlock can and cannot stop
 

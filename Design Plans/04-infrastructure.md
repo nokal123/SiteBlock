@@ -154,4 +154,4 @@ Running `install.sh` again replaces the programs and plists and restarts the job
 
 ## Repairing an Install
 
-Running `sudo scripts/install.sh` again repairs a broken install: it replaces the programs and plists and restarts both jobs, and it never removes the state files, so every block, the password and every countdown survive. The only way to remove SiteBlock is `siteblock uninstall` (or the Uninstall button in Settings), which needs the password and waits for the delay. The repository holds no script that removes SiteBlock without them, because the person who owns the Mac is also the person the block protects.
+Running `sudo scripts/install.sh` again repairs a broken install: it replaces the programs and plists and restarts both jobs, and it never removes the state files, so every block, the password and every countdown survive. The only way to remove SiteBlock is `siteblock uninstall` (or the Uninstall button in Settings), which needs the password and then waits 48 hours, or the unblock delay if that is longer. The repository holds no script that removes SiteBlock without them, because the person who owns the Mac is also the person the block protects.

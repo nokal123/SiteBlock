@@ -203,7 +203,7 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - `setDelay` (`seconds`, `password`) — longer applies at once and drops any pending change. Shorter starts a `PendingDelayChange`.
 - `cancelDelayChange` — drops a pending shorter delay. No password.
 - `changePassword` (`password`, `newPassword`) — replaces the password at once.
-- `uninstall` (`password`) — starts the uninstall countdown.
+- `uninstall` (`password`) — starts the uninstall countdown: 48 hours, or the unblock delay if that is longer, so uninstalling is never a faster way to unblock everything than unblocking. Every site stays blocked until it ends.
 - `cancelUninstall` — stops a pending uninstall. No password.
 - `recoveryStart` — only accepted when the connecting process runs as root (uid 0), checked with the socket's `LOCAL_PEERCRED` option, which tells the daemon the user ID of the program on the other end. Starts the 48-hour recovery countdown. When it finishes the password is cleared and `setup` works again. Blocked sites stay blocked.
 - `recoveryCancel` — stops a running recovery. No password.
@@ -215,6 +215,7 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Default unblock delay: 1800 seconds (30 minutes).
 - Allowed delay range: 60 seconds to 604800 seconds (7 days).
 - Recovery wait: 172800 seconds (48 hours).
+- Uninstall wait: 172800 seconds (48 hours), or the unblock delay when that is longer.
 - Minimum password length: 6 characters.
 - Wrong-password limit: 5, then a lockout of 900 seconds (15 minutes).
 - Most blocked sites: 500. A further `add` of a new site fails with `tooManySites`. Without a cap, any account on the Mac could add thousands of sites without a password, and the owner would need one password check and one wait per site to clear them.

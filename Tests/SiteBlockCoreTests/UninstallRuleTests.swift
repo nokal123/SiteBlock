@@ -103,13 +103,16 @@ private let finishedCountdown = #"{"remainingSeconds":0,"totalSeconds":1800}"#
 
     // A real uninstall: the engine runs the countdown, the state store writes the file, and the watchdog reads the bytes back from disk. The
     // watchdog must keep guarding while the countdown runs (flag not yet set) and stand down only once it has finished.
+    // Design change: an uninstall waits max(policy.minUninstallSeconds, delaySeconds) (01-overview-and-data.md § Commands, § Fixed Policy
+    // Values). The test needs a countdown it can run out with 1800 s of ticks, so the engine uses shortUninstallPolicy, where the uninstall
+    // waits the 1800 s delay; with designPolicy it would wait 172800 s and the watchdog would never see a finished uninstall here.
     @Test func theWatchdogStandsDownOnlyAfterARealUninstallCountdownHasFinishedAndBeenSaved() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("siteblock-uninstallrule-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("state.json")
         let store = StateStore(url: url)
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         func watchdogView() throws -> Bool {
             try store.save(engine.state)
             return UninstallRule.watchdogShouldStandDown(stateFileData: try Data(contentsOf: url))
@@ -164,9 +167,10 @@ private let finishedCountdown = #"{"remainingSeconds":0,"totalSeconds":1800}"#
         #expect(other.hasFinishedUninstall == false)
     }
 
-    // Driven through the engine: the property follows the real lifecycle of an uninstall.
+    // Driven through the engine: the property follows the real lifecycle of an uninstall. Design change: shortUninstallPolicy keeps the
+    // countdown at the 1800 s delay (see theWatchdogStandsDownOnlyAfterARealUninstallCountdownHasFinishedAndBeenSaved).
     @Test func followsTheEnginesUninstallFromRequestThroughCancelAndFinish() {
-        let engine = makeEngine()
+        let engine = makeEngine(policy: shortUninstallPolicy)
         #expect(engine.state.hasFinishedUninstall == false)
         expectSuccess(engine.send(.uninstall, password: rightPassword))
         #expect(engine.state.hasFinishedUninstall == false, "requested, not finished")

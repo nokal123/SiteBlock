@@ -6,9 +6,10 @@ import SiteBlockCore
 // "Hosts health") and 01-overview-and-data.md § Fixed Policy Values, § Commands (setup, add) and § Data Model (delaySeconds).
 
 @Suite struct PolicyValueTests {
-    // 02-core-components.md § Engine: "Policy.production must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000 and 500."
-    // The design lists them in the order of the fields: defaultDelaySeconds, minDelaySeconds, maxDelaySeconds, recoverySeconds,
-    // lockoutSeconds, maxFailedAttempts, pbkdf2Iterations, maxSites. Each field is checked on its own so a failure names the field.
+    // 02-core-components.md § Engine: "Policy.production must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000, 500 and 172800 (the
+    // uninstall minimum)." The design lists them in the order of the fields: defaultDelaySeconds, minDelaySeconds, maxDelaySeconds,
+    // recoverySeconds, lockoutSeconds, maxFailedAttempts, pbkdf2Iterations, maxSites, minUninstallSeconds. Each field is checked on its own
+    // so a failure names the field.
     @Test func productionPolicyHoldsExactlyTheDesignsNumbersFieldByField() {
         let production = Policy.production
         #expect(production.defaultDelaySeconds == 1800, "default unblock delay is 30 minutes")
@@ -19,10 +20,36 @@ import SiteBlockCore
         #expect(production.maxFailedAttempts == 5, "five wrong passwords trigger a lockout")
         #expect(production.pbkdf2Iterations == 210_000)
         #expect(production.maxSites == 500)
+        #expect(production.minUninstallSeconds == 172_800, "an uninstall waits at least 48 hours")
     }
 
+    // Design change: 02-core-components.md § Engine: "Policy.production must hold exactly ... 172800 (the uninstall minimum). Policy.fastForTests
+    // .minUninstallSeconds is 2." (01-overview-and-data.md § Fixed Policy Values: "Uninstall wait: 172800 seconds (48 hours), or the unblock delay
+    // when that is longer.") The sandbox and the installed service differ only in these numbers, so both are pinned on their own.
+    @Test func theUninstallMinimumIs172800SecondsInProductionAndTwoInTheFastTestPolicy() {
+        #expect(Policy.production.minUninstallSeconds == 172_800)
+        #expect(Policy.production.minUninstallSeconds == 48 * 60 * 60, "48 hours")
+        #expect(Policy.fastForTests.minUninstallSeconds == 2)
+    }
+
+    // The task that introduced minUninstallSeconds states "Its init default is 172800": code that builds a Policy without naming the field (the
+    // way every caller did before the field existed) gets the production minimum and never a short uninstall by accident. The design plan does
+    // not mention the initializer's default, so this figure comes from that task statement.
+    @Test func aPolicyBuiltWithoutNamingTheUninstallMinimumGetsTheProductionMinimum() {
+        let policy = Policy(defaultDelaySeconds: 1, minDelaySeconds: 1, maxDelaySeconds: 10, recoverySeconds: 1, lockoutSeconds: 1, maxFailedAttempts: 1, pbkdf2Iterations: 1)
+        #expect(policy.minUninstallSeconds == 172_800)
+    }
+
+    // The uninstall minimum is part of what a policy is: two policies that differ only in it are not equal.
+    @Test func policiesThatDifferOnlyInTheUninstallMinimumAreNotEqual() {
+        var other = Policy.production
+        other.minUninstallSeconds = 2
+        #expect(other != Policy.production)
+    }
+
+    // The production figure is written out in full here (the initializer's default would otherwise fill it in and hide a change of that default).
     @Test func productionPolicyEqualsAPolicyBuiltFromTheDesignsNumbers() {
-        let fromDesign = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500)
+        let fromDesign = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500, minUninstallSeconds: 172_800)
         #expect(Policy.production == fromDesign)
     }
 

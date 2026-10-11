@@ -18,9 +18,11 @@ public struct Policy: Sendable, Equatable {
     public var pbkdf2Iterations: Int
     /// The most sites that can be blocked at once. Adding a new site beyond this fails with tooManySites.
     public var maxSites: Int
+    /// The shortest an uninstall ever waits. The real wait is this or the unblock delay, whichever is longer, so uninstalling is never a faster way to unblock everything than unblocking.
+    public var minUninstallSeconds: Int
 
-    /// Creates a policy from every value. `maxSites` defaults to the production cap of 500, so callers that predate the cap keep compiling.
-    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500) {
+    /// Creates a policy from every value. `maxSites` and `minUninstallSeconds` default to the production values (500 sites, 48 hours), so callers that predate them keep compiling.
+    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500, minUninstallSeconds: Int = 172_800) {
         self.defaultDelaySeconds = defaultDelaySeconds
         self.minDelaySeconds = minDelaySeconds
         self.maxDelaySeconds = maxDelaySeconds
@@ -29,13 +31,14 @@ public struct Policy: Sendable, Equatable {
         self.maxFailedAttempts = maxFailedAttempts
         self.pbkdf2Iterations = pbkdf2Iterations
         self.maxSites = maxSites
+        self.minUninstallSeconds = minUninstallSeconds
     }
 
-    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, and at most 500 blocked sites.
-    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500)
+    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, at most 500 blocked sites, and an uninstall wait of at least 48 hours.
+    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500, minUninstallSeconds: 172_800)
 
     /// Short waits and a low site cap (20) for sandbox runs and tests only, so tests can reach the cap quickly.
-    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20)
+    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20, minUninstallSeconds: 2)
 }
 
 /// The whole policy of SiteBlock in one class: it holds the state, applies commands, advances countdowns, and reports what the hosts file should contain. It does no file or socket work, so tests can drive it with fake time.
@@ -284,13 +287,17 @@ public final class Engine {
         return success("Password changed.")
     }
 
-    /// Starts the uninstall countdown (as long as the current delay) after the password check, unless one is already running.
+    /// How long a new uninstall waits: the policy's minimum (48 hours when installed) or the current unblock delay, whichever is longer.
+    public var uninstallWaitSeconds: Int { max(policy.minUninstallSeconds, state.delaySeconds) }
+
+    /// Starts the uninstall countdown (see `uninstallWaitSeconds`) after the password check, unless one is already running. An uninstall already waiting keeps its own countdown.
     private func uninstall(_ request: Request) throws -> Response {
         let password = try require(request.password, "password")
         if let denied = checkPassword(password) { return denied }
         if let existing = state.pendingUninstall { return success("Uninstall is already waiting, in \(Formatting.duration(existing.displaySeconds)). You can cancel any time before then.") }
-        state.pendingUninstall = Countdown(seconds: Double(state.delaySeconds))
-        return success("SiteBlock will uninstall in \(Formatting.duration(state.delaySeconds)). You can cancel any time before then.")
+        let wait = uninstallWaitSeconds
+        state.pendingUninstall = Countdown(seconds: Double(wait))
+        return success("SiteBlock will uninstall in \(Formatting.duration(wait)). Every site stays blocked until then, and you can cancel any time before then.")
     }
 
     /// Stops a pending uninstall; needs no password. Once the countdown has finished and the uninstall has started, it can no longer be cancelled.

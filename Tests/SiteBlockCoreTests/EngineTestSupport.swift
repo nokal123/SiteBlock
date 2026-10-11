@@ -6,8 +6,21 @@ import SiteBlockCore
 // and 01-overview-and-data.md § Commands and § Fixed Policy Values.
 
 // The design's fixed policy numbers (30-minute delay, 60 s to 7 days range, 48 h recovery, 15-minute lockout after 5 wrong
-// passwords) with only the password hashing cost lowered so that tests run fast. Every other value is the real one.
-let designPolicy = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 1000)
+// passwords, at least 48 h before an uninstall) with only the password hashing cost lowered so that tests run fast. Every other value
+// is the real one. The uninstall minimum is written out on purpose: 01-overview-and-data.md § Fixed Policy Values says an uninstall waits
+// 172800 s or the unblock delay, whichever is longer, and a value left to the initializer's default would hide a change of that default.
+let designPolicy = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 1000, minUninstallSeconds: 172_800)
+
+// The design policy with the uninstall minimum lowered to 60 s, the smallest delay the design allows. Design change: an uninstall now waits
+// max(policy.minUninstallSeconds, delaySeconds) (01-overview-and-data.md § Commands (uninstall) and § Fixed Policy Values; 02-core-components.md
+// § Engine, Properties and the uninstall command rule). Under this policy the minimum is never the longer of the two, because no delay is
+// below 60 s, so an uninstall waits exactly as long as the unblock delay. The tests written before the 48 hour minimum existed only needed an
+// uninstall of a size they could tick through (1800 s for the default delay), and they use this policy to keep that setup unchanged.
+let shortUninstallPolicy: Policy = {
+    var policy = designPolicy
+    policy.minUninstallSeconds = 60
+    return policy
+}()
 
 let rightPassword = "hunter22"
 let badPassword = "not-the-password"

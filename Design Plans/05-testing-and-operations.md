@@ -66,7 +66,7 @@ Tests:
 - `--tick` or `--policy-fast` without `--sandbox` exits with code 64.
 - `recoveryStart` from a non-root test process returns `notRoot`.
 - Run the real `siteblock` CLI with `SITEBLOCK_SOCKET` set: `status`, `add`, `unblock` with the password piped on standard input, and the exit codes from [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI, including exit code 2 when no daemon is running.
-- Uninstall in sandbox mode: after the delay, the hosts section is gone and the daemon exits with code 0.
+- Uninstall in sandbox mode: after the uninstall wait (2 seconds under `--policy-fast`, where both the minimum and the delay are 2), the hosts section is gone and the daemon exits with code 0.
 
 ---
 
@@ -101,7 +101,7 @@ Checks:
 - Status: `siteblock status`.
 - Upgrade: pull the repository, run `scripts/build.sh`, then `sudo scripts/install.sh`.
 - Forgotten password: `sudo siteblock recover`, then wait 48 hours and set a new password.
-- Removal: `siteblock uninstall`, enter the password, and wait for the delay.
+- Removal: `siteblock uninstall`, enter the password, and wait 48 hours (or the unblock delay, if that is longer).
 
 ---
 

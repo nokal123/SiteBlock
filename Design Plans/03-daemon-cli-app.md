@@ -186,7 +186,7 @@ siteblock version
    - Pressing "Unblock…" replaces the row's button with a password field and "Start countdown" and "Cancel" buttons.
    - A footer with "Settings" and "Quit".
    - Banners at the top for a pending delay change, uninstall, recovery or lockout, each with its countdown and a cancel button where cancelling is allowed.
-3. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits for the current delay.
+3. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits 48 hours, or the unblock delay if that is longer, with every site still blocked during the wait.
 
 **Behavioral notes:** The app holds no state of its own beyond what is on screen; the daemon is always the source of truth. Quitting the app does not stop any blocking. The app is launched at login by a LaunchAgent (see [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs), and it sets `LSUIElement` so it has no Dock icon.
 
