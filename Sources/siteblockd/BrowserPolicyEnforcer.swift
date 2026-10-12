@@ -58,6 +58,8 @@ final class BrowserPolicyEnforcer {
     func enforce(blockLists: BrowserBlockLists, adultFilterActive: Bool, causedByCommand: Bool = false) -> Bool {
         let consoleUser = consoleUserName()
         var healthy = true
+        var wroteAnyFile = false
+        defer { if wroteAnyFile { refreshPreferencesCache() } }
         for target in BrowserTarget.allCases {
             let parts = target.lists(from: blockLists)
             // Browsers ignore entries past 1,000, so a longer list is cut here, with whole sites kept before path rules.
@@ -68,7 +70,7 @@ final class BrowserPolicyEnforcer {
             for path in files(for: target, consoleUser: consoleUser) {
                 switch enforceFile(at: path, target: target, managed: managed) {
                 case .unchanged: break
-                case .changed: changedAny = true
+                case .changed: changedAny = true; wroteAnyFile = true
                 case .failed: healthy = false
                 }
             }
@@ -77,6 +79,14 @@ final class BrowserPolicyEnforcer {
         }
         if healthy { lastFailures = [:] }
         return healthy
+    }
+
+    /// Makes macOS hand the browsers the policy files' new contents. Browsers do not read these files themselves: they ask cfprefsd, the macOS service that reads and caches app settings, and cfprefsd is not told when a file under /Library/Managed Preferences is rewritten directly, so it keeps serving the copy it read first. Stopping the person-at-the-screen's cfprefsd makes launchd start a fresh one on the next request, which reads the files again; running browsers then pick the change up on their next policy reload. Production only, and a failure is ignored (nothing worse than the old behaviour follows).
+    private func refreshPreferencesCache() {
+        guard !paths.isSandbox else { return }
+        var info = stat()
+        guard stat("/dev/console", &info) == 0, info.st_uid != 0 else { return }
+        _ = runProcess("/usr/bin/pkill", ["-x", "-U", String(info.st_uid), "cfprefsd"], timeout: 5)
     }
 
     /// Logs once when a browser's list had to be cut to the 1,000 entries the browser reads, and forgets the report when the list is short enough again.
