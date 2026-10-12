@@ -81,6 +81,8 @@ cat > "$STAGE/INSTALL.txt" <<EOF
 SiteBlock $VERSION — installing on this Mac
 
 SiteBlock blocks websites in every browser (Safari, Chrome and others) for everyone using this Mac.
+It also always blocks adult websites: it sets this Mac's DNS servers to Cloudflare for Families and
+turns on Chrome's adult-site filter and SafeSearch, and only uninstalling SiteBlock removes this.
 Unblocking a site needs the SiteBlock password and then a waiting period, and uninstalling needs the
 password and then a 48-hour wait. Only install it if the person who uses this Mac wants it.
 
