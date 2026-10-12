@@ -172,8 +172,8 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`, `minUninstallSeconds`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000, 500 and 172800 (the uninstall minimum). `Policy.fastForTests.minUninstallSeconds` is 2.
 - `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
 - `static let privateRelayHosts` — `["mask-h2.icloud.com", "mask.icloud.com"]`.
-- `var adultFilterActive: Bool` — `true` while the adult filter is on, including while a switch-off is pending (the filter stays fully on until the countdown ends).
-- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` when `blockedHosts` is not empty or `adultFilterActive` is true, sorted and without duplicates; empty when nothing is blocked. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
+- `var adultFilterActive: Bool` — always `true`, except once `uninstalling` is `true` (the uninstaller then restores everything).
+- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` whenever `adultFilterActive` is true (so, in practice, always), sorted and without duplicates; empty when nothing is blocked. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
 - `var onUninstall: (() -> Void)?` — called once when the uninstall countdown finishes.
 
 **Key Methods:**
@@ -208,12 +208,6 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 **Finished-but-uncleared lockout:** a lockout whose countdown reached 0 but which the next tick has not cleared yet does not block a password check. The check clears it and proceeds.
 
 **Hosts health:** `setHostsHealthy(_ healthy: Bool)` records the result of the runtime's last enforcement pass, and every snapshot built by `handle` reports it as `hostsFileHealthy`. It starts as `true`.
-
-**Adult filter rules:**
-- `adultFilterOn`: fails `notSetUp` when no password exists. Otherwise sets `adultFilter = true`, clears any `pendingAdultFilterOff`, and succeeds; it says "already on" when nothing changed.
-- `adultFilterOff`: fails `nothingPending` when `adultFilter` is false, checks the password, then sets `pendingAdultFilterOff = Countdown(seconds: delaySeconds)` unless one is already running (which is kept).
-- `cancelAdultFilterOff`: clears `pendingAdultFilterOff`, or fails `nothingPending`.
-- Tick: when `pendingAdultFilterOff` finishes, set `adultFilter = false` and clear it (this is a change that must be saved).
 
 **Tick rule:** advance every countdown by `elapsed`. Then in this order: remove sites whose unblock finished; apply a finished delay change; clear a finished lockout; for a finished recovery, set `passwordHash = nil`, `failedAttempts = 0`, `lockout = nil` and clear `recovery`; for a finished uninstall, set `uninstalling = true` and call `onUninstall`.
 

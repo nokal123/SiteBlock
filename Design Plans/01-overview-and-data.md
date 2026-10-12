@@ -46,7 +46,7 @@ Chrome has its own name lookup code, including "Secure DNS" (looking up names ov
 
 Some Chrome windows never ask the Mac to look a name up at all. A Chrome started with `--proxy-server=socks5://…` (for example a window used to reach a work dashboard through an SSH tunnel) hands each site name to the proxy, and the remote computer looks it up. So SiteBlock also writes Chrome's own block list. Chrome reads mandatory policies from `/Library/Managed Preferences`, a folder only root can write, and its `URLBlocklist` policy makes Chrome itself refuse every listed site and all its subdomains, in every window and profile, whatever proxy or lookup method is in use. `URLBlocklist` is not one of the "sensitive" policies Chrome ignores on Macs no company manages (only extension-install policies are). While any site is blocked, Chrome shows "Managed by your organization" in its menu; that label refers to this list.
 
-**Adult content filter.** An optional setting blocks adult websites that are not on the block list, in two layers that are both on while the filter is on. First, the Chrome policy file also gets `SafeSitesFilterBehavior` = 1 (Chrome checks each top-level page against Google's adult-content classification and refuses flagged ones), `ForceGoogleSafeSearch` = true (Google Search always uses SafeSearch), and `DnsOverHttpsMode` = "off" (Chrome uses the Mac's own name lookups, so the second layer reaches it). Second, every network service's DNS servers (the servers that turn site names into addresses) are set to Cloudflare for Families, which refuses to look up adult sites: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003`. VPN services are left alone, because a VPN supplies its own DNS servers; that is a known limit. The filter also keeps the Private Relay names blocked, because Private Relay would otherwise send Safari's lookups to Apple instead of the family servers.
+**Adult content filter.** SiteBlock always blocks adult websites, including ones that are not on the block list. This is part of its core blocking, not a setting: there is no command, password or wait that turns it off, and only uninstalling SiteBlock removes it. It works in two layers. First, the Chrome policy file also gets `SafeSitesFilterBehavior` = 1 (Chrome checks each top-level page against Google's adult-content classification and refuses flagged ones), `ForceGoogleSafeSearch` = true (Google Search always uses SafeSearch), and `DnsOverHttpsMode` = "off" (Chrome uses the Mac's own name lookups, so the second layer reaches it). Second, every network service's DNS servers (the servers that turn site names into addresses) are set to Cloudflare for Families, which refuses to look up adult sites: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003`. VPN services are left alone, because a VPN supplies its own DNS servers; that is a known limit. Because of this layer the Private Relay names are always blocked, even with no sites on the block list, since Private Relay would otherwise send Safari's lookups to Apple instead of the family servers.
 
 iCloud Private Relay (Apple's paid service that routes Safari traffic through Apple's servers) is the exception: while it is on, Safari's lookups go to Apple's name servers, and the hosts file may be skipped. Apple documents that a network turns Private Relay off by blocking the names `mask.icloud.com` and `mask-h2.icloud.com`. So whenever at least one site is blocked, SiteBlock also writes those two names into its hosts section. macOS then reports Private Relay as unavailable and Safari's lookups go through the hosts file. The cost is that Private Relay stays off while anything is blocked, and the README says so.
 
@@ -133,9 +133,7 @@ All persistent data lives in one JSON file, `state.json`, owned by root with mod
 - `failedAttempts: Int` — wrong passwords since the last correct one or the last lockout.
 - `lockout: Countdown?` — time left before password checks are allowed again.
 - `uninstalling: Bool` — set to `true` at the start of an uninstall so the watchdog does not reload the daemon.
-- `adultFilter: Bool` — `true` while the adult content filter is on. **Optional in the file:** a `state.json` written before this field existed has no such key, and it must decode as `false` rather than being treated as corrupt (which would discard the block list). The same applies to the next two fields.
-- `pendingAdultFilterOff: Countdown?` — a requested switch-off that has not taken effect yet. The filter stays fully on until it ends.
-- `savedDNS: [String: [String]]?` — for each network service (keyed by its SystemConfiguration service ID) the DNS server addresses it had before SiteBlock replaced them; an empty array means the service had none set by hand (it used whatever the network provided). Written the first time SiteBlock overrides a service and used to put the original back when the filter turns off.
+- `savedDNS: [String: [String]]?` — **optional in the file:** a `state.json` written before this field existed has no such key, and it must decode as `nil` rather than being treated as corrupt (which would discard the block list). For each network service (keyed by its SystemConfiguration service ID) it holds the DNS server addresses the service had before SiteBlock replaced them; an empty array means the service had none set by hand (it used whatever the network provided). Written the first time SiteBlock overrides a service and used only by the uninstaller, to put the originals back.
 
 ### BlockedSite
 
@@ -197,8 +195,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 - `recoverySecondsRemaining: Int?`
 - `lockoutSecondsRemaining: Int?`
 - `hostsFileHealthy: Bool` — `true` when the last enforcement pass found or left the hosts file in the right state.
-- `adultFilterEnabled: Bool?` — whether the adult content filter is on (decoded as `false` when missing).
-- `adultFilterOffSecondsRemaining: Int?` — time left on a pending switch-off.
+- `adultFilterEnabled: Bool?` — always `true` from a daemon that has the adult filter (decoded as `false` when missing, for an older daemon).
 
 ### Commands
 
@@ -216,9 +213,6 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - `cancelUninstall` — stops a pending uninstall. No password.
 - `recoveryStart` — only accepted when the connecting process runs as root (uid 0), checked with the socket's `LOCAL_PEERCRED` option, which tells the daemon the user ID of the program on the other end. Starts the 48-hour recovery countdown. When it finishes the password is cleared and `setup` works again. Blocked sites stay blocked.
 - `recoveryCancel` — stops a running recovery. No password.
-- `adultFilterOn` — turns the adult content filter on at once, or cancels a pending switch-off. No password. Succeeds (with a message) when it is already on. Needs a password to exist (`notSetUp`), so the filter can always be turned off again.
-- `adultFilterOff` (`password`) — starts the switch-off countdown, as long as the current unblock delay. The filter stays fully on until it ends. Fails `nothingPending` when the filter is already off; a second request keeps the running countdown.
-- `cancelAdultFilterOff` — stops a pending switch-off. No password.
 
 ---
 
@@ -231,7 +225,6 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Minimum password length: 6 characters.
 - Wrong-password limit: 5, then a lockout of 900 seconds (15 minutes).
 - Adult-filter DNS servers: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003` (Cloudflare for Families).
-- Adult-filter switch-off wait: the current unblock delay.
 - Most blocked sites: 500. A further `add` of a new site fails with `tooManySites`. Without a cap, any account on the Mac could add thousands of sites without a password, and the owner would need one password check and one wait per site to clear them.
 - Enforcement tick: every 2 seconds.
 - Watchdog check: every 5 seconds.
