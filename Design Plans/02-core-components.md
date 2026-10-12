@@ -173,7 +173,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
 - `static let privateRelayHosts` — `["mask-h2.icloud.com", "mask.icloud.com"]`.
 - `var adultFilterActive: Bool` — always `true`, except once `uninstalling` is `true` (the uninstaller then restores everything).
-- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` whenever `adultFilterActive` is true (so, in practice, always), sorted and without duplicates; empty when nothing is blocked. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
+- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` whenever `adultFilterActive` is true (so, in practice, always), sorted and without duplicates. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
 - `var onUninstall: (() -> Void)?` — called once when the uninstall countdown finishes.
 
 **Key Methods:**
