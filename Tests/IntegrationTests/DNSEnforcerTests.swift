@@ -7,6 +7,8 @@ import Testing
 //
 // The sandbox stands in for the Mac's network settings with root/network-services.json, a dictionary from service ID to {"name": String, "servers": [String]}. Three optional keys are sandbox test hooks: "enabled": false, "interfaceType": "<type>" (default "Ethernet") and "ignoreWrites": true (the service accepts a change without applying it, like a backend with a bug). The sandbox stands in for the reachability check with the file root/family-dns-unreachable: the family servers count as unreachable exactly while it exists. The file root/family-dns-probe-delay holds a number of seconds that every check sleeps before it answers. The check runs on its own background queue (03 § 11 "Reachability check"), never on the engine queue, and passes read its stored result; until the first check has finished the settings are left as they are. The tick is 0.2 s and, in a sandbox only, the fallback DNS pass and the check both run once per tick, so a repair is seen in a fraction of a second.
 
+// The tests that count checks ("unreachable" needs 3 failed checks in a row, 03 § 11) rely on two properties of the sandbox hooks: the checks run one at a time, and a check looks at the marker file when it starts and then sleeps the delay. So with a delay D, every check that fails because of a marker that appeared at time T started after T and lasts D, and N failed checks cannot end before T + N*D, however the daemon is scheduled. In a sandbox the re-check after a failed check comes one tick later (03 § 11), and a check also starts every tick, so with a long delay the next check starts as soon as the one before it has ended.
+
 // The four family servers in the order the design gives them (01 § Fixed Policy Values).
 private let familyServers = ["1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"]
 private let unreachableLine = "family DNS unreachable; using the network's own DNS until it answers"
@@ -72,9 +74,18 @@ private extension SandboxDaemon {
         return nil
     }
 
-    // Makes every family-DNS check sleep this many seconds before it answers (the sandbox stand-in for a slow network).
+    // Makes every family-DNS check sleep this many seconds before it answers (the sandbox stand-in for a slow network). The file is replaced in one step (write, then rename) so a check that starts at that very moment reads the old number or the new one, never a half-written empty file, which would count as "no delay".
     func setProbeDelay(_ seconds: Double) throws {
-        try Data("\(seconds)".utf8).write(to: URL(fileURLWithPath: probeDelayPath))
+        try Data("\(seconds)".utf8).write(to: URL(fileURLWithPath: probeDelayPath), options: .atomic)
+    }
+
+    // Polls every 10 ms until the stopwatch reads `seconds` and describes the first moment any of the listed services did not hold exactly the family servers, or returns nil when they held them the whole time. A restore that is undone within a few milliseconds can fall between two polls, so tests that need "never switched" also compare the settings file's identity and read the log. The polling lives here, not in a closure inside a test, for the compiler reason given at waitForServers.
+    func firstDepartureFromFamilyServers(_ ids: [String], until seconds: Double, on watch: Stopwatch) -> String? {
+        while watch.elapsed < seconds {
+            for id in ids where !isFamily(servers(of: id)) { return "at \(watch.elapsed) s \(id) held \(String(describing: servers(of: id)))" }
+            pause(0.01)
+        }
+        return nil
     }
 
     // Switches the pretend "family servers do not answer" on or off.
@@ -268,6 +279,124 @@ struct DNSEnforcerTests {
             #expect(daemon.servers(of: "WIFI") == ["1.2.3.4"])
             #expect(daemon.servers(of: "NEW") == ["5.6.7.8"])
             #expect(daemon.savedDNS()?["NEW"] == nil, "a service that was never overridden must not be recorded")
+        }
+    }
+
+    // MARK: "unreachable" needs 3 failed checks in a row
+
+    // 03 § 11 "Reachability check": a success counts at once, but the answer only turns to "unreachable" after 3 failed checks in a row, because a single lost reply "must not switch the Mac's DNS back and forth". Here the family servers stop answering for the time of exactly ONE check. The probe delay makes every check take 2 s, and the checks run one after the other on one queue, so two checks never start less than 2 s apart. The marker is created together with the delay and removed 2 s later, so at most one check can start while it exists, and one does, because a check starts within a tick (0.2 s) of the new delay: the margin is about 1.8 s. That check fails and the answer must stay "reachable": the services never leave the family servers, the settings file is never written (a switch back and forth would rewrite it twice), nothing about unreachable or about the servers answering again is logged, and no pass logs a repair. The marker is created BEFORE the delay: a check that starts between the two (a few microseconds) reads the old delay (none) and fails at once, which makes it two failed checks in all and still not three, whereas the other order could let a check start before the marker and sleep through the whole window, so that no check fails at all. The test ends with a lasting outage as a positive control, because "the line was never logged" only proves something if the line IS logged when the servers really are unreachable.
+    @Test func aBriefOutageOfOneFailedCheckNeverSwitchesTheServicesBackOrLogsAnything() throws {
+        try withNetwork(wifiAndEthernet) { daemon in
+            try #require(daemon.waitForFamily(["WIFI", "ETH"], timeout: 3.0) != nil)
+            let originals: [String: [String]] = ["WIFI": ["192.168.1.1"], "ETH": []]
+            try #require(daemon.savedDNS() == originals)
+            // Lets the first pass finish completely before the settings file is fingerprinted.
+            pause(0.5)
+            let settingsBefore = identity(of: daemon.servicesPath)
+            let repairsBefore = daemon.logCount(of: "DNS settings repaired")
+            let checkSeconds = 2.0
+            let outage = Stopwatch()
+            try daemon.setFamilyDNSUnreachable(true)
+            try daemon.setProbeDelay(checkSeconds)
+            let leftDuringOutage = daemon.firstDepartureFromFamilyServers(["WIFI", "ETH"], until: checkSeconds, on: outage)
+            try daemon.setFamilyDNSUnreachable(false)
+            try daemon.setProbeDelay(0)
+            // The failed check ends up to about 0.2 s after the marker is gone and a successful check follows at once. Watching 1.5 s more covers both, and it covers the moment a one-failure switch would act: right when the failed check ends.
+            let leftAfterwards = daemon.firstDepartureFromFamilyServers(["WIFI", "ETH"], until: checkSeconds + 1.5, on: outage)
+            #expect(leftDuringOutage == nil, "the services left the family servers during a one-check outage: \(String(describing: leftDuringOutage)); log:\n\(daemon.logText())")
+            #expect(leftAfterwards == nil, "the services left the family servers after a one-check outage: \(String(describing: leftAfterwards)); log:\n\(daemon.logText())")
+            #expect(identity(of: daemon.servicesPath) == settingsBefore, "the settings file was rewritten although no pass had anything to change")
+            #expect(daemon.logCount(of: unreachableLine) == 0, "one failed check was announced as an outage; log:\n\(daemon.logText())")
+            #expect(!daemon.logText().contains("family DNS answers again"), "log:\n\(daemon.logText())")
+            #expect(daemon.logCount(of: "DNS settings repaired") == repairsBefore)
+            #expect(daemon.savedDNS() == originals)
+
+            // Positive control: with the delay gone, checks run once per tick, so a lasting outage is announced after about 0.6 s and the originals come back.
+            try daemon.setFamilyDNSUnreachable(true)
+            #expect(daemon.waitForServers(originals, timeout: 4.0) != nil, "the originals never came back in a real outage: Wi-Fi \(String(describing: daemon.servers(of: "WIFI")))")
+            #expect(daemon.logCount(of: unreachableLine) == 1, "log:\n\(daemon.logText())")
+        }
+    }
+
+    // 03 § 11: the answer turns to "unreachable" after 3 failed checks in a row. With every check slowed to 1.5 s and the marker created together with the delay, the first failed check starts at most a tick (0.2 s) later, and each next check starts only after the one before it has ended. So three failed checks need at least 4.5 s from the marker (three sleeps of 1.5 s), however the daemon is scheduled, and the answer cannot change before that: one failed check ends at 1.5 s at the earliest and two at 3.0 s. The services must stay on the family servers until then (which also covers the moment when only one check can have completed, and the moment when only two can). Then the originals must come back, and not as late as a fourth failed check could end (6.0 s): the bound 5.7 s leaves about 1.0 s over the expected 4.7 s. The delay file is written BEFORE the marker so that no check can start after the marker and read the old, empty delay: that check would end at once and make the earliest possible restore earlier than the 4.5 s bound.
+    @Test func aLastingOutagePutsTheOriginalsBackOnlyAfterThreeFailedChecksHaveEnded() throws {
+        try withNetwork(wifiAndEthernet) { daemon in
+            try #require(daemon.waitForFamily(["WIFI", "ETH"], timeout: 3.0) != nil)
+            let originals: [String: [String]] = ["WIFI": ["192.168.1.1"], "ETH": []]
+            try #require(daemon.savedDNS() == originals)
+            let checkSeconds = 1.5
+            let outage = Stopwatch()
+            try daemon.setProbeDelay(checkSeconds)
+            try daemon.setFamilyDNSUnreachable(true)
+            // The stopwatch started before the marker existed, so it never runs ahead of the three sleeps; 0.05 s is taken off for the clock rounding of the sleep itself.
+            let leftEarly = daemon.firstDepartureFromFamilyServers(["WIFI", "ETH"], until: 3 * checkSeconds - 0.05, on: outage)
+            #expect(leftEarly == nil, "the services were put back before three failed checks could have ended: \(String(describing: leftEarly)); log:\n\(daemon.logText())")
+            #expect(daemon.logCount(of: unreachableLine) == 0, "the outage was announced before three failed checks could have ended; log:\n\(daemon.logText())")
+
+            let latest = 4 * checkSeconds - 0.3
+            let restored = daemon.waitForServers(originals, timeout: latest - outage.elapsed)
+            let restoredAt = outage.elapsed
+            #expect(restored != nil, "the originals were not put back by \(latest) s although three failed checks had ended: Wi-Fi \(String(describing: daemon.servers(of: "WIFI"))), Ethernet \(String(describing: daemon.servers(of: "ETH")))")
+            #expect(restoredAt >= 3 * checkSeconds - 0.05, "restored at \(restoredAt) s, before three 1.5 s checks could have ended")
+            #expect(daemon.savedDNS() == originals, "the record must be kept")
+            #expect(daemon.logContains(unreachableLine), "log:\n\(daemon.logText())")
+            #expect(daemon.logCount(of: unreachableLine) == 1)
+        }
+    }
+
+    // 03 § 11: "A success counts at once". After an outage has been announced and the originals are back, the family servers answer again: ONE successful check must be enough to apply the family servers. The marker is removed and the delay set to 1.5 s, so each check takes 1.5 s; the first successful check starts within a tick and ends about 1.5 s later, the family servers are expected at about 1.8 s, and the bound is 2.7 s. A rule that wanted two successful checks could not finish before 3.0 s (the second success starts only after the first has ended) and one that wanted three not before 4.5 s, so the bound separates them from "at once" with about 0.3 s to spare on one side and 0.9 s on the other. The marker goes first and the delay second: a check that starts between the two sees no marker and no delay, succeeds at once and applies the family servers at once, which still satisfies the bound; the other order could let a check read the marker, sleep 1.5 s over the failure, and push the expected time to about 3.2 s.
+    @Test func oneSuccessfulCheckAfterAnOutageAppliesTheFamilyServersAtOnce() throws {
+        try withNetwork(wifiAndEthernet) { daemon in
+            try #require(daemon.waitForFamily(["WIFI", "ETH"], timeout: 3.0) != nil)
+            let originals: [String: [String]] = ["WIFI": ["192.168.1.1"], "ETH": []]
+            try #require(daemon.savedDNS() == originals)
+            try daemon.setFamilyDNSUnreachable(true)
+            try #require(daemon.waitForServers(originals, timeout: 4.0) != nil, "the outage was never acted on: log:\n\(daemon.logText())")
+            try #require(daemon.logContains(unreachableLine))
+            pause(0.3)
+            #expect(daemon.servers(of: "WIFI") == ["192.168.1.1"] && daemon.servers(of: "ETH") == [], "the services were overridden while the outage was still on")
+
+            let checkSeconds = 1.5
+            let recovery = Stopwatch()
+            try daemon.setFamilyDNSUnreachable(false)
+            try daemon.setProbeDelay(checkSeconds)
+            let latest = 2 * checkSeconds - 0.3
+            let backAfter = daemon.waitForFamily(["WIFI", "ETH"], timeout: latest - recovery.elapsed)
+            #expect(backAfter != nil, "the family servers were not applied by \(latest) s after the servers answered again (one successful check ends after about 1.5 s): Wi-Fi \(String(describing: daemon.servers(of: "WIFI"))), Ethernet \(String(describing: daemon.servers(of: "ETH"))); log:\n\(daemon.logText())")
+            #expect(daemon.savedDNS() == originals, "applying again must keep the first saved originals")
+            #expect(daemon.logContains("family DNS answers again; DNS settings set to the family servers for 2 network services"), "log:\n\(daemon.logText())")
+            #expect(daemon.logCount(of: unreachableLine) == 1)
+        }
+    }
+
+    // 03 § 11: the 3 failed checks must be "in a row". A successful check in between starts the count again. Three brief outages of exactly one failed check each (the trick of the first test above: 1.0 s marker window, every check 1.0 s) are separated by successful checks, so there are three failed checks in all but never two in a row. The answer must never turn to "unreachable". Each round lasts 2.5 s from its start: the failed check ends 1.0 to 1.2 s in, a successful check follows at once (the delay is 0 again by then), and 1.3 s of quiet are left before the next round, so the next failure can never directly follow the last. Without a reset on success the third round would make three and announce an outage; the closing positive control shows that such an announcement is visible in the log.
+    @Test func failedChecksSeparatedBySuccessfulOnesNeverAddUpToAnOutage() throws {
+        try withNetwork(wifiAndEthernet) { daemon in
+            try #require(daemon.waitForFamily(["WIFI", "ETH"], timeout: 3.0) != nil)
+            let originals: [String: [String]] = ["WIFI": ["192.168.1.1"], "ETH": []]
+            try #require(daemon.savedDNS() == originals)
+            pause(0.5)
+            let settingsBefore = identity(of: daemon.servicesPath)
+            let checkSeconds = 1.0
+            var departures: [String] = []
+            for round in 1...3 {
+                let outage = Stopwatch()
+                try daemon.setFamilyDNSUnreachable(true)
+                try daemon.setProbeDelay(checkSeconds)
+                if let left = daemon.firstDepartureFromFamilyServers(["WIFI", "ETH"], until: checkSeconds, on: outage) { departures.append("round \(round), during the outage, \(left)") }
+                try daemon.setFamilyDNSUnreachable(false)
+                try daemon.setProbeDelay(0)
+                if let left = daemon.firstDepartureFromFamilyServers(["WIFI", "ETH"], until: 2.5, on: outage) { departures.append("round \(round), after the outage, \(left)") }
+            }
+            #expect(departures.isEmpty, "the services left the family servers: \(departures); log:\n\(daemon.logText())")
+            #expect(identity(of: daemon.servicesPath) == settingsBefore, "the settings file was rewritten although no pass had anything to change")
+            #expect(daemon.logCount(of: unreachableLine) == 0, "three failed checks that were not in a row were announced as an outage; log:\n\(daemon.logText())")
+            #expect(daemon.savedDNS() == originals)
+
+            // Positive control: a lasting outage (checks are fast again) is announced and the originals come back.
+            try daemon.setFamilyDNSUnreachable(true)
+            #expect(daemon.waitForServers(originals, timeout: 4.0) != nil, "the originals never came back in a real outage")
+            #expect(daemon.logCount(of: unreachableLine) == 1, "log:\n\(daemon.logText())")
         }
     }
 
