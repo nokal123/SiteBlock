@@ -101,6 +101,21 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 
 ---
 
+### 3a. PathRuleParser (`Sources/SiteBlockCore/PathRuleParser.swift`)
+
+**Purpose:** Turns typed text such as `youtube.com/shorts` or `https://www.youtube.com/shorts/abc?x=1` into a path rule, or says the text has no path (so it is a whole-site block), or explains why it cannot be used.
+
+**Key Methods:**
+- `static func split(_ input: String) -> (host: String, path: String?)` — trims the text, drops a `scheme://`, any `user@` part and a `:port`, cuts at the first `?` or `#`, and returns the host part and the path (everything from the first `/`). The path is `nil` when there is none, or when it is only `/` or empty; that means "whole site".
+- `static func parse(_ input: String) throws -> (domain: String, path: String)` — normalizes the host with `DomainNormalizer.normalize` (so `www.` is stripped and every DomainNormalizer error applies), then checks the path: it must exist (else `PathRuleError.noPath`), is at most 256 characters, keeps its case, has trailing `*` characters and then trailing `/` characters removed (`/shorts/` and `/shorts*` both become `/shorts`), and may contain only letters, digits and `- . _ ~ / % ! $ & ' ( ) + , ; = : @` (anything else, including spaces, `*` in the middle, `"`, `<`, `>`, `\`, `^`, `` ` ``, `{`, `|`, `}`, throws `PathRuleError.invalidCharacters`). A path that becomes `/` or empty after this throws `noPath`.
+- `static func display(domain:path:) -> String` — `youtube.com/shorts`.
+
+**Browser entries:**
+- `static func chromeEntry(domain:path:) -> String` — `youtube.com/shorts` (Chrome's format matches the domain, its subdomains, and any path that starts with the given one).
+- `static func firefoxPattern(domain:path:) -> String` — `*://*.youtube.com/shorts*` (a WebExtension match pattern: any scheme, the domain and its subdomains, any path starting with the given one).
+
+---
+
 ### 4. HostsFileEditor (`Sources/SiteBlockCore/HostsFileEditor.swift`)
 
 **Purpose:** Takes the current text of a hosts file and the set of host names that must be blocked, and returns the corrected text. It is a pure function over strings, with no file access, so it can be tested on any input.
@@ -173,7 +188,8 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
 - `static let privateRelayHosts` — `["mask-h2.icloud.com", "mask.icloud.com"]`.
 - `var adultFilterActive: Bool` — always `true`, except once `uninstalling` is `true` (the uninstaller then restores everything).
-- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` whenever `adultFilterActive` is true (so, in practice, always), sorted and without duplicates. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
+- `static let dohBypassHosts` — `["doh.xfinity.com", "firefox.dns.nextdns.io", "mozilla.cloudflare-dns.com", "private.canadianshield.cira.ca"]`, the hostnames browsers use for DNS-over-HTTPS by default.
+- `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` and `dohBypassHosts` whenever `adultFilterActive` is true (so, in practice, always), sorted and without duplicates. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
 - `var onUninstall: (() -> Void)?` — called once when the uninstall countdown finishes.
 
 **Key Methods:**
@@ -191,6 +207,14 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 **Who may set up:** `var consoleUID: () -> uid_t?` returns the user ID of the person logged in at the screen. The runtime sets it in production to read the owner of `/dev/console`. It defaults to returning `nil`, and `nil` means any caller may run `setup`, which is what sandbox runs and tests use. When it returns an ID, `setup` succeeds only for `peerUID == 0` or `peerUID` equal to that ID, and fails with `notAllowed` otherwise. The check comes before `alreadySetUp`.
 
 **Site cap:** adding a new site when `policy.maxSites` sites are already blocked fails with `tooManySites`. Re-adding an existing site (to cancel its unblock) is not affected. `Policy.production.maxSites` is 500; `Policy.fastForTests.maxSites` is 20, so tests can reach the cap quickly.
+
+**Path rules:**
+- `addPath`: parse the rule text with `PathRuleParser.parse` (`invalidDomain` for host errors, `invalidPath` for path errors and for text with no path). If the whole domain is already in `blocked`, fail `alreadyBlocked` ("youtube.com is already fully blocked"). If the same domain and path exist with a pending unblock, clear the unblock; if they exist without one, fail `alreadyBlocked`. Otherwise, like `add`: `notSetUp` without a password, `tooManySites` when `blocked.count + blockedPaths.count` would exceed `maxSites`, then append.
+- `unblockPath` and `cancelUnblockPath` follow `unblock` and `cancelUnblock` exactly, keyed by domain and path.
+- Tick: remove path rules whose unblock finished (a change that must be saved).
+- Adding the whole domain later keeps its path rules (they become redundant while the whole site is blocked, and matter again if the whole site is unblocked).
+
+**Browser block list:** `var browserBlockEntries: (chrome: [String], firefox: [String])` builds both browsers' lists. Chrome: `ChromePolicy.urlBlocklist(for: blocked)` (the covering host list) plus `chromeEntry` for every path rule whose domain is not covered by a whole-site block, sorted. Firefox: `*://*.<host>/*` for every covering host plus `firefoxPattern` for the same path rules, sorted.
 
 **Argument rule:** a missing required argument fails with `badRequest` before any lockout or password check, so a malformed request never costs a password attempt. `setDelay` also checks the range (`invalidDelay`) before the password.
 

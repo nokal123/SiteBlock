@@ -46,6 +46,10 @@ Chrome has its own name lookup code, including "Secure DNS" (looking up names ov
 
 Some Chrome windows never ask the Mac to look a name up at all. A Chrome started with `--proxy-server=socks5://…` (for example a window used to reach a work dashboard through an SSH tunnel) hands each site name to the proxy, and the remote computer looks it up. So SiteBlock also writes Chrome's own block list. Chrome reads mandatory policies from `/Library/Managed Preferences`, a folder only root can write, and its `URLBlocklist` policy makes Chrome itself refuse every listed site and all its subdomains, in every window and profile, whatever proxy or lookup method is in use. `URLBlocklist` is not one of the "sensitive" policies Chrome ignores on Macs no company manages (only extension-install policies are). While any site is blocked, Chrome shows "Managed by your organization" in its menu; that label refers to this list.
 
+**Other browsers.** Firefox, with its own DNS-over-HTTPS switched on, skips `/etc/hosts` entirely, and Chromium-based browsers other than Chrome keep their settings under their own names. So SiteBlock writes the same kind of protected policy for each of them (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer): Microsoft Edge (`com.microsoft.Edge`) and Brave (`com.brave.Browser`) get the Chrome keys, and Firefox (`org.mozilla.firefox`) gets `EnterprisePoliciesEnabled`, `DNSOverHTTPS` turned off and locked, and a `WebsiteFilter` block list. As a backstop, the hosts file always blocks the hostnames Firefox uses for DNS-over-HTTPS by default (`mozilla.cloudflare-dns.com`, `firefox.dns.nextdns.io`, `private.canadianshield.cira.ca`, `doh.xfinity.com`), so a browser that tries them anyway falls back to the Mac's own lookups or cannot load pages at all.
+
+**Blocking part of a site (path rules).** Typing a site name alone (`youtube.com`) always blocks the whole site, exactly as before. A path rule exists only when a person asks to block part of a site: they type a path after the name, or paste a link and choose "Only this part". A path rule such as `youtube.com/shorts` blocks every address on that site (and its subdomains) whose path starts with `/shorts`, and leaves the rest of the site open. The hosts file can only block whole names, so path rules are enforced only through the browsers' own block lists: Chrome, Edge, Brave and Firefox. **Limits:** Safari cannot block part of a site (it has no block list SiteBlock can set without device management). And browsers check their block lists when a page loads; a site that switches pages inside an already-open page without loading a new one (YouTube does this when you tap a Short from the home page, using the `pushState` feature) is caught only on the next reload or when the address is opened directly.
+
 **Adult content filter.** SiteBlock always blocks adult websites, including ones that are not on the block list. This is part of its core blocking, not a setting: there is no command, password or wait that turns it off, and only uninstalling SiteBlock removes it. It works in two layers. First, the Chrome policy file also gets `SafeSitesFilterBehavior` = 1 (Chrome checks each top-level page against Google's adult-content classification and refuses flagged ones), `ForceGoogleSafeSearch` = true (Google Search always uses SafeSearch), and `DnsOverHttpsMode` = "off" (Chrome uses the Mac's own name lookups, so the second layer reaches it). Second, every network service's DNS servers (the servers that turn site names into addresses) are set to Cloudflare for Families, which refuses to look up adult sites: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003`. VPN services are left alone, because a VPN supplies its own DNS servers; that is a known limit. Because of this layer the Private Relay names are always blocked, even with no sites on the block list, since Private Relay would otherwise send Safari's lookups to Apple instead of the family servers.
 
 iCloud Private Relay (Apple's paid service that routes Safari traffic through Apple's servers) is the exception: while it is on, Safari's lookups go to Apple's name servers, and the hosts file may be skipped. Apple documents that a network turns Private Relay off by blocking the names `mask.icloud.com` and `mask-h2.icloud.com`. So whenever at least one site is blocked, SiteBlock also writes those two names into its hosts section. macOS then reports Private Relay as unavailable and Safari's lookups go through the hosts file. The cost is that Private Relay stays off while anything is blocked, and the README says so.
@@ -133,6 +137,7 @@ All persistent data lives in one JSON file, `state.json`, owned by root with mod
 - `failedAttempts: Int` — wrong passwords since the last correct one or the last lockout.
 - `lockout: Countdown?` — time left before password checks are allowed again.
 - `uninstalling: Bool` — set to `true` at the start of an uninstall so the watchdog does not reload the daemon.
+- `blockedPaths: [BlockedPath]?` — every path rule, in the order added. **Optional in the file** (an older `state.json` without it decodes as no path rules).
 - `savedDNS: [String: [String]]?` — **optional in the file:** a `state.json` written before this field existed has no such key, and it must decode as `nil` rather than being treated as corrupt (which would discard the block list). For each network service (keyed by its SystemConfiguration service ID) it holds the DNS server addresses the service had before SiteBlock replaced them; an empty array means the service had none set by hand (it used whatever the network provided). Written the first time SiteBlock overrides a service and used only by the uninstaller, to put the originals back.
 
 ### BlockedSite
@@ -140,6 +145,12 @@ All persistent data lives in one JSON file, `state.json`, owned by root with mod
 - `domain: String` — the normalized base name the user asked for, for example `reddit.com`.
 - `hosts: [String]` — the full expanded list of host names written to the hosts file, sorted and without duplicates.
 - `pendingUnblock: Countdown?` — set when an unblock has been approved and is waiting. When it reaches zero the site is removed from `blocked`.
+
+### BlockedPath
+
+- `domain: String` — the normalized base domain, for example `youtube.com`.
+- `path: String` — the path prefix, starting with `/`, for example `/shorts`. Case is kept, because paths are case-sensitive.
+- `pendingUnblock: Countdown?` — set while an approved unblock waits; when it reaches zero the rule is removed.
 
 ### Countdown
 
@@ -180,7 +191,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 
 - `ok: Bool` — `true` when the command succeeded.
 - `error: String?` — a sentence a person can read, present when `ok` is `false`.
-- `errorCode: String?` — a stable machine-readable code, present when `ok` is `false`. Codes: `badRequest`, `invalidDomain`, `notSetUp`, `alreadySetUp`, `wrongPassword`, `lockedOut`, `weakPassword`, `notBlocked`, `alreadyBlocked`, `nothingPending`, `invalidDelay`, `notRoot`, `notAllowed`, `tooManySites`, `internal`.
+- `errorCode: String?` — a stable machine-readable code, present when `ok` is `false`. Codes: `badRequest`, `invalidDomain`, `notSetUp`, `alreadySetUp`, `wrongPassword`, `lockedOut`, `weakPassword`, `notBlocked`, `alreadyBlocked`, `nothingPending`, `invalidDelay`, `notRoot`, `notAllowed`, `tooManySites`, `invalidPath`, `internal`.
 - `status: StatusSnapshot?` — present on every successful response, so clients can redraw after any command.
 - `message: String?` — a short confirmation sentence, for example "reddit.com will unblock in 30 minutes."
 
@@ -195,6 +206,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 - `recoverySecondsRemaining: Int?`
 - `lockoutSecondsRemaining: Int?`
 - `hostsFileHealthy: Bool` — `true` when the last enforcement pass found or left the hosts file in the right state.
+- `blockedPaths: [BlockedPathStatus]?` — each with `domain`, `path`, `rule` (the two joined, as shown to people, for example `youtube.com/shorts`) and `unblockSecondsRemaining: Int?`. Decoded as empty when missing.
 - `adultFilterEnabled: Bool?` — always `true` from a daemon that has the adult filter (decoded as `false` when missing, for an older daemon).
 
 ### Commands
@@ -205,6 +217,9 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - `setup` (`password`) — sets the first password. Fails with `alreadySetUp` if one exists. Only root or the user logged in at the screen (the owner of `/dev/console`) may send it; anyone else gets `notAllowed`. This stops another account on the Mac from claiming the password first, either before the owner sets it or right after a recovery clears it.
 - `add` (`domain`) — blocks a site at once. If the site is already blocked with an unblock pending, this cancels the unblock. Needs a password to be set up first (`notSetUp`), so that every block can later be undone.
 - `unblock` (`domain`, `password`) — starts the unblock countdown for the site.
+- `addPath` (`domain` holds the whole rule text, for example `youtube.com/shorts` or `https://www.youtube.com/shorts/abc`) — adds a path rule at once. No password. Fails `invalidDomain` or `invalidPath` when the text cannot be parsed, `alreadyBlocked` when the same rule exists or the whole site is already blocked, `notSetUp` when no password exists, and `tooManySites` when sites plus path rules would exceed the cap. Re-adding a rule that is waiting to unblock cancels the unblock, like `add`.
+- `unblockPath` (`domain` = rule text, `password`) — starts the unblock countdown for that rule, with the same password and delay rules as `unblock`; `notBlocked` when no such rule exists.
+- `cancelUnblockPath` (`domain` = rule text) — stops a pending path-rule unblock. No password.
 - `cancelUnblock` (`domain`) — stops a pending unblock. No password.
 - `setDelay` (`seconds`, `password`) — longer applies at once and drops any pending change. Shorter starts a `PendingDelayChange`.
 - `cancelDelayChange` — drops a pending shorter delay. No password.
@@ -225,7 +240,7 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Minimum password length: 6 characters.
 - Wrong-password limit: 5, then a lockout of 900 seconds (15 minutes).
 - Adult-filter DNS servers: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003` (Cloudflare for Families).
-- Most blocked sites: 500. A further `add` of a new site fails with `tooManySites`. Without a cap, any account on the Mac could add thousands of sites without a password, and the owner would need one password check and one wait per site to clear them.
+- Most blocked sites: 500, counting sites and path rules together. A further `add` of a new site fails with `tooManySites`. Without a cap, any account on the Mac could add thousands of sites without a password, and the owner would need one password check and one wait per site to clear them.
 - Enforcement tick: every 2 seconds.
 - Watchdog check: every 5 seconds.
 - State is saved to disk after every command and at least every 15 seconds while any countdown is running.

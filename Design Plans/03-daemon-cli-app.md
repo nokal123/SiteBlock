@@ -194,6 +194,8 @@ siteblock version
 
 ### 9. ChromePolicyEnforcer (`Sources/siteblockd/ChromePolicyEnforcer.swift`)
 
+> Generalized by § 13 BrowserPolicyEnforcer, which applies the same file handling to Edge, Brave and Firefox; Chrome keeps the keys described here, and its `URLBlocklist` now also carries path-rule entries.
+
 **Purpose:** Keeps Chrome's mandatory `URLBlocklist` policy equal to SiteBlock's block list, so Chrome refuses blocked sites even in windows whose traffic goes through a proxy and never touches `/etc/hosts`. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works.
 
 **Files written (production):**
@@ -266,3 +268,31 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 **App (Settings):** an informational "Adult content filter: always on" section with one sentence: "Blocks all adult content across every browser and app. To remove it, uninstall SiteBlock." There is no toggle. (The filter's limits are documented in the README and § Threat Model, not in the app.)
 
 **CLI:** `siteblock status` prints "Adult content filter: always on". There is no command to change it.
+
+---
+
+### 13. BrowserPolicyEnforcer (`Sources/siteblockd/BrowserPolicyEnforcer.swift`)
+
+**Purpose:** Writes SiteBlock's protected policy for every supported browser, so each one refuses blocked sites and path rules itself and uses the Mac's own name lookups. It replaces the Chrome-only enforcer, with the same file rules: for each target, a machine-wide file and a per-console-user file under `/Library/Managed Preferences` (`root:wheel`, folders `0755`, files `0644`), atomic random-temp writes, other keys kept, SiteBlock's managed keys replaced, a file deleted when nothing else is left, a rewrite when a managed key differs in value or type or the mode or owner is wrong or the path is not a plain file, `O_NONBLOCK` opens, and "browser policy repaired (<target>)" logged for tampering.
+
+**Targets and their managed keys** (all always present while SiteBlock is installed; only the uninstaller removes them):
+- **Chrome** — `com.google.Chrome`: `URLBlocklist` (the Chrome browser list), `SafeSitesFilterBehavior` = 1, `ForceGoogleSafeSearch` = true, `DnsOverHttpsMode` = "off".
+- **Edge** — `com.microsoft.Edge`: `URLBlocklist`, `DnsOverHttpsMode` = "off", `ForceGoogleSafeSearch` = true, `ForceBingSafeSearch` = 2 (strict).
+- **Brave** — `com.brave.Browser`: `URLBlocklist`, `DnsOverHttpsMode` = "off", `SafeSitesFilterBehavior` = 1, `ForceGoogleSafeSearch` = true.
+- **Firefox** — `org.mozilla.firefox`: `EnterprisePoliciesEnabled` = true, `DNSOverHTTPS` = `{Enabled: false, Locked: true}`, `WebsiteFilter` = `{Block: [the Firefox browser list]}`. Firefox also reads `/Library/Preferences/org.mozilla.firefox.plist`, so for Firefox that third file is written too, with the same rules.
+
+`URLBlocklist` and `WebsiteFilter` are left out when their list is empty. Each list is capped at 1,000 entries (both browsers ignore the rest); the engine's site cap keeps it below that in practice, and a list that would exceed it is cut to 1,000 with whole-site entries kept first, logged once. The writes target these files whether or not the browser is installed, so installing a browser later is covered at once.
+
+**Sandbox:** the same files under `root/ManagedPreferences/` (and `root/Preferences/org.mozilla.firefox.plist`).
+
+---
+
+### 14. Path rules in the app and CLI
+
+**App:** typing a site name alone and pressing Block blocks the whole site, as before. When the typed text contains a path (`PathRuleParser.split` returns a path), a two-choice control appears under the field: "Only this part" (selected) and "Whole site"; the Block button follows the choice (`addPath` or `add`). The blocked list shows path rules in their own group, "Blocked parts of sites", each row showing the rule (`youtube.com/shorts`) with the same "Unblock…" / countdown / "Keep blocked" controls as a site. Under the group heading, one line: "Works in Chrome, Firefox, Edge and Brave. Safari can only block whole sites."
+
+**CLI:**
+- `siteblock add <text>` — whole-site block when the text has no path; a path rule when it has one (`siteblock add youtube.com/shorts`). `--whole-site` forces a whole-site block from text that has a path.
+- `siteblock unblock <text>` and `siteblock cancel <text>` — act on the path rule when the text has a path, otherwise on the site.
+- `siteblock status` — prints "Blocked parts of sites (N):" with one line per rule, after the sites.
+
