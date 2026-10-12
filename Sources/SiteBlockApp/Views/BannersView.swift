@@ -1,3 +1,4 @@
+import AppKit
 import SiteBlockCore
 import SwiftUI
 
@@ -50,15 +51,23 @@ struct NoPasswordBanner: View {
     }
 }
 
-/// The warnings for anything that is waiting or wrong: a hosts file problem, a password lockout, a pending delay change, a pending uninstall and a running password reset. Each waiting item shows a live countdown and, where cancelling is allowed, a button that cancels it.
+/// The warnings for anything that is waiting or wrong: a hosts file problem, a password lockout, a pending delay change, a pending uninstall, a running password reset, and a browser that has not allowed SiteBlock to control it. Each waiting item shows a live countdown and, where cancelling is allowed, a button that cancels it.
 struct BannersView: View {
     @ObservedObject var model: StatusModel
     /// The latest status from the daemon.
     let snapshot: StatusSnapshot
 
+    /// The page of System Settings where a person turns on SiteBlock's permission to control a browser.
+    private static let automationSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+
     /// True when at least one banner or banner message would show. Parents use it to leave this view out entirely, because an empty stack would still add a gap.
-    static func hasContent(snapshot: StatusSnapshot, feedback: Feedback?) -> Bool {
-        !snapshot.hostsFileHealthy || snapshot.lockoutSecondsRemaining != nil || snapshot.pendingDelay != nil || snapshot.uninstallSecondsRemaining != nil || snapshot.recoverySecondsRemaining != nil || feedback?.scope == .banner
+    static func hasContent(snapshot: StatusSnapshot, feedback: Feedback?, deniedBrowserNames: [String]) -> Bool {
+        !snapshot.hostsFileHealthy || snapshot.lockoutSecondsRemaining != nil || snapshot.pendingDelay != nil || snapshot.uninstallSecondsRemaining != nil || snapshot.recoverySecondsRemaining != nil || feedback?.scope == .banner || needsBrowserPermission(snapshot: snapshot, deniedBrowserNames: deniedBrowserNames)
+    }
+
+    /// True when the permission banner should show: at least one path rule exists (otherwise the tab watcher has nothing to do and the permission does not matter) and at least one running browser has refused control.
+    private static func needsBrowserPermission(snapshot: StatusSnapshot, deniedBrowserNames: [String]) -> Bool {
+        !deniedBrowserNames.isEmpty && !(snapshot.blockedPaths ?? []).isEmpty
     }
 
     var body: some View {
@@ -68,6 +77,7 @@ struct BannersView: View {
             if let change = snapshot.pendingDelay { delayChange(change) }
             if let seconds = snapshot.uninstallSecondsRemaining { uninstall(seconds) }
             if let seconds = snapshot.recoverySecondsRemaining { recovery(seconds) }
+            if Self.needsBrowserPermission(snapshot: snapshot, deniedBrowserNames: model.deniedBrowserNames) { browserPermission(model.deniedBrowserNames) }
             FeedbackLine(model: model, scope: .banner)
         }
     }
@@ -121,6 +131,18 @@ struct BannersView: View {
             Button("Cancel reset") { Task { _ = await model.cancelRecovery() } }
                 .controlSize(.small)
                 .disabled(model.isBusy)
+        }
+    }
+
+    /// Asks the person to let SiteBlock control the named browsers. Without that permission SiteBlock cannot see which address a tab is on, so a blocked part of a site that opens without a page load stays open until the next reload. A button opens the Automation page of System Settings, where the permission is switched on.
+    private func browserPermission(_ names: [String]) -> some View {
+        BannerCard(icon: "hand.raised.fill", tint: .orange) {
+            // ListFormatter writes "Google Chrome", "Brave and Google Chrome" or "Brave, Google Chrome, and Microsoft Edge".
+            Text("Let SiteBlock control \(ListFormatter.localizedString(byJoining: names)) so blocked parts of sites close right away.")
+            Button("Open Settings") {
+                if let url = Self.automationSettingsURL { NSWorkspace.shared.open(url) }
+            }
+            .controlSize(.small)
         }
     }
 }

@@ -7,15 +7,18 @@
 2. [DomainNormalizer](#1-domainnormalizer-sourcessiteblockcoredomainnormalizerswift)
 3. [Punycode](#2-punycode-sourcessiteblockcorepunycodeswift)
 4. [DomainExpander](#3-domainexpander-sourcessiteblockcoredomainexpanderswift)
-5. [HostsFileEditor](#4-hostsfileeditor-sourcessiteblockcorehostsfileeditorswift)
-6. [PasswordHasher](#5-passwordhasher-sourcessiteblockcorepasswordhasherswift)
-7. [Models and Protocol Types](#6-models-and-protocol-types)
-8. [Engine](#7-engine-sourcessiteblockcoreengineswift)
-9. [StateStore](#8-statestore-sourcessiteblockcorestatestoreswift)
-10. [DaemonClient](#9-daemonclient-sourcessiteblockcoredaemonclientswift)
-11. [Formatting](#10-formatting-sourcessiteblockcoreformattingswift)
-12. [ConnectionLimiter](#11-connectionlimiter-sourcessiteblockcoreconnectionlimiterswift)
-13. [UninstallRule](#12-uninstallrule-sourcessiteblockcoreuninstallruleswift)
+5. [PathRuleParser](#3a-pathruleparser-sourcessiteblockcorepathruleparserswift)
+6. [TabRuleMatcher](#3b-tabrulematcher-sourcessiteblockcoretabrulematcherswift)
+7. [TabReloadDecider](#3c-tabreloaddecider-sourcessiteblockcoretabreloaddeciderswift)
+8. [HostsFileEditor](#4-hostsfileeditor-sourcessiteblockcorehostsfileeditorswift)
+9. [PasswordHasher](#5-passwordhasher-sourcessiteblockcorepasswordhasherswift)
+10. [Models and Protocol Types](#6-models-and-protocol-types)
+11. [Engine](#7-engine-sourcessiteblockcoreengineswift)
+12. [StateStore](#8-statestore-sourcessiteblockcorestatestoreswift)
+13. [DaemonClient](#9-daemonclient-sourcessiteblockcoredaemonclientswift)
+14. [Formatting](#10-formatting-sourcessiteblockcoreformattingswift)
+15. [ConnectionLimiter](#11-connectionlimiter-sourcessiteblockcoreconnectionlimiterswift)
+16. [UninstallRule](#12-uninstallrule-sourcessiteblockcoreuninstallruleswift)
 
 ---
 
@@ -114,6 +117,56 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 - `static func chromeEntry(domain:path:) -> String` — `youtube.com/shorts` (Chrome's format matches the domain, its subdomains, and any path that starts with the given one).
 - `static func firefoxPattern(domain:path:) -> String` — `*://*.youtube.com/shorts*` (a WebExtension match pattern: any scheme, the domain and its subdomains, any path starting with the given one).
 
+---
+
+### 3b. TabRuleMatcher (`Sources/SiteBlockCore/TabRuleMatcher.swift`)
+
+**Purpose:** Decides whether the address shown in a browser tab falls under a path rule. It applies the same matching the browsers apply to their own block lists, so the tab watcher reloads only tabs that the browser will then block. It is a pure function over strings with no browser access.
+
+**Types:**
+- `public struct WatchedPathRule: Hashable, Sendable` — one path rule as the daemon reports it in `StatusSnapshot.blockedPaths`.
+  - `domain: String` — already normalized: lowercase, Punycode for non-ASCII labels, no leading `www.`.
+  - `path: String` — starts with `/`, keeps its case, and has no trailing `/` or `*`.
+- `public enum TabRuleMatcher` — holds the two functions below.
+
+**Key Methods:**
+- `static func matchingRule(url: String, rules: [WatchedPathRule]) -> WatchedPathRule?` — returns the first rule, in list order, that the address falls under, or `nil` when none does.
+- `static func matches(url: String, rule: WatchedPathRule) -> Bool` — tells whether the address falls under that one rule.
+
+**Matching steps, in order:**
+1. Parse the text with `URLComponents(string:)`. When it cannot be parsed, there is no match.
+2. The scheme, compared without regard to case, must be `http` or `https`. Any other scheme (`chrome:`, `about:`, `file:`, `data:`, `javascript:`) and a missing scheme give no match.
+3. Take the host. When it is `nil` or empty, there is no match. When it holds a character that cannot be in a real host name (`/ ? # @ : \ [ ]`, whitespace or a control character), there is no match. `URLComponents.host` turns percent-escapes back into characters, so `https://youtube.com%2Fx.evil.com/shorts` arrives with the host `youtube.com/x.evil.com`; without this check the normalizer would cut it down to `youtube.com` and it would match a site it does not belong to. Otherwise run it through `DomainNormalizer.normalize`, the same normalizer the rules went through, so it is lowercased, converted to Punycode when it has non-ASCII characters, stripped of one trailing `.`, and stripped of a leading `www.`. When normalizing throws, there is no match.
+4. The host matches when it equals the rule's `domain` or ends with `"." + domain`. So `m.youtube.com` matches `youtube.com`, and `notyoutube.com` does not.
+5. Take `percentEncodedPath`, and use `/` when it is empty. `URLComponents` percent-encodes a raw space or control character in the path, so `https://youtube.com/shorts abc` is compared as `/shorts%20abc` and matches; browsers always report such an address already encoded. The path matches when it starts with the rule's `path` as a plain, case-sensitive string prefix. So `/shorts`, `/shorts/abc` and `/shortsXYZ` all match `/shorts`, and `/Shorts` does not.
+6. The port, user info, query and fragment play no part in the decision.
+
+**Behavioral notes:** The steps mirror what Chrome's `youtube.com/shorts` entry and Firefox's `*://*.youtube.com/shorts*` pattern match (see § PathRuleParser, Browser entries). The browsers treat the path as a plain prefix, which is why `/shortsXYZ` matches; the matcher does the same so that it never reloads a tab the browser would leave open. Because the user-info part is not the host, an address such as `https://youtube.com@other.com/shorts` is judged by `other.com`. A subdomain the normalizer refuses (one with an underscore, such as `a_b.youtube.com`, or a label longer than 63 characters) gives no match, so the watcher leaves that tab alone and the browser applies its block list on the next load.
+
+---
+
+### 3c. TabReloadDecider (`Sources/SiteBlockCore/TabReloadDecider.swift`)
+
+**Purpose:** Decides which tabs to reload, and remembers which tab it has already acted on at which address, so a tab that is showing the browser's block page is never reloaded over and over. It is a value type with no browser access; the tab watcher feeds it the tab lists it reads.
+
+**Properties:**
+- Memory: for each process ID (`Int32`), a dictionary from tab ID (`String`) to the address the decider last acted on for that tab.
+
+**Key Methods:**
+- `public mutating func tabsToReload(processID: Int32, tabs: [(id: String, url: String)], rules: [WatchedPathRule]) -> [String]` — called with the complete tab list of one browser process. The returned tab IDs keep the order of the input. For each tab:
+  - When its address matches a rule (through `TabRuleMatcher.matchingRule`) and the remembered address for that tab is different or missing, the tab ID is returned and the address is remembered.
+  - When it matches and the remembered address is the same, nothing happens.
+  - When it does not match, the memory for that tab is dropped, so going back to the blocked part later reloads the tab again.
+  - Memory for tab IDs that are not in the list is dropped.
+  - With no rules, the method returns nothing and clears that process's memory.
+- `public mutating func forgetProcesses(except running: Set<Int32>)` — drops the memory of every process that is not in the set, which is how memory for exited browsers is released.
+- `public mutating func forgetAll()` — drops all memory.
+- `public func remembered(processID: Int32) -> [String: String]` — read-only view of one process's memory, for tests.
+
+**Behavioral notes:** A process whose tab list could not be read in a given tick is not passed to `tabsToReload` in that tick, so its memory is kept and a later successful read continues from it. Different processes never share memory, even when two of them use the same tab ID.
+
+
+**Repeated tab id:** a browser never lists the same tab id twice in one answer, but when a list does, the tab is handled once, by its first appearance: that appearance decides whether the id is returned and which address is remembered, and later appearances are ignored.
 ---
 
 ### 4. HostsFileEditor (`Sources/SiteBlockCore/HostsFileEditor.swift`)

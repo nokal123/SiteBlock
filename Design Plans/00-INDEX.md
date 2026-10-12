@@ -10,17 +10,17 @@
 - Every persisted field, every protocol field, every command and its password rule
 
 ### [02-core-components.md](02-core-components.md)
-**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, hosts file editing, password hashing, Engine command rules, state file, socket client, duration formatting
+**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, Engine command rules, state file, socket client, duration formatting
 - Pure logic with no root access, all unit-testable
 
 ### [03-daemon-cli-app.md](03-daemon-cli-app.md)
-**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, menu bar app screens
+**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission
 
 ### [04-infrastructure.md](04-infrastructure.md)
-**Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, install, upgrade
+**Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, automatic package builds
 
 ### [05-testing-and-operations.md](05-testing-and-operations.md)
-**Open for:** unit and integration test lists, installed-system verification, security notes, logs, success criteria
+**Open for:** unit and integration test lists, installed-system verification, live tab-watcher test, security notes, logs, success criteria
 
 ---
 
@@ -54,10 +54,14 @@
 19d. `Sources/siteblockd/DNSEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer
 19g. `Sources/siteblockd/BrowserPolicyEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
 19h. `Sources/SiteBlockCore/PathRuleParser.swift` — **Primary:** [02-core-components.md](02-core-components.md) § PathRuleParser
+19i. `Sources/SiteBlockCore/TabRuleMatcher.swift` — **Primary:** [02-core-components.md](02-core-components.md) § TabRuleMatcher — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+19j. `Sources/SiteBlockCore/TabReloadDecider.swift` — **Primary:** [02-core-components.md](02-core-components.md) § TabReloadDecider — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 20. `Sources/siteblockd/Uninstaller.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Uninstaller
 21. `Sources/siteblock/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
 22. `Sources/SiteBlockApp/*` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App
-23. `Resources/Info.plist` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script
+22a. `Sources/SiteBlockApp/TabWatcher.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel and the permission banner)
+22b. `Sources/SiteBlockApp/ChromiumTabs.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+23. `Resources/Info.plist` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script (including the `NSAppleEventsUsageDescription` key)
 24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script
 25. `scripts/install.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 25a. `scripts/package.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac
@@ -85,6 +89,17 @@
 - Engine rules → [02-core-components.md](02-core-components.md) § Engine
 - Fixed numbers (delay, lockout, recovery) → [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values
 
+### Path Rules and Tab Watching
+- Tab watcher (reloads a tab that moved to a blocked part of a site without loading a page) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- In-page address changes (`pushState`) and what catches them → [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Blocking part of a site), [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- Which tab addresses fall under a path rule → [02-core-components.md](02-core-components.md) § TabRuleMatcher
+- Which tabs to reload, and why a tab is reloaded only once per address → [02-core-components.md](02-core-components.md) § TabReloadDecider
+- Apple Events bridge to Chrome, Edge and Brave → [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs
+- Apple Events / Automation permission (the macOS prompt, refusal, the panel banner) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs, § TabWatcher, § SiteBlock.app Menu Bar App (Panel states)
+- `NSAppleEventsUsageDescription` and macOS asking again after an update → [04-infrastructure.md](04-infrastructure.md) § Build Script, § Upgrade Behavior
+- Limits of tab watching (permission refused, half-second delay, Firefox, Safari) → [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits
+- Live tab-watcher test → [05-testing-and-operations.md](05-testing-and-operations.md) § Installed-System Verification
+
 ### Tamper Resistance
 - Hosts file self-repair → [03-daemon-cli-app.md](03-daemon-cli-app.md) § HostsEnforcer
 - Bypass-line removal → [02-core-components.md](02-core-components.md) § HostsFileEditor
@@ -95,6 +110,7 @@
 - Paths → [04-infrastructure.md](04-infrastructure.md) § Installed Paths
 - Install and upgrade → [04-infrastructure.md](04-infrastructure.md) § Install Script
 - Running tests without Xcode → [04-infrastructure.md](04-infrastructure.md) § Package.swift
+- Failed test names on the public GitHub run page → [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds
 
 ---
 
@@ -116,3 +132,14 @@ The client sends `unblock` with the password. The engine checks the password wit
 The daemon and watchdog each check every 5 seconds that the other is loaded and reload it if not. Uninstall goes through the password and the delay, then marks the state as uninstalling so the watchdog stands down.
 - [03-daemon-cli-app.md](03-daemon-cli-app.md) § LaunchdGuard and Watchdog, § Uninstaller
 - [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs
+
+### A tab switches to a blocked part of a site without loading
+Browsers check their block lists only when a page loads, and some sites change the address inside a page that is already open. The daemon's `status` reply lists every path rule, including rules that are waiting to unblock. The menu bar app's StatusModel hands that list to the TabWatcher every time it applies a snapshot. While a rule exists and Chrome, Edge or Brave is running, the TabWatcher asks ChromiumTabs every half second for the address of every open tab, using Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action). TabRuleMatcher and TabReloadDecider pick the tabs whose address falls under a rule and have not already been reloaded at that address. ChromiumTabs reloads each of them. A reload is a real page load, so the browser checks the `URLBlocklist` the daemon wrote and shows its block page. If the person refuses the Automation permission (the macOS setting that lets one app control another), ChromiumTabs reports the refusal, the TabWatcher publishes the browser's name, and the panel shows a banner.
+- **Rule list from the daemon:** [01-overview-and-data.md](01-overview-and-data.md) § Wire Protocol (StatusSnapshot), [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel)
+- **Address matching:** [02-core-components.md](02-core-components.md) § TabRuleMatcher
+- **Deciding what to reload:** [02-core-components.md](02-core-components.md) § TabReloadDecider
+- **Polling, permission handling and reloading:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- **Apple Events to the browser:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs
+- **The block page the reload produces:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
+- **Permission text and prompt:** [04-infrastructure.md](04-infrastructure.md) § Build Script
+- **Limits:** [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits

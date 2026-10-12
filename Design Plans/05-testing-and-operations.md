@@ -19,9 +19,9 @@ Tests are written with Swift Testing (`import Testing`, `@Test`, `#expect`) and 
 
 1. **Unit tests** call `SiteBlockCore` directly. The `Engine` is driven with fake elapsed time, so a 30-minute countdown is tested in microseconds.
 2. **Integration tests** start the real `siteblockd` program in sandbox mode as a child process, talk to it over its real socket with `DaemonClient` and the real `siteblock` CLI, and read the sandbox hosts file from disk.
-3. **Installed-system verification** (`scripts/verify-install.sh`) runs after a real install and checks the real `/etc/hosts`, the real name lookup, and real connections.
+3. **Installed-system verification** (`scripts/verify-install.sh`) runs after a real install and checks the real `/etc/hosts`, the real name lookup, and real connections. A separate live test drives a real Chrome to check the tab watcher.
 
-There are no mocks of the socket, the file system or the hosts editor. The only stand-in is fake elapsed time in unit tests.
+There are no mocks of the socket, the file system or the hosts editor. The only stand-in is fake elapsed time in unit tests. The Apple Events code in `Sources/SiteBlockApp/ChromiumTabs.swift` needs a running browser and a macOS permission prompt, so it is covered only by the live tab-watcher test.
 
 ---
 
@@ -36,6 +36,23 @@ There are no mocks of the socket, the file system or the hosts editor. The only 
 - **PasswordHasherTests:** right and wrong passwords; two hashes of the same password differ (random salt); a hash with a changed iteration count, bad Base64, or unknown algorithm fails verification; Unicode and space-padded passwords; the minimum-length rule.
 - **EngineTests:** every command's success and failure codes from [02-core-components.md](02-core-components.md) § Engine; unblock finishes only after the full delay and not one tick earlier; a second `unblock` does not restart the countdown; `add` cancels a pending unblock; delay increase is immediate and decrease waits for the old delay; five wrong passwords lock out and a correct password during lockout is still refused; lockout ends after its time; recovery is refused for non-root, and after finishing clears the password but keeps blocks; uninstall calls `onUninstall` exactly once; negative, NaN and infinite elapsed values change nothing; JSON round-trip of the full state.
 - **FormattingTests:** each duration and clock example from [02-core-components.md](02-core-components.md) § Formatting, and `parseDuration` on valid and invalid input.
+- **TabRuleMatcherTests** (expected values from [02-core-components.md](02-core-components.md) § TabRuleMatcher, using a rule such as `youtube.com` with `/shorts`):
+  - Schemes: `http` and `https` match, in any letter case; `chrome:`, `about:`, `file:`, `data:`, `javascript:`, `ftp:` and an address with no scheme do not match.
+  - Hosts: the rule's own domain, a `www.` form, a one-level subdomain and a deeper subdomain match; look-alike suffixes such as `notyoutube.com` and `youtube.com.example.com` do not; a trailing dot and capital letters are accepted; a Unicode host matches a rule stored in its Punycode form; an IPv4 address, an IPv6 literal and an empty host do not match.
+  - Port and user info: a port number is ignored; user info is ignored, and an address such as `https://youtube.com@other.com/shorts` is judged by `other.com`, so it does not match.
+  - Paths: `/shorts`, `/shorts/`, `/shorts/abc` and `/shortsXYZ` match because the comparison is a plain prefix; `/short`, `/watch`, `/a/shorts` and `/` do not; `/Shorts` does not because the comparison is case-sensitive; an address with no path counts as `/` and does not match; a percent-encoded path is compared in its encoded form.
+  - Query and fragment: `/shorts?x=1#t` matches; `/?next=/shorts` and `/#/shorts` do not.
+  - Unparseable text: an empty string, a host with a space in it, and a malformed address give no match and do not crash. A raw space in the path is percent-encoded by the parser and compared in its encoded form.
+  - `matchingRule`: the first matching rule in list order is returned when several match, `nil` comes back for an empty list and when none match, and a rule for a different domain later in the list is found.
+- **TabReloadDeciderTests** (expected values from [02-core-components.md](02-core-components.md) § TabReloadDecider):
+  - A tab on a blocked address is returned once, and an identical second call returns nothing while `remembered` still holds the address.
+  - A tab that leaves the blocked part (memory dropped) and comes back is returned again.
+  - A tab that moves from one blocked address to a different blocked address is returned again.
+  - Tabs that do not match are never returned and are not remembered; several matching tabs are returned together in input order.
+  - Memory is per process: the same tab ID in two processes is tracked separately, and a call for one process leaves the other's memory unchanged.
+  - A tab ID missing from the list loses its memory, so the same tab reappearing on the same blocked address is returned again.
+  - With an empty rule list nothing is returned and that process's memory is cleared, while other processes keep theirs.
+  - `forgetProcesses(except:)` drops the memory of processes outside the set and keeps the rest; `forgetAll()` drops everything.
 
 ---
 
@@ -83,6 +100,16 @@ Checks:
 6. `curl --max-time 5 https://www.youtube.com` fails to connect.
 7. Real browsers: the script opens `https://www.youtube.com` in Safari and in Chrome. It then reads each browser's current page through AppleScript where the browser allows it, and otherwise prints instructions so the person can confirm by eye that each shows a "can't connect" page.
 
+### Live tab-watcher test
+
+The tab watcher cannot be checked by `scripts/verify-install.sh`, because it needs a browser tab that changes address without loading a page. It has a manual harness that the main session runs against a built app:
+
+1. A sandbox daemon runs with one path rule (for example `youtube.com/shorts`).
+2. The built `SiteBlock.app` starts with `SITEBLOCK_SOCKET` pointing at that sandbox daemon, so the watcher receives the sandbox's path rules. macOS shows the Automation prompt the first time, and the test needs it answered with Allow.
+3. A separate, visible Chrome instance is driven over the Chrome DevTools Protocol (the remote-control interface Chrome offers when started with a debugging port). It loads an ordinary page, then calls `history.pushState` to move the same tab onto the blocked path without a page load. A second tab on an unblocked address is open for comparison.
+
+The test passes when the watcher reloads the first tab exactly once and leaves the other tabs alone. The sandbox daemon does not write the real managed preferences, so the check is on the reload, not on Chrome's block page.
+
 ---
 
 ## Security Considerations
@@ -92,12 +119,14 @@ Checks:
 - `state.json` is mode `0600` root-only, so other users cannot read the password hash.
 - The password is never logged, never written to disk in plain form, and not kept in memory after the check beyond the lifetime of the request.
 - `recoveryStart` uses the kernel-reported peer user ID, which the client cannot fake.
+- The tab watcher sends Apple Events only to browser processes the person has allowed under the Automation permission. It reads window IDs, tab IDs and tab addresses, and its only command is a tab reload. Its log lines name the rule that matched, not the tab's full address.
 
 ---
 
 ## Operations
 
 - Logs: `/Library/Logs/SiteBlock/siteblockd.log` and `watchdog.log`. Look for "hosts file repaired" (tampering or another app editing the file) and "reloaded" (a job was restored).
+- App log: the menu bar app writes to the macOS unified log with subsystem `com.nokal.siteblock.app` and category `tabs`. Look for "reloaded a ... tab on a blocked part of a site" (the tab watcher acted) and "permission to control ... denied" (the person refused the Automation permission).
 - Status: `siteblock status`.
 - Upgrade: pull the repository, run `scripts/build.sh`, then `sudo scripts/install.sh`.
 - Forgotten password: `sudo siteblock recover`, then wait 48 hours and set a new password.
@@ -113,4 +142,6 @@ Checks:
 - [ ] `sudo launchctl bootout system/com.nokal.siteblock.daemon` is undone within 5 seconds.
 - [ ] Unblocking needs the password and waits the full delay; moving the clock forward does not shorten it.
 - [ ] The menu bar app can set up a password, add a site, start and cancel an unblock, and change settings.
+- [ ] With a path rule and the Automation permission allowed, a Chrome tab that switches to the blocked part of a site without loading a page is reloaded once within about half a second, and other tabs are left alone.
+- [ ] With the Automation permission refused, the panel shows the permission banner and no tab is reloaded.
 - [ ] Rebooting keeps every block and countdown.

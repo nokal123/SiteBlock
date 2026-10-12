@@ -26,14 +26,18 @@ SiteBlock/
 ├── Design Plans/
 ├── Sources/
 │   ├── SiteBlockCore/        library: all policy logic (see 02)
+│   │   ├── TabRuleMatcher.swift     does a tab address fall under a path rule (see 02)
+│   │   └── TabReloadDecider.swift   which tabs to reload, each once per address (see 02)
 │   ├── siteblockd/           daemon + watchdog executable
 │   ├── siteblock/            CLI executable
 │   └── SiteBlockApp/         menu bar app executable
+│       ├── TabWatcher.swift         polls browser tabs and reloads blocked ones (see 03)
+│       └── ChromiumTabs.swift       Apple Events bridge to Chrome, Edge and Brave (see 03)
 ├── Tests/
 │   ├── SiteBlockCoreTests/   unit tests (Swift Testing)
 │   └── IntegrationTests/     runs the real siteblockd in sandbox mode
 ├── Resources/
-│   └── Info.plist            app bundle Info.plist template
+│   └── Info.plist            app bundle Info.plist template (includes the Apple Events usage text)
 └── scripts/
     ├── build.sh
     ├── test.sh
@@ -121,6 +125,7 @@ Both LaunchDaemon plists contain `Label`, `ProgramArguments`, `RunAtLoad` true, 
 2. Assemble `build/SiteBlock.app`:
    - `Contents/MacOS/SiteBlock` — the `SiteBlockApp` program.
    - `Contents/Info.plist` — from `Resources/Info.plist` with `CFBundleIdentifier` `com.nokal.siteblock.app`, `CFBundleName` `SiteBlock`, `CFBundleExecutable` `SiteBlock`, `LSUIElement` true, `LSMinimumSystemVersion` `14.0`, and the version.
+   - The template also carries `NSAppleEventsUsageDescription` = "SiteBlock checks the address of each open tab so a blocked part of a site closes as soon as you go to it." This is the sentence macOS shows in its prompt when the tab watcher first asks to control a browser (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher). Without the key, macOS refuses the app's Apple Events without asking. The app is signed ad hoc without the hardened runtime (Apple's stricter code-signing mode), so no entitlement is needed for Apple Events.
 3. Copy `siteblockd` and `siteblock` into `build/`.
 4. Sign all three with an ad-hoc signature (`codesign --force --sign -`), which marks them as unchanged since build. Apple Silicon Macs refuse to run unsigned programs, and an ad-hoc signature needs no Apple developer account.
 5. Print the paths of the results.
@@ -155,6 +160,8 @@ This adds the flag `--print-plist <daemon|watchdog|app>` to `siteblockd`, which 
 
 Running `install.sh` again replaces the programs and plists and restarts the jobs. The state file, including the block list, password and every countdown, survives. Countdowns lose only the time the daemon was stopped, which makes waits longer, never shorter.
 
+The ad hoc signature of the app changes with every build. After an upgrade, macOS may therefore ask again whether SiteBlock may control Chrome, Edge or Brave. Until the person answers, the tab watcher reads nothing from that browser, and a refusal makes the panel show the permission banner.
+
 ---
 
 ## Repairing an Install
@@ -187,7 +194,7 @@ Before zipping, the script checks every copied program with `codesign --verify -
 `.github/workflows/package.yml` is a GitHub Actions workflow (a script GitHub runs on its own machines) that runs on every push to `master` that touches `Sources/`, `Resources/`, `scripts/`, `Package.swift`, `Install SiteBlock.command` or the workflow itself, and can also be started by hand from the repository's Actions tab. It runs on a `macos-15` runner (Apple Silicon), in this order:
 
 1. Check out the code and print the macOS and Swift versions.
-2. Run `scripts/test.sh` (with Xcode present it runs plain `swift test`). A failing test stops the run, so a broken package is never published.
+2. Run `scripts/test.sh` (with Xcode present it runs plain `swift test`). A failing test stops the run, so a broken package is never published. The step also turns each failed test line into a GitHub error annotation (a red message attached to the run), up to the first 20. A failed test line is a line of the test output that contains `✘`. GitHub shows annotations on the public run page, while the full log can be read only by someone logged in to GitHub, so the failing test names are readable without logging in.
 3. Run `scripts/package.sh`.
 4. Keep the zip as a run artifact for 30 days.
 5. Delete the release tagged `latest` (and its tag) and create it again at the pushed commit with the new zip, using the `gh` command line and the run's own `GITHUB_TOKEN` (the workflow has `contents: write`).

@@ -80,6 +80,8 @@ final class StatusModel: ObservableObject {
     @Published private(set) var closeCount = 0
     /// Goes up by one every time the panel opens, so the add field can take keyboard focus again.
     @Published private(set) var openCount = 0
+    /// The sorted names of the running browsers (Chrome, Edge, Brave) that the person has not allowed SiteBlock to control. The tab watcher cannot close blocked parts of sites in those browsers, so the panel shows a banner while this is not empty and a path rule exists.
+    @Published private(set) var deniedBrowserNames: [String] = []
 
     /// How often to ask the daemon for status while the panel is open.
     private static let visiblePollSeconds = 1.0
@@ -109,9 +111,15 @@ final class StatusModel: ObservableObject {
     private var feedbackCounter = 0
     /// The timer that clears the current message.
     private var feedbackClearTask: Task<Void, Never>?
+    /// Watches browser tabs and reloads one that moved onto a blocked part of a site without loading a new page. It gets the path rules of every status snapshot that is applied, and reports the browsers that refused permission. It is created in `init` because its callback needs `self`.
+    private var tabWatcher: TabWatcher?
 
-    /// Creates the model and starts polling the daemon right away, so the menu bar icon is correct even before the panel is opened.
+    /// Creates the model, starts the tab watcher, and starts polling the daemon right away, so the menu bar icon is correct even before the panel is opened.
     init() {
+        // The watcher calls back on its own queue, so the new list is handed to the main actor. The model is held weakly, so a dropped model does not stay alive because of the watcher.
+        tabWatcher = TabWatcher { [weak self] names in
+            Task { @MainActor in self?.updateDeniedBrowserNames(names) }
+        }
         restartPolling()
     }
 
@@ -310,14 +318,28 @@ final class StatusModel: ObservableObject {
         }
     }
 
-    /// Stores a fresh status and marks the daemon as reachable, unless a newer reply was already applied.
+    /// Stores a fresh status and marks the daemon as reachable, unless a newer reply was already applied. A status identical to the one already shown is not stored again, so the panel is not redrawn for nothing.
     private func applyStatus(_ status: StatusSnapshot, order: Int, arrivedAt: ContinuousClock.Instant) {
         // Two requests can be in flight at once. If the older one answers last, its data is out of date and must not overwrite the newer data.
         guard order > lastAppliedRequest else { return }
         lastAppliedRequest = order
+        if connection != .connected { connection = .connected }
+        // Assigning a published value makes SwiftUI rebuild and re-measure the whole panel, even when the value is the same, which cost several percent of CPU every second while the panel was open. So an identical answer touches nothing. The arrival time stays paired with the old snapshot, because countdowns count down from that pair; while a countdown runs its seconds differ between answers, so those answers are applied.
+        guard status != snapshot else { return }
         snapshot = status
         snapshotInstant = arrivedAt
-        if connection != .connected { connection = .connected }
+        // Every applied snapshot carries the full list of path rules (including those waiting to unblock, which are still blocked), so the watcher always works from the daemon's latest list. An identical answer has the same rules, so skipping it above loses nothing.
+        tabWatcher?.setRules(Self.watchedRules(in: status))
+    }
+
+    /// The path rules of a status snapshot, in the form the tab watcher compares tab addresses with. An old daemon that reports no path rules gives an empty list.
+    private static func watchedRules(in status: StatusSnapshot) -> [WatchedPathRule] {
+        (status.blockedPaths ?? []).map { WatchedPathRule(domain: $0.domain, path: $0.path) }
+    }
+
+    /// Stores the browsers that refused permission, publishing only when the list actually changed so the panel does not redraw for nothing.
+    private func updateDeniedBrowserNames(_ names: [String]) {
+        if deniedBrowserNames != names { deniedBrowserNames = names }
     }
 
     /// Marks the daemon as unreachable, unless a newer reply was already applied.

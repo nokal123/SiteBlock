@@ -89,12 +89,14 @@ struct BlockingTests {
             try daemon.prepare(blocking: "reddit.com")
             let expected = daemon.hostsText()
             daemon.terminate()
+            // The first start logged a repair too (it wrote the section), so the boot repair is the next line, not just any line (see waitForLogCount).
+            let repairsBeforeRestart = daemon.logCount(of: "hosts file repaired")
             try writeText("151.101.1.140 reddit.com\n" + StandardHosts.text, to: daemon.hostsPath)
             try daemon.start(serve: false)
             let repaired = waitUntil(timeout: 3.0, interval: 0.02) { daemon.hostsText() == expected }
             #expect(repaired != nil, "the boot pass did not repair the file; now:\n\(daemon.hostsText())")
             try daemon.waitUntilServing()
-            #expect(daemon.logContains("hosts file repaired"), "03 § HostsEnforcer step 7: a change not caused by a command is logged")
+            #expect(daemon.waitForLogCount(of: "hosts file repaired", atLeast: repairsBeforeRestart + 1), "03 § HostsEnforcer step 7: a change not caused by a command is logged; log:\n\(daemon.logText())")
         }
     }
 
@@ -148,6 +150,8 @@ struct BlockingTests {
             try daemon.prepare(blocking: "reddit.com")
             let expected = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
             try #require(daemon.hostsText() == expected)
+            // The first pass logged a repair too, so the repair of this tampering is the next line, not just any line (see waitForLogCount).
+            let repairsBefore = daemon.logCount(of: "hosts file repaired")
             try tamper.apply(to: daemon.hostsPath, expected: expected)
             try #require(daemon.hostsText() != expected, "the tamper must change the file")
             let acceptable = tamper.acceptableRestoredTexts(expected: expected)
@@ -155,7 +159,7 @@ struct BlockingTests {
             #expect(took != nil, "not restored within 1 s; file now:\n\(daemon.hostsText())")
             let status = try daemon.status()
             #expect(status.hostsFileHealthy)
-            if tamper.expectsRepairedLogLine { #expect(daemon.logContains("hosts file repaired"), "log was:\n\(daemon.logText())") }
+            if tamper.expectsRepairedLogLine { #expect(daemon.waitForLogCount(of: "hosts file repaired", atLeast: repairsBefore + 1), "log was:\n\(daemon.logText())") }
         }
     }
 
@@ -190,10 +194,12 @@ struct BlockingTests {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             let expected = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            // The first pass logged a repair too, so the repair of the bypass line is the next line, not just any line (see waitForLogCount).
+            let repairsBefore = daemon.logCount(of: "hosts file repaired")
             try writeText(bypass + "\n" + expected, to: daemon.hostsPath)
             let took = waitUntil(timeout: 1.0, interval: 0.01) { daemon.hostsText() == expected }
             #expect(took != nil, "bypass line not removed within 1 s; file now:\n\(daemon.hostsText())")
-            #expect(daemon.logContains("hosts file repaired"), "03 § HostsEnforcer step 7: removing bypass lines is logged as a repair")
+            #expect(daemon.waitForLogCount(of: "hosts file repaired", atLeast: repairsBefore + 1), "03 § HostsEnforcer step 7: removing bypass lines is logged as a repair; log:\n\(daemon.logText())")
         }
     }
 

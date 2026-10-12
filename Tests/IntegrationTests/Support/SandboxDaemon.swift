@@ -258,6 +258,11 @@ final class SandboxDaemon {
         logText().components(separatedBy: text).count - 1
     }
 
+    // Waits up to `seconds` for the log to hold at least `count` copies of the text, and says whether it does. Use this instead of `logContains` when an older copy of the same line may already be there: the daemon renames a repaired file into place first and logs just after, and its very first pass logs "hosts file repaired" too, so `logContains` is already true before the repair a test is waiting for. Take `logCount(of:)` before the change and wait for that count plus one.
+    func waitForLogCount(of text: String, atLeast count: Int, within seconds: Double = 1.5) -> Bool {
+        waitUntil(timeout: seconds, interval: 0.02) { logCount(of: text) >= count } != nil
+    }
+
     // The saved state file as a JSON object, or nil when it is missing or not an object.
     func stateObject() -> NSDictionary? { readJSONObject(statePath) }
 

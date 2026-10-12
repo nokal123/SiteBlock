@@ -44,7 +44,7 @@ struct SettingsView: View {
             Divider()
             ScrollView {
                 VStack(spacing: 12) {
-                    if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback) { BannersView(model: model, snapshot: snapshot) }
+                    if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback, deniedBrowserNames: model.deniedBrowserNames) { BannersView(model: model, snapshot: snapshot) }
                     delaySection
                     passwordSection
                     if snapshot.adultFilterEnabled == true { adultFilterSection }

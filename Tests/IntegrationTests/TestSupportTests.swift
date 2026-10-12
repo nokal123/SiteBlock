@@ -95,4 +95,36 @@ struct TestSupportTests {
         #expect(Registry.contains(pid: second))
         #expect(!Registry.contains(pid: first))
     }
+
+    // waitForLogCount must wait for the NEW line. An older copy of the same text satisfies `logContains` at once but must not satisfy a count that asks for one more; a line written later is seen as soon as it is there; a line that never comes ends the wait at the time limit.
+    @Test func waitForLogCountWaitsForTheNewLineAndNotJustAnyLine() throws {
+        try withDaemon(start: false) { daemon in
+            let line = "hosts file repaired"
+            try writeText("first pass: \(line)\n", to: daemon.logPath)
+            #expect(daemon.logCount(of: line) == 1)
+            #expect(daemon.logContains(line), "the older line is already there, which is why logContains cannot tell a new repair from the first one")
+
+            // Enough copies already: answers at once.
+            let immediate = Stopwatch()
+            #expect(daemon.waitForLogCount(of: line, atLeast: 1, within: 2.0))
+            #expect(immediate.elapsed < 1.5)
+
+            // One more copy is wanted and none comes: the wait lasts the whole limit and says no.
+            let missing = Stopwatch()
+            #expect(!daemon.waitForLogCount(of: line, atLeast: 2, within: 0.4))
+            #expect(missing.elapsed >= 0.35, "gave up after \(missing.elapsed) s, before the 0.4 s limit")
+
+            // The second copy is written 0.4 s from now: the wait must not return before it, and must see it soon after. The writer is a thread of its own, because
+            // a dispatch queue block can wait many seconds for a free thread while the rest of the suite keeps the shared pool busy. The wait limit is long for the same reason.
+            let path = daemon.logPath
+            Thread.detachNewThread {
+                Thread.sleep(forTimeInterval: 0.4)
+                try? writeText("first pass: \(line)\nsecond: \(line)\n", to: path)
+            }
+            let late = Stopwatch()
+            #expect(daemon.waitForLogCount(of: line, atLeast: 2, within: 20.0))
+            #expect(late.elapsed >= 0.35, "returned after \(late.elapsed) s although the second line was written at 0.4 s")
+            #expect(daemon.logCount(of: line) == 2)
+        }
+    }
 }

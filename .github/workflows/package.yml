@@ -45,8 +45,15 @@ jobs:
 
       # Runs the unit and integration tests. The integration tests start the real daemon in sandbox
       # mode (a temporary folder in place of /etc/hosts and the system folders), so they need no root.
+      # Each failed test line (marked ✘) also becomes an error annotation, because annotations show on
+      # the public run page, while the full log can only be read by someone logged in to GitHub.
       - name: Run the tests
-        run: scripts/test.sh
+        run: |
+          set -o pipefail
+          scripts/test.sh 2>&1 | tee test-output.log || {
+            grep '✘' test-output.log | head -20 | while IFS= read -r line; do echo "::error title=Failed test::$line"; done
+            exit 1
+          }
 
       # Builds the release programs, signs them ad hoc and writes dist/SiteBlock-<version>.zip.
       - name: Build the package

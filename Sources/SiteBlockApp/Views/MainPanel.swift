@@ -92,7 +92,7 @@ private struct HomeView: View {
             PanelHeader(delaySeconds: snapshot.delaySeconds)
             Divider()
             VStack(alignment: .leading, spacing: 12) {
-                if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback) { BannersView(model: model, snapshot: snapshot) }
+                if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback, deniedBrowserNames: model.deniedBrowserNames) { BannersView(model: model, snapshot: snapshot) }
                 if needsNewPassword {
                     NoPasswordBanner(model: model, isChoosing: passwordForm == .newPassword, choose: { passwordForm = .newPassword }, cancel: { passwordForm = nil })
                 }

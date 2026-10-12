@@ -55,6 +55,8 @@ struct HostsEnforcementTests {
             try daemon.prepare(blocking: "reddit.com")
             #expect(try daemon.status().hostsFileHealthy, "healthy before anything is wrong")
             let expected = daemon.hostsText()
+            // The first pass logged a repair too, so the repair after the permissions come back is the next line, not just any line (see waitForLogCount).
+            let repairsBefore = daemon.logCount(of: "hosts file repaired")
             let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: daemon.hostsPath))
             defer {
                 try? handle.close()
@@ -80,7 +82,7 @@ struct HostsEnforcementTests {
             #expect(repaired != nil, "the file was not repaired after the permissions came back; file now:\n\(daemon.hostsText())")
             let healthy = waitUntil(timeout: 1.5, interval: 0.02) { (try? daemon.status().hostsFileHealthy) == true }
             #expect(healthy != nil, "hostsFileHealthy stayed false after the file was repaired")
-            #expect(daemon.logContains("hosts file repaired", within: 1.0))
+            #expect(daemon.waitForLogCount(of: "hosts file repaired", atLeast: repairsBefore + 1, within: 1.0), "log:\n\(daemon.logText())")
         }
     }
 }

@@ -99,10 +99,12 @@ struct PrivateRelayTests {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             let expected = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
+            // The first pass of the daemon logged a repair too, so the repair of the bypass line is the NEXT line, not just any line (see waitForLogCount).
+            let repairsBefore = daemon.logCount(of: "hosts file repaired")
             try writeText(bypass + "\n" + expected, to: daemon.hostsPath)
             let took = waitUntil(timeout: 1.0, interval: 0.01) { daemon.hostsText() == expected }
             #expect(took != nil, "bypass line not removed within 1 s; file now:\n\(daemon.hostsText())")
-            #expect(daemon.logContains("hosts file repaired"))
+            #expect(daemon.waitForLogCount(of: "hosts file repaired", atLeast: repairsBefore + 1), "the repair was not logged; log:\n\(daemon.logText())")
         }
     }
 
@@ -115,7 +117,8 @@ struct PrivateRelayTests {
             try writeText(userLine + "\n" + ExpectedHosts.idleText, to: daemon.hostsPath)
             let took = waitUntil(timeout: 1.0, interval: 0.01) { daemon.hostsText() == ExpectedHosts.idleText }
             #expect(took != nil, "bypass line not removed within 1 s; file now:\n\(daemon.hostsText())")
-            #expect(daemon.logContains("hosts file repaired"))
+            // The daemon renames the repaired file into place first and writes its log line just after, so a test that has seen the file change must wait for the new line before it counts. (The first pass logged a repair too, so a plain "the log contains the line" check is already true and waits for nothing.)
+            #expect(daemon.waitForLogCount(of: "hosts file repaired", atLeast: repairsBefore + 1), "the repair was not logged; log:\n\(daemon.logText())")
             #expect(daemon.logCount(of: "hosts file repaired") == repairsBefore + 1)
         }
     }

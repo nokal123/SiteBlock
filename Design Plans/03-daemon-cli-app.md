@@ -11,6 +11,14 @@
 6. [Uninstaller](#6-uninstaller-sourcessiteblockduninstallerswift)
 7. [siteblock CLI](#7-siteblock-cli-sourcessiteblockmainswift)
 8. [SiteBlock.app Menu Bar App](#8-siteblockapp-menu-bar-app-sourcessiteblockapp)
+9. [ChromePolicyEnforcer](#9-chromepolicyenforcer-sourcessiteblockdchromepolicyenforcerswift)
+10. [AppGuard](#10-appguard-sourcessiteblockdappguardswift)
+11. [DNSEnforcer](#11-dnsenforcer-sourcessiteblockddnsenforcerswift)
+12. [Adult filter in the app and CLI](#12-adult-filter-in-the-app-and-cli)
+13. [BrowserPolicyEnforcer](#13-browserpolicyenforcer-sourcessiteblockdbrowserpolicyenforcerswift)
+14. [Path rules in the app and CLI](#14-path-rules-in-the-app-and-cli)
+15. [TabWatcher](#15-tabwatcher-sourcessiteblockapptabwatcherswift)
+16. [ChromiumTabs](#16-chromiumtabs-sourcessiteblockappchromiumtabsswift)
 
 ---
 
@@ -172,9 +180,11 @@ siteblock version
 
 **Files:**
 - `SiteBlockApp.swift` — the `@main` `App` with one `MenuBarExtra` using `.menuBarExtraStyle(.window)` (a panel that drops down from the icon). The icon is the SF Symbol (one of Apple's built-in icons) `shield.lefthalf.filled`, or `shield.slash` when the daemon cannot be reached.
-- `StatusModel.swift` — an `ObservableObject` that holds the latest `StatusSnapshot`, the connection state and the last error. It polls `status` once per second while the panel is open and every 30 seconds otherwise, on a background queue, and publishes on the main queue. It exposes one async method per command.
+- `StatusModel.swift` — an `ObservableObject` that holds the latest `StatusSnapshot`, the connection state and the last error. It polls `status` once per second while the panel is open and every 30 seconds otherwise, on a background queue, and publishes on the main queue. An answer identical to the snapshot already shown is not published again, and its arrival time is not stored either, because every published change makes SwiftUI rebuild and re-measure the whole panel; so an open panel with nothing changing does no drawing work between polls. It exposes one async method per command. It owns the `TabWatcher`: on every new snapshot it applies, it passes `snapshot.blockedPaths` (mapped to `WatchedPathRule` values of `domain` and `path`) to `TabWatcher.setRules`, and it republishes the watcher's `deniedBrowserNames` on the main actor for the permission banner.
 - `Views/MainPanel.swift` — the panel layout, 440 points wide. The blocked list is a box sized to show exactly four closed rows (measured from a row on screen, plus the gaps between them); more sites scroll inside it, so the panel never changes size as sites are added.
-- `Views/SetupView.swift`, `Views/BlockedListView.swift`, `Views/SettingsView.swift`.
+- `Views/SetupView.swift`, `Views/BlockedListView.swift`, `Views/SettingsView.swift`, `Views/BannersView.swift`.
+- `TabWatcher.swift` — reloads a browser tab that moved to a blocked part of a site without loading a page (see § 15).
+- `ChromiumTabs.swift` — the Apple Events bridge to Chrome, Edge and Brave that `TabWatcher` uses (see § 16).
 
 **Panel states:**
 1. **Not running:** "The SiteBlock service isn't running." and the Terminal command to reinstall.
@@ -187,6 +197,7 @@ siteblock version
    - Pressing "Unblock…" replaces the row's button with a password field and "Start countdown" and "Cancel" buttons.
    - A footer with "Settings". There is no Quit button: the app always stays in the menu bar.
    - Banners at the top for a pending delay change, uninstall, recovery or lockout, each with its countdown and a cancel button where cancelling is allowed.
+   - An Automation-permission banner. The Automation permission is the macOS setting (System Settings → Privacy & Security → Automation) that lists which apps may control other apps. The banner shows while at least one path rule exists and `TabWatcher.deniedBrowserNames` is not empty. It reads "Let SiteBlock control <names> so blocked parts of sites close right away.", where the names are the refusing browsers' display names joined by `ListFormatter` ("Google Chrome", "Brave and Google Chrome", or "Brave, Google Chrome, and Microsoft Edge"). Its "Open Settings" button opens `x-apple.systempreferences:com.apple.preference.security?Privacy_Automation`. It uses the same style as the other banners (`Views/BannersView.swift`).
 3. **Settings:** current delay with a picker of 5 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 6 hours, 12 hours, 24 hours and 7 days plus a password field; a change-password form; and an "Uninstall SiteBlock…" button that asks for the password and explains that the uninstall waits 48 hours, or the unblock delay if that is longer, with every site still blocked during the wait.
 
 **Behavioral notes:** The app holds no state of its own beyond what is on screen; the daemon is always the source of truth. Closing the app does not stop any blocking, and the app does not stay closed: its LaunchAgent has `KeepAlive` set, so launchd starts it again whenever it exits, and the daemon keeps that LaunchAgent loaded and the app bundle in place (see § AppGuard). The app is launched at login by a LaunchAgent (see [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs), and it sets `LSUIElement` so it has no Dock icon.
@@ -195,7 +206,7 @@ siteblock version
 
 ### 9. ChromePolicyEnforcer (`Sources/siteblockd/ChromePolicyEnforcer.swift`)
 
-> Generalized by § 13 BrowserPolicyEnforcer, which applies the same file handling to Edge, Brave and Firefox; Chrome keeps the keys described here, and its `URLBlocklist` now also carries path-rule entries.
+> Generalized by § 13 BrowserPolicyEnforcer, which applies the same file handling to Edge, Brave and Firefox; Chrome keeps the keys described here, and its `URLBlocklist` carries path-rule entries as well as whole sites.
 
 **Purpose:** Keeps Chrome's mandatory `URLBlocklist` policy equal to SiteBlock's block list, so Chrome refuses blocked sites even in windows whose traffic goes through a proxy and never touches `/etc/hosts`. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works.
 
@@ -274,7 +285,7 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 
 ### 13. BrowserPolicyEnforcer (`Sources/siteblockd/BrowserPolicyEnforcer.swift`)
 
-**Purpose:** Writes SiteBlock's protected policy for every supported browser, so each one refuses blocked sites and path rules itself and uses the Mac's own name lookups. It replaces the Chrome-only enforcer, with the same file rules: for each target, a machine-wide file and a per-console-user file under `/Library/Managed Preferences` (`root:wheel`, folders `0755`, files `0644`), atomic random-temp writes, other keys kept, SiteBlock's managed keys replaced, a file deleted when nothing else is left, a rewrite when a managed key differs in value or type or the mode or owner is wrong or the path is not a plain file, `O_NONBLOCK` opens, and "browser policy repaired (<target>)" logged for tampering.
+**Purpose:** Writes SiteBlock's protected policy for every supported browser, so each one refuses blocked sites and path rules itself and uses the Mac's own name lookups. It uses the same file rules as § 9: for each target, a machine-wide file and a per-console-user file under `/Library/Managed Preferences` (`root:wheel`, folders `0755`, files `0644`), atomic random-temp writes, other keys kept, SiteBlock's managed keys replaced, a file deleted when nothing else is left, a rewrite when a managed key differs in value or type or the mode or owner is wrong or the path is not a plain file, `O_NONBLOCK` opens, and "browser policy repaired (<target>)" logged for tampering.
 
 **Settings cache refresh (production):** browsers do not read these files themselves; they ask `cfprefsd`, the macOS service that reads and caches app settings, and `cfprefsd` is not told when a file under `/Library/Managed Preferences` is rewritten directly, so without help it keeps serving the copy it read first (a later block or filter key would never reach the browsers). After any pass that changed a file, the enforcer stops the console user's `cfprefsd` with `/usr/bin/pkill -x -U <uid> cfprefsd`; launchd starts a fresh one on the next request, which reads the files again, and running browsers pick the change up on their next policy reload. A failure is ignored.
 
@@ -299,3 +310,63 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 - `siteblock unblock <text>` and `siteblock cancel <text>` — act on the path rule when the text has a path, otherwise on the site.
 - `siteblock status` — prints "Blocked parts of sites (N):" with one line per rule, after the sites.
 
+**Sites that change address without loading a page:** the browsers apply path rules when a page loads. The menu bar app's tab watcher also reloads a Chrome, Edge or Brave tab that moves to a blocked part of a site inside an already-open page, so the browser then shows its block page. See § 15 TabWatcher and § 16 ChromiumTabs.
+
+---
+
+### 15. TabWatcher (`Sources/SiteBlockApp/TabWatcher.swift`)
+
+**Purpose:** Catches a tab that moves to a blocked part of a site without loading a page. Chrome, Edge, Brave and Firefox check their block lists (`URLBlocklist`, `WebsiteFilter`) only when a page loads. Some sites change the address inside a page that is already open, using the browser's `history.pushState` feature (a way for a page to change the address bar without a page load). YouTube does this when you are on youtube.com and tap Shorts: the address becomes `youtube.com/shorts/...`, but no page load happens, so a path rule such as `youtube.com/shorts` is not applied. Browser policy cannot change this, so the watcher reads tab addresses from outside the browser. While at least one path rule exists and at least one supported browser is running, it reads the address of every open tab in Chrome, Edge and Brave every 0.5 seconds. When a tab's address matches a path rule and the watcher has not already acted on that tab at that address, it reloads that tab once. A reload is a real page load, so the browser's own `URLBlocklist` then shows its block page.
+
+**Why it lives in the menu bar app:** the watcher sends Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action; AppleScript is built on it) to the user's browsers. Those events must come from an app in the user's own login session, and macOS asks the user for permission for each sending app. The menu bar app runs as the logged-in user and is kept running by its LaunchAgent, so it hosts the watcher. The root daemon cannot send them.
+
+**Ownership and scheduling:** `StatusModel` owns the `TabWatcher`. It runs on its own serial background queue with a repeating timer every 0.5 seconds (leeway 0.1 seconds). A tick that is still running when the next one is due makes that next tick be skipped; ticks are never queued behind each other.
+
+**Inputs and outputs:**
+- `func setRules(_ rules: [WatchedPathRule])` — `StatusModel` calls it every time it applies a new snapshot, passing `snapshot.blockedPaths` mapped to `domain` and `path`. The daemon's list includes rules that are waiting to unblock, which are still blocked, so they are watched too. A rule added in the app reaches the watcher at once, because the app refreshes the status after each command. A rule added from the `siteblock` command line reaches it on the next status poll, which is within 30 seconds while the panel is closed.
+- `deniedBrowserNames: [String]` — the sorted display names of running supported browsers whose Automation permission is denied. The watcher publishes it to `StatusModel` on the main actor whenever it changes, and the panel shows the permission banner from it (see § 8, Panel states).
+
+**Dependencies:** `ChromiumTabs` (§ 16) for all browser access, and `TabReloadDecider` and `TabRuleMatcher` from `SiteBlockCore` ([02-core-components.md](02-core-components.md) § TabReloadDecider, § TabRuleMatcher) for every decision. The watcher itself keeps one `TabReloadDecider` on its queue.
+
+**Each tick, in order:**
+1. When there are no rules, clear the decider, end the App Nap activity (step 3), send no Apple Events, and stop.
+2. List the running supported browsers with `ChromiumTabs.runningBrowsers()`. When none is running, forget all process memory in the decider, report no denied browsers, and stop. The activity stays held, so the first check after a browser starts is not delayed.
+3. Hold one `ProcessInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Checking browser tabs for blocked parts of sites")` for as long as at least one rule exists, and end it when there are none. App Nap is the macOS feature that slows the timers of apps that have no visible window; without the activity it would delay these checks by many seconds.
+4. For each browser process, look up its permission. The first time a bundle identifier is seen during an app run, call `ChromiumTabs.permission(pid:ask: true)`, which shows the macOS prompt if the person has never answered. When the answer is denied, check again with `ask: false` at most every 10 seconds, so turning the permission on later in System Settings takes effect without restarting the app. Only processes whose permission is `.allowed` are read.
+5. Read the tabs of each allowed process with `ChromiumTabs.readTabs(pid:)`. On an error (a timeout, the browser quitting, the permission being revoked), skip that process for this tick and keep its memory, which the decider does automatically because the process is simply not passed to it.
+6. Ask the decider which tabs to reload. For each one, read that tab's current address again with `ChromiumTabs.currentURL(pid:windowID:tabID:)`, and reload it with `ChromiumTabs.reload(pid:windowID:tabID:)` only when that address still matches a rule. The second read keeps the watcher from reloading a tab that has already moved on since the list was read. Errors from these calls are ignored.
+7. Log each reload with `os.Logger(subsystem: "com.nokal.siteblock.app", category: "tabs")` at info level: "reloaded a <browser name> tab on a blocked part of a site: <rule display text>". The message names the rule, not the full address. Changes of permission are logged as "permission to control <name>: allowed" or "permission to control <name>: denied".
+8. Forget the decider's memory for processes that are no longer running (`forgetProcesses(except:)`).
+
+**Cost:** the watcher sends no Apple Events at all unless a path rule exists and a supported browser is running. Otherwise each tick costs, per browser process, one event plus three per window (about ten events a second for one window). Each event costs the browser well under a millisecond, so the CPU and battery cost is negligible.
+
+**Limits:** the person can refuse the permission, or turn it off later under System Settings → Privacy & Security → Automation. The watcher then does nothing for that browser, path rules there apply only when a page loads, and the banner says so. The blocked part of a site can show for up to about half a second before the tab reloads. Firefox has no Apple Events access to its tabs, so a part of a site that opens without a page load in Firefox is caught only on the next reload or a direct open. Safari has no path rules. See [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits.
+
+---
+
+### 16. ChromiumTabs (`Sources/SiteBlockApp/ChromiumTabs.swift`)
+
+**Purpose:** The Apple Events bridge to the Chromium-based browsers. It lists the running browsers, checks the Automation permission for each, reads every tab's identifiers and address, reads one tab's current address, and reloads one tab. It has no policy of its own; `TabWatcher` decides what to do with what it returns.
+
+**Dependencies:** Foundation, AppKit and CoreServices only, and no other app file, so a test harness can compile this file on its own.
+
+**Supported browsers** (bundle identifier, then display name):
+- `com.google.Chrome` — "Google Chrome"
+- `com.microsoft.edgemac` — "Microsoft Edge"
+- `com.brave.Browser` — "Brave"
+
+All three use Chromium's scripting dictionary (the list of objects and commands a Mac app exposes to Apple Events), so the same codes work for each. The codes come from `/Applications/Google Chrome.app/Contents/Resources/scripting.sdef`: window class `cwin`, tab class `CrTb`, property `id` = `ID  `, property `URL` = `URL `, and the `reload` command with event class `CrSu` and event ID `Rlod`.
+
+**Addressing by process:** every running process of those bundle identifiers is addressed by its process ID, through a target descriptor made with `NSAppleEventDescriptor(processIdentifier:)`. This matters because a person can run more than one Chrome at once (for example a second Chrome started with its own `--user-data-dir`, which is a separate process), and an Apple Event addressed by app name reaches only one of them.
+
+**Types:**
+- `AutomationPermission` — `.allowed`, `.denied`, `.notAsked`, `.unavailable`.
+
+**Key Methods:**
+- `static func runningBrowsers() -> [(pid: pid_t, bundleID: String, name: String)]` — built from `NSWorkspace.shared.runningApplications`, skipping terminated applications.
+- `static func permission(pid: pid_t, ask: Bool) -> AutomationPermission` — calls `AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, ask)`. A result of `noErr` is `.allowed`, `errAEEventNotPermitted` (-1743) is `.denied`, `errAEEventWouldRequireUserConsent` (-1744) is `.notAsked`, and anything else (for example `procNotFound`, -600) is `.unavailable`. With `ask: true` the call shows the macOS prompt "SiteBlock wants access to control Google Chrome" the first time and blocks until the person answers, so `TabWatcher` calls it only on its background queue.
+- `static func readTabs(pid: pid_t) throws -> [(windowID: String, tabID: String, url: String)]` — sends `get id of every window`. Then, for each window ID W, it sends `get id of every tab of window id W`, then `get URL of every tab of window id W`, then `get id of every tab of window id W` again. A window's tabs are used only when the two ID lists are equal and the address list has the same count, which shows that IDs and addresses line up. A tab opened, closed or moved in between makes that window be skipped for the tick. IDs may come back as integers or as text; they are stored in their text form.
+- `static func currentURL(pid: pid_t, windowID: String, tabID: String) throws -> String` — sends `get URL of tab id T of window id W`.
+- `static func reload(pid: pid_t, windowID: String, tabID: String) throws` — sends the `CrSu`/`Rlod` event with the direct object `tab id T of window id W`.
+
+**Event construction:** object specifiers are `NSAppleEventDescriptor` records of type `obj ` with the keys `want`, `from`, `form` and `seld`. They use `formUniqueID` (`ID  `) for "window id W" and "tab id T", `formAbsolutePosition` with `kAEAll` for "every", and `formPropertyID` for properties. Events are sent with `sendEvent(options: [.waitForReply], timeout: 2)`, so each event waits at most 2 seconds. An ID used in a specifier is sent back with the same descriptor type it arrived in, so an ID that came back as an integer goes out as an integer.
