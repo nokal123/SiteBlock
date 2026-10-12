@@ -263,6 +263,6 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 
 ### 12. Adult filter in the app and CLI
 
-**App (Settings):** an informational "Adult content filter: always on" section, saying that SiteBlock blocks adult websites in every browser and that only uninstalling SiteBlock removes it. There is no toggle.
+**App (Settings):** an informational "Adult content filter: always on" section with one sentence: "Blocks all adult content across every browser and app. To remove it, uninstall SiteBlock." There is no toggle. (The filter's limits are documented in the README and § Threat Model, not in the app.)
 
 **CLI:** `siteblock status` prints "Adult content filter: always on". There is no command to change it.

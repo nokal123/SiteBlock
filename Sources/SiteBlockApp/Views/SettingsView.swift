@@ -183,12 +183,8 @@ struct SettingsView: View {
     /// The information box about the adult content filter. It has no controls: the filter is always on, and only uninstalling SiteBlock removes it. The box is left out when the SiteBlock service is an older version that does not report the filter.
     private var adultFilterSection: some View {
         SectionCard(title: "Adult content filter: always on") {
-            Text("SiteBlock blocks adult websites in every browser, including sites that are not on your list. It uses the family DNS servers from Cloudflare, and it turns on SafeSearch and the adult-site filter in Chrome. It has no switch and no password. It is removed only by uninstalling SiteBlock.")
+            Text("Blocks all adult content across every browser and app. To remove it, uninstall SiteBlock.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("A VPN that supplies its own DNS servers can bypass the DNS part.")
-                .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
