@@ -12,7 +12,7 @@ Three programs make this work:
 - A second copy of `siteblockd` runs as a watchdog. The service and the watchdog each restart the other if it is stopped.
 - `SiteBlock.app` (the shield icon in the menu bar) and the `siteblock` Terminal command are how you control it.
 
-SiteBlock also keeps iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers) turned off, for as long as SiteBlock is installed. Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block, and it would also skip the adult content filter described below. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. SiteBlock also writes your blocked sites into Chrome's own block list, a setting Chrome normally uses on company computers. Chrome then refuses those sites itself, in every window and profile, even in a Chrome window that sends its traffic through a proxy or SSH tunnel and so never checks `/etc/hosts`. Chrome's menu always shows "Managed by your organization"; that only refers to SiteBlock's settings.
+SiteBlock also keeps iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers) turned off, for as long as SiteBlock is installed. Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block, and it would also skip the adult content filter described below. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. SiteBlock also writes your blocked sites into Chrome's own block list, a setting Chrome normally uses on company computers. Chrome then refuses those sites itself, in every window and profile, even in a Chrome window that sends its traffic through a proxy or SSH tunnel and so never checks `/etc/hosts`. Chrome's menu always shows "Managed by your organization"; that only refers to SiteBlock's settings. Microsoft Edge, Brave and Firefox get the same protected block list, and Firefox's own encrypted name lookups (DNS-over-HTTPS), which would otherwise skip `/etc/hosts`, are switched off and locked.
 
 A site you block also blocks its common variants, because the hosts file cannot use wildcards. Blocking `youtube.com` also blocks `www.youtube.com`, `m.youtube.com`, `youtu.be`, `music.youtube.com`, YouTube Kids, and the servers that hold YouTube's thumbnails and page files.
 
@@ -44,6 +44,8 @@ To build one yourself instead, run `scripts/package.sh`. It builds SiteBlock and
 
 **Block a site:** open the menu bar panel, type the site (for example `youtube.com`, or paste a full link) and press Block. Blocking never needs the password and takes effect at once. A tab that was already open on the site may keep working for a minute or two until the browser closes its existing connection; reloading after that shows the block.
 
+**Block part of a site:** type a path after the site name, such as `youtube.com/shorts`, or paste a link to the page you want gone. The panel then offers "Only this part" (already selected) and "Whole site". "Only this part" blocks every address on that site whose path starts with what you typed, such as `youtube.com/shorts/abc`, and leaves the rest of the site open. In Terminal, `siteblock add youtube.com/shorts` does the same, and `siteblock add --whole-site <link>` blocks the whole site instead. Blocked parts have their own list in the panel and unblock the same way as sites, with the password and then the waiting period. Two limits apply. Only the browsers' own block lists can block part of a site, so this works in Chrome, Edge, Brave and Firefox, and Safari can only block whole sites. And a browser checks its block list when a page loads, so a site that switches pages without loading a new one (YouTube does this when you tap a Short on its home page) is caught only when you reload or open the address directly.
+
 **Unblock a site:** press "Unblock…" next to it and enter the password. The site stays blocked for the waiting period and then opens. While it waits, the row says "Still blocked" with a countdown, and "Keep blocked" cancels the unblock without a password.
 
 **Change the waiting period:** open Settings. A longer wait applies at once. A shorter wait only takes effect after the current wait has passed, so it can't be shortened on impulse.
@@ -53,6 +55,7 @@ The Terminal command does all of the same things:
 ```
 siteblock status
 siteblock add youtube.com
+siteblock add youtube.com/shorts
 siteblock unblock youtube.com
 siteblock cancel youtube.com
 siteblock delay 2h
@@ -71,7 +74,7 @@ After 48 hours the SiteBlock password is cleared and you can set a new one. Your
 
 ## Uninstall
 
-Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait 48 hours (or your unblock delay, if you have set it longer than that) before removing SiteBlock. Every site stays blocked during the wait. When it ends, SiteBlock removes its background service, the menu bar app, its lines in `/etc/hosts` and its settings in Chrome, and puts your original DNS servers back. `siteblock uninstall --cancel` stops a pending uninstall.
+Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait 48 hours (or your unblock delay, if you have set it longer than that) before removing SiteBlock. Every site stays blocked during the wait. When it ends, SiteBlock removes its background service, the menu bar app, its lines in `/etc/hosts` and its settings in Chrome, Edge, Brave and Firefox, and puts your original DNS servers back. `siteblock uninstall --cancel` stops a pending uninstall.
 
 ## What SiteBlock can and cannot stop
 

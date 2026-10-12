@@ -47,8 +47,7 @@
 17. `Sources/siteblockd/HostsEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § HostsEnforcer
 18. `Sources/siteblockd/LaunchdGuard.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § LaunchdGuard and Watchdog
 19. `Sources/siteblockd/LaunchdPlists.swift` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs
-19a. `Sources/siteblockd/ChromePolicyEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromePolicyEnforcer
-19b. `Sources/SiteBlockCore/ChromePolicy.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromePolicyEnforcer
+19b. `Sources/SiteBlockCore/ChromePolicy.swift`, `Sources/SiteBlockCore/BrowserPolicy.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer (and § 9 for the Chrome keys)
 19c. `Sources/siteblockd/AppGuard.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § AppGuard
 19e. `Sources/SiteBlockCore/DNSProbePacket.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)
 19f. `Sources/SiteBlockCore/FamilyDNSProbe.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)

@@ -79,6 +79,23 @@ public struct BlockedSite: Codable, Equatable, Sendable {
     }
 }
 
+/// One path rule: the start of a path on a site that stays blocked while the rest of the site stays open, for example `/shorts` on youtube.com. Only the browsers' own block lists can enforce it; the hosts file can only block whole names.
+public struct BlockedPath: Codable, Equatable, Sendable {
+    /// The normalized base domain, for example youtube.com.
+    public var domain: String
+    /// The path prefix, starting with "/", for example /shorts. Its case is kept, because paths are case-sensitive.
+    public var path: String
+    /// Set when an unblock was approved; when it reaches zero the rule is removed.
+    public var pendingUnblock: Countdown?
+
+    /// Creates a path rule record.
+    public init(domain: String, path: String, pendingUnblock: Countdown? = nil) {
+        self.domain = domain
+        self.path = path
+        self.pendingUnblock = pendingUnblock
+    }
+}
+
 /// A requested shorter unblock delay that has not taken effect yet.
 public struct PendingDelayChange: Codable, Equatable, Sendable {
     /// The shorter delay that will apply when the countdown ends.
@@ -120,9 +137,11 @@ public struct PersistedState: Codable, Equatable, Sendable {
     public var uninstalling: Bool
     /// For each network service (keyed by its SystemConfiguration service ID), the DNS servers it had before SiteBlock replaced them with the family servers; an empty list means the service had none set by hand. Written the first time a service is overridden and used only by the uninstaller to put the originals back. Nil until the first override, and nil in any state file written before the adult content filter existed.
     public var savedDNS: [String: [String]]?
+    /// Every path rule, in the order added. Nil until the first rule is added, and nil in any state file written before path rules existed.
+    public var blockedPaths: [BlockedPath]?
 
     /// Creates a state record from every field.
-    public init(version: Int = PersistedState.currentVersion, passwordHash: PasswordHash? = nil, blocked: [BlockedSite] = [], delaySeconds: Int, pendingDelayChange: PendingDelayChange? = nil, pendingUninstall: Countdown? = nil, recovery: Countdown? = nil, failedAttempts: Int = 0, lockout: Countdown? = nil, uninstalling: Bool = false, savedDNS: [String: [String]]? = nil) {
+    public init(version: Int = PersistedState.currentVersion, passwordHash: PasswordHash? = nil, blocked: [BlockedSite] = [], delaySeconds: Int, pendingDelayChange: PendingDelayChange? = nil, pendingUninstall: Countdown? = nil, recovery: Countdown? = nil, failedAttempts: Int = 0, lockout: Countdown? = nil, uninstalling: Bool = false, savedDNS: [String: [String]]? = nil, blockedPaths: [BlockedPath]? = nil) {
         self.version = version
         self.passwordHash = passwordHash
         self.blocked = blocked
@@ -134,14 +153,15 @@ public struct PersistedState: Codable, Equatable, Sendable {
         self.lockout = lockout
         self.uninstalling = uninstalling
         self.savedDNS = savedDNS
+        self.blockedPaths = blockedPaths
     }
 
     /// The keys of the stored JSON; spelled out so `init(from:)` can be written by hand.
     private enum CodingKeys: String, CodingKey {
-        case version, passwordHash, blocked, delaySeconds, pendingDelayChange, pendingUninstall, recovery, failedAttempts, lockout, uninstalling, savedDNS
+        case version, passwordHash, blocked, delaySeconds, pendingDelayChange, pendingUninstall, recovery, failedAttempts, lockout, uninstalling, savedDNS, blockedPaths
     }
 
-    /// Reads a state from JSON. The fields that existed in the first release stay required, so a file missing one (such as `{}`) is still rejected as damaged. `savedDNS` was added later, so a file written before it existed must still load, and a missing key becomes nil. Without that, an old file would count as corrupt, be set aside, and the daemon would start with an empty block list.
+    /// Reads a state from JSON. The fields that existed in the first release stay required, so a file missing one (such as `{}`) is still rejected as damaged. `savedDNS` and `blockedPaths` were added later, so a file written before they existed must still load with its sites intact, and a missing key becomes nil. Without that, an old file would count as corrupt, be set aside, and the daemon would start with an empty block list.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.version = try container.decode(Int.self, forKey: .version)
@@ -155,6 +175,7 @@ public struct PersistedState: Codable, Equatable, Sendable {
         self.lockout = try container.decodeIfPresent(Countdown.self, forKey: .lockout)
         self.uninstalling = try container.decode(Bool.self, forKey: .uninstalling)
         self.savedDNS = try container.decodeIfPresent([String: [String]].self, forKey: .savedDNS)
+        self.blockedPaths = try container.decodeIfPresent([BlockedPath].self, forKey: .blockedPaths)
     }
 
     /// The state of a brand-new install: no password, nothing blocked, nothing pending.

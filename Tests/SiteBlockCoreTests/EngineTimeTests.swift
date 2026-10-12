@@ -101,20 +101,21 @@ import SiteBlockCore
         #expect(engine.tick(elapsed: elapsed) == true)
         #expect(engine.state.blocked.map(\.domain) == ["c.com"])
         #expect(engine.blockedHosts == DomainExpander.expand("c.com"))
-        #expect(engine.hostsToWrite == (DomainExpander.expand("c.com") + Engine.privateRelayHosts).sorted())
+        // Design change (02 § Engine, `hostsToWrite`): the always-written names are the two Private Relay names and the four DNS-over-HTTPS names.
+        #expect(engine.hostsToWrite == (DomainExpander.expand("c.com") + designAlwaysWrittenHosts).sorted())
         for gone in ["a.com", "b.com"] { #expect(!engine.blockedHosts.contains(gone) && !engine.blockedHosts.contains("www.\(gone)")) }
         #expect(engine.send(.status).status?.blocked.map(\.domain) == ["c.com"])
         #expect(engine.tick(elapsed: 1) == false)
     }
 
-    // When every blocked site has an unblock that finishes on the same tick, nothing is blocked afterwards and only the Private Relay names are written (02 § Engine, hostsToWrite: the adult content filter is always on, so the names are always written).
+    // When every blocked site has an unblock that finishes on the same tick, nothing is blocked afterwards and only the always-written names are written (02 § Engine, hostsToWrite: the adult content filter is always on, so the Private Relay and DNS-over-HTTPS names are always written).
     @Test func everySiteWithAnUnblockThatFinishesOnOneTickLeavesNothingBlockedAndOnlyTheRelayNamesToWrite() {
         let engine = makeEngine(blocking: ["a.com", "b.com", "x.com", "twitter.com"])
         for domain in ["a.com", "b.com", "x.com", "twitter.com"] { engine.send(.unblock, domain: domain, password: rightPassword) }
         #expect(engine.tick(elapsed: 1800) == true)
         #expect(engine.state.blocked.isEmpty)
         #expect(engine.blockedHosts.isEmpty)
-        #expect(engine.hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"])
+        #expect(engine.hostsToWrite == designAlwaysWrittenHosts)
     }
 
     @Test func aFinishedUnblockRemovesTheSiteSoItCanBeAddedAgainFromScratch() {

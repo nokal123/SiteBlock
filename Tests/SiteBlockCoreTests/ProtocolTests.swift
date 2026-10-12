@@ -16,20 +16,24 @@ private func decodeRequest(_ text: String) throws -> Request {
 }
 
 @Suite struct ProtocolTests {
-    @Test func theCommandNamesOnTheWireAreExactlyTheDesignsTwelve() {
-        let expected: Set<String> = ["status", "setup", "add", "unblock", "cancelUnblock", "setDelay", "cancelDelayChange", "changePassword", "uninstall", "cancelUninstall", "recoveryStart", "recoveryCancel"]
+    // Design change: 01-overview-and-data.md § Commands now lists 15 commands, not 12. The three additions are `addPath`, `unblockPath` and
+    // `cancelUnblockPath` (path rules, which block part of a site). The expected set is typed from the design's current list.
+    @Test func theCommandNamesOnTheWireAreExactlyTheDesignsFifteen() {
+        let expected: Set<String> = ["status", "setup", "add", "unblock", "cancelUnblock", "addPath", "unblockPath", "cancelUnblockPath", "setDelay", "cancelDelayChange", "changePassword", "uninstall", "cancelUninstall", "recoveryStart", "recoveryCancel"]
         #expect(Set(Command.allCases.map(\.rawValue)) == expected)
-        #expect(Command.allCases.count == 12)
+        #expect(Command.allCases.count == 15)
     }
 
     // Design change: 01-overview-and-data.md § Response now lists 15 error codes, not 13. The two additions are `notAllowed` (setup
     // refused for a caller who is neither root nor the console user) and `tooManySites` (an add beyond the site cap). The earlier
     // version of this test pinned the 13-code list, so against the current design it would have reported the two new, correct
     // codes as a defect. The expected set below is typed from the design's current list, not read from the enum.
-    @Test func theErrorCodesOnTheWireAreExactlyTheDesignsFifteen() {
-        let expected: Set<String> = ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "internal"]
+    // Design change: 01-overview-and-data.md § Response now lists 16 error codes. The addition is `invalidPath` (the path part of a path rule
+    // cannot be used, or the text has no path at all).
+    @Test func theErrorCodesOnTheWireAreExactlyTheDesignsSixteen() {
+        let expected: Set<String> = ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "invalidPath", "internal"]
         #expect(Set(ErrorCode.allCases.map(\.rawValue)) == expected)
-        #expect(ErrorCode.allCases.count == 15)
+        #expect(ErrorCode.allCases.count == 16)
     }
 
     @Test func aRequestEncodesToOneLineOfSortedKeyJSONAndSkipsUnusedFields() throws {
@@ -81,8 +85,9 @@ private func decodeRequest(_ text: String) throws -> Request {
     }
 
     // Design change: 01-overview-and-data.md § StatusSnapshot added `adultFilterEnabled`, which a daemon that has the adult content filter always sends as true. The sample is a snapshot from such a daemon, so the exact-JSON tests below include the new key.
+    // Design change: the same section added `blockedPaths` (each rule with domain, path, rule and unblockSecondsRemaining). The sample holds one rule with a pending unblock and one without, so the exact-JSON tests below pin the shape of both.
     private static func sampleStatus() -> StatusSnapshot {
-        StatusSnapshot(version: "1.0.0", passwordSet: true, blocked: [BlockedSiteStatus(domain: "reddit.com", hosts: ["reddit.com", "www.reddit.com"], unblockSecondsRemaining: 1800), BlockedSiteStatus(domain: "example.com", hosts: ["example.com"], unblockSecondsRemaining: nil)], delaySeconds: 1800, pendingDelay: PendingDelayStatus(newDelaySeconds: 600, secondsRemaining: 1700), uninstallSecondsRemaining: 10, recoverySecondsRemaining: 20, lockoutSecondsRemaining: 30, hostsFileHealthy: true, adultFilterEnabled: true)
+        StatusSnapshot(version: "1.0.0", passwordSet: true, blocked: [BlockedSiteStatus(domain: "reddit.com", hosts: ["reddit.com", "www.reddit.com"], unblockSecondsRemaining: 1800), BlockedSiteStatus(domain: "example.com", hosts: ["example.com"], unblockSecondsRemaining: nil)], delaySeconds: 1800, pendingDelay: PendingDelayStatus(newDelaySeconds: 600, secondsRemaining: 1700), uninstallSecondsRemaining: 10, recoverySecondsRemaining: 20, lockoutSecondsRemaining: 30, hostsFileHealthy: true, adultFilterEnabled: true, blockedPaths: [BlockedPathStatus(domain: "youtube.com", path: "/shorts", rule: "youtube.com/shorts", unblockSecondsRemaining: 900), BlockedPathStatus(domain: "x.com", path: "/Home", rule: "x.com/Home", unblockSecondsRemaining: nil)])
     }
 
     @Test func aSuccessResponseCarriesTheStatusAndTheMessage() throws {
@@ -97,10 +102,12 @@ private func decodeRequest(_ text: String) throws -> Request {
     @Test func theStatusSnapshotUsesExactlyTheFieldNamesFromTheDesign() throws {
         let data = try JSONCoding.encoder.encode(Self.sampleStatus())
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(Set(object.keys) == ["version", "passwordSet", "blocked", "delaySeconds", "pendingDelay", "uninstallSecondsRemaining", "recoverySecondsRemaining", "lockoutSecondsRemaining", "hostsFileHealthy", "adultFilterEnabled"])
+        #expect(Set(object.keys) == ["version", "passwordSet", "blocked", "delaySeconds", "pendingDelay", "uninstallSecondsRemaining", "recoverySecondsRemaining", "lockoutSecondsRemaining", "hostsFileHealthy", "adultFilterEnabled", "blockedPaths"])
         let sites = try #require(object["blocked"] as? [[String: Any]])
         let site = try #require(sites.first)
         #expect(Set(site.keys) == ["domain", "hosts", "unblockSecondsRemaining"])
+        let rules = try #require(object["blockedPaths"] as? [[String: Any]])
+        #expect(Set(try #require(rules.first).keys) == ["domain", "path", "rule", "unblockSecondsRemaining"])
         #expect(Set((object["pendingDelay"] as? [String: Any])?.keys.map { $0 } ?? []) == ["newDelaySeconds", "secondsRemaining"])
         #expect(try JSONCoding.decoder.decode(StatusSnapshot.self, from: data) == Self.sampleStatus())
     }
@@ -128,21 +135,22 @@ private func decodeRequest(_ text: String) throws -> Request {
     // optional is left out entirely (never written as null) and every object lists its keys alphabetically.
     @Test func aMinimalSuccessResponseEncodesToExactlyTheDesignsJSON() throws {
         let idle = StatusSnapshot(version: "1.0.0", passwordSet: false, blocked: [], delaySeconds: 1800, pendingDelay: nil, uninstallSecondsRemaining: nil, recoverySecondsRemaining: nil, lockoutSecondsRemaining: nil, hostsFileHealthy: true, adultFilterEnabled: true)
-        let statusJSON = #"{"adultFilterEnabled":true,"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
+        // Design change: a snapshot built with the default `blockedPaths` (an empty list) writes `"blockedPaths":[]`, because a daemon that has path rules always sends the list.
+        let statusJSON = #"{"adultFilterEnabled":true,"blocked":[],"blockedPaths":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
         #expect(try json(Response.success(status: idle)) == #"{"ok":true,"status":"# + statusJSON + "}")
         #expect(try json(Response.success(status: idle, message: "Password set.")) == #"{"message":"Password set.","ok":true,"status":"# + statusJSON + "}")
     }
 
-    // A success with every optional field filled in, written out by hand from the design's field names in sorted order.
+    // A success with every optional field filled in, written out by hand from the design's field names in sorted order. Foundation's JSON encoder writes a forward slash as "\/" (a legal JSON escape that every decoder reads back as "/"), so the path rules' "/shorts" appears as "\/shorts".
     @Test func aFullSuccessResponseEncodesToExactlyTheDesignsJSON() throws {
         let response = Response.success(status: Self.sampleStatus(), message: "reddit.com will unblock in 30 minutes.")
-        let expected = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"adultFilterEnabled":true,"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
+        let expected = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"adultFilterEnabled":true,"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"blockedPaths":[{"domain":"youtube.com","path":"\/shorts","rule":"youtube.com\/shorts","unblockSecondsRemaining":900},{"domain":"x.com","path":"\/Home","rule":"x.com\/Home"}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
         #expect(try json(response) == expected)
     }
 
     // The same JSON typed by hand must decode into the matching values, so a client written from the design alone can read replies.
     @Test func aSuccessResponseWrittenByHandFromTheDesignDecodes() throws {
-        let text = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"adultFilterEnabled":true,"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
+        let text = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"adultFilterEnabled":true,"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"blockedPaths":[{"domain":"youtube.com","path":"\/shorts","rule":"youtube.com\/shorts","unblockSecondsRemaining":900},{"domain":"x.com","path":"\/Home","rule":"x.com\/Home"}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
         let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))
         #expect(decoded == Response.success(status: Self.sampleStatus(), message: "reddit.com will unblock in 30 minutes."))
         #expect(decoded.ok && decoded.error == nil && decoded.errorCode == nil)
@@ -162,6 +170,20 @@ private func decodeRequest(_ text: String) throws -> Request {
         let decoded = try JSONCoding.decoder.decode(StatusSnapshot.self, from: Data(text.utf8))
         #expect(decoded.adultFilterEnabled == false)
         #expect(decoded.delaySeconds == 1800 && decoded.version == "0.9.0")
+    }
+
+    // 01-overview-and-data.md § StatusSnapshot: `blockedPaths` is "decoded as empty when missing", so a client reading a reply from a daemon from before path rules sees no rules, and the reply still decodes.
+    @Test func aSnapshotWithoutBlockedPathsDecodesItAsAnEmptyList() throws {
+        let text = #"{"adultFilterEnabled":true,"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
+        let decoded = try JSONCoding.decoder.decode(StatusSnapshot.self, from: Data(text.utf8))
+        #expect(decoded.blockedPaths == [])
+    }
+
+    // A path rule status written by hand from the design's field names decodes into the matching values.
+    @Test func aBlockedPathStatusWrittenByHandDecodes() throws {
+        let text = #"{"adultFilterEnabled":true,"blocked":[],"blockedPaths":[{"domain":"youtube.com","path":"/shorts","rule":"youtube.com/shorts","unblockSecondsRemaining":60}],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":true,"version":"1.0.0"}"#
+        let decoded = try JSONCoding.decoder.decode(StatusSnapshot.self, from: Data(text.utf8))
+        #expect(decoded.blockedPaths == [BlockedPathStatus(domain: "youtube.com", path: "/shorts", rule: "youtube.com/shorts", unblockSecondsRemaining: 60)])
     }
 
     @Test func anExplicitAdultFilterEnabledTrueAndFalseDecodeAsWritten() throws {
@@ -189,8 +211,8 @@ private func decodeRequest(_ text: String) throws -> Request {
         #expect(try json(decoded) == text)
     }
 
-    // Every one of the design's 15 code strings, typed out here, must decode and re-encode to the same string.
-    @Test(arguments: ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "internal"])
+    // Every one of the design's 16 code strings, typed out here, must decode and re-encode to the same string.
+    @Test(arguments: ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "invalidPath", "internal"])
     func everyErrorCodeStringFromTheDesignDecodesAndEncodesBackToItself(wire: String) throws {
         let text = #"{"errorCode":"\#(wire)","ok":false}"#
         let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))

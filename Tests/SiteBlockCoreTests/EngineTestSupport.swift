@@ -84,3 +84,10 @@ func expectSuccess(_ response: Response, sourceLocation: SourceLocation = #_sour
 func exhaustPasswordAttempts(_ engine: Engine, domain: String = "reddit.com") -> [Response] {
     (0..<engine.policy.maxFailedAttempts).map { _ in engine.send(.unblock, domain: domain, password: badPassword) }
 }
+
+// The names the hosts file always blocks while SiteBlock is installed, typed from the design and not read from the code: the two iCloud Private
+// Relay names (02-core-components.md § Engine, `privateRelayHosts`) and the four DNS-over-HTTPS names browsers use by default (02 § Engine,
+// `dohBypassHosts`; 01-overview-and-data.md § How Blocking Works, "Other browsers"). `hostsToWrite` is the blocked hosts plus all six, sorted.
+let designPrivateRelayHosts = ["mask-h2.icloud.com", "mask.icloud.com"]
+let designDoHBypassHosts = ["doh.xfinity.com", "firefox.dns.nextdns.io", "mozilla.cloudflare-dns.com", "private.canadianshield.cira.ca"]
+let designAlwaysWrittenHosts = (designPrivateRelayHosts + designDoHBypassHosts).sorted()

@@ -86,8 +86,8 @@ final class DaemonRuntime {
     private let log: Logger
     private let store: StateStore
     private let enforcer: HostsEnforcer
-    // Keeps Chrome's mandatory URLBlocklist policy equal to the block list, for Chrome windows that never read the hosts file (see 03 § 9).
-    private let chromeEnforcer: ChromePolicyEnforcer
+    // Keeps the mandatory policy files of Chrome, Edge, Brave and Firefox equal to the block lists, for browser windows that never read the hosts file, and to carry path rules (see 03 § 13).
+    private let browserEnforcer: BrowserPolicyEnforcer
     // Keeps every network service's DNS servers on the family servers (the second layer of the adult content filter, see 03 § 11).
     private let dnsEnforcer: DNSEnforcer
     // Counts requests turned away by the socket server or the command handler, so the log gets a summary line per minute instead of one line per bad request.
@@ -125,7 +125,7 @@ final class DaemonRuntime {
         let store = StateStore(url: URL(fileURLWithPath: paths.stateFile), backupURL: URL(fileURLWithPath: paths.stateBackup))
         self.store = store
         self.enforcer = HostsEnforcer(paths: paths, log: log)
-        self.chromeEnforcer = ChromePolicyEnforcer(paths: paths, log: log)
+        self.browserEnforcer = BrowserPolicyEnforcer(paths: paths, log: log)
         self.dnsEnforcer = DNSEnforcer(paths: paths, log: log)
         self.rejections = RejectedRequestCounter(log: log)
 
@@ -164,7 +164,7 @@ final class DaemonRuntime {
 
     /// The startup steps after loading the state (steps 1 and 2 happened in init). Must be called on the engine queue.
     private func startUp() {
-        log.log("siteblockd \(siteBlockVersion) starting (\(paths.isSandbox ? "sandbox" : "production"), tick \(tickInterval)s, blocked sites: \(engine.state.blocked.count))")
+        log.log("siteblockd \(siteBlockVersion) starting (\(paths.isSandbox ? "sandbox" : "production"), tick \(tickInterval)s, blocked sites: \(engine.state.blocked.count), path rules: \(engine.state.blockedPaths?.count ?? 0))")
 
         // A cleared tampered flag is reported and written back to both state files right away, so the bad value does not linger on disk.
         if ignoredUninstallFlag {
@@ -182,7 +182,7 @@ final class DaemonRuntime {
         // Startup step 4: the engine tells the runtime when the uninstall countdown ends.
         engine.onUninstall = { [unowned self] in beginUninstall() }
 
-        // Startup step 5: enforce the hosts file and Chrome's policy at once, so blocks apply at boot before any client connects. This pass is not "caused by a command", so tampering that happened while the daemon was stopped is logged.
+        // Startup step 5: enforce the hosts file and the browsers' policy files at once, so blocks apply at boot before any client connects. This pass is not "caused by a command", so tampering that happened while the daemon was stopped is logged.
         let healthy = enforceBlocks(causedByCommand: false)
         engine.setHostsHealthy(healthy)
         // The adult content filter is on from the moment the daemon starts, even before a password exists. The first reachability check begins at once on its own queue; until it finishes the DNS settings are left as they are, and its result schedules the first DNS pass.
@@ -256,14 +256,26 @@ final class DaemonRuntime {
 
     // MARK: - Commands
 
-    /// Called on a client thread. It first checks any site name in the request on this thread and rejects an invalid one at once, then hops onto the engine queue and handles the request there. Rejecting here means a flood of bad names never queues behind, or in front of, real commands and ticks.
+    /// Called on a client thread. It first checks any site name or rule in the request on this thread and rejects an invalid one at once, then hops onto the engine queue and handles the request there. Rejecting here means a flood of bad names never queues behind, or in front of, real commands and ticks.
     private func handle(_ request: Request, peerUID: uid_t) -> Response {
-        // Only the commands that use a site name are checked. An unblock that is also missing its password is left to the engine, which answers badRequest first, the same as for any other missing argument.
+        // Only the commands that use a site name or rule are checked. An unblock that is also missing its password is left to the engine, which answers badRequest first, the same as for any other missing argument.
         let usesDomain = request.command == .add || request.command == .unblock || request.command == .cancelUnblock
-        let missingPassword = request.command == .unblock && request.password == nil
+        let usesRule = request.command == .addPath || request.command == .unblockPath || request.command == .cancelUnblockPath
+        let missingPassword = (request.command == .unblock || request.command == .unblockPath) && request.password == nil
         if usesDomain, !missingPassword, let raw = request.domain {
             do {
                 _ = try DomainNormalizer.normalize(raw)
+            } catch {
+                rejections.record(uid: peerUID)
+                return .failure(.invalidDomain, error.localizedDescription)
+            }
+        }
+        if usesRule, !missingPassword, let raw = request.domain {
+            do {
+                _ = try PathRuleParser.parse(raw)
+            } catch let error as PathRuleError {
+                rejections.record(uid: peerUID)
+                return .failure(.invalidPath, error.localizedDescription)
             } catch {
                 rejections.record(uid: peerUID)
                 return .failure(.invalidDomain, error.localizedDescription)
@@ -274,7 +286,7 @@ final class DaemonRuntime {
     }
 
     /// The commands that compare a password against the stored one.
-    private static let passwordCommands: Set<Command> = [.unblock, .setDelay, .changePassword, .uninstall]
+    private static let passwordCommands: Set<Command> = [.unblock, .unblockPath, .setDelay, .changePassword, .uninstall]
 
     /// True when the command really compared a password, whatever the outcome. A locked-out request, a missing password setup, or a bad argument fails before any comparison, so those are not password checks. A changePassword that fails only because the new password is too weak did compare the old one, and it was right.
     private func comparedPassword(_ command: Command, _ response: Response) -> Bool {
@@ -306,14 +318,14 @@ final class DaemonRuntime {
             return engine.handle(request, peerUID: peerUID)
         }
         let stateBefore = engine.state
-        let hostsBefore = engine.hostsToWrite
+        let listsBefore = currentBlockLists()
         let response = engine.handle(request, peerUID: peerUID)
 
         // Failed commands can change state too (the wrong-password count, a lockout), so the comparison covers every outcome. A read-only command writes nothing.
         if engine.state != stateBefore { _ = saveState() }
 
-        // Enforce after every command, even a read-only one: the pass only reads the hosts file and Chrome's policy files when nothing is wrong, and it makes the reported hosts health current.
-        let blockListChanged = engine.hostsToWrite != hostsBefore
+        // Enforce after every command, even a read-only one: the pass only reads the hosts file and the browsers' policy files when nothing is wrong, and it makes the reported hosts health current.
+        let blockListChanged = currentBlockLists() != listsBefore
         let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
         // The app asks for status once a second, so status requests skip the DNS pass; every other command runs it. The pass reads the stored reachability result and sends no query, so it adds no waiting.
@@ -328,12 +340,17 @@ final class DaemonRuntime {
 
     // MARK: - Enforcement
 
-    /// Makes the hosts file and Chrome's policy files match the engine's block list and the adult content filter: the hosts file first, then Chrome. Both always run, so a failure in one never stops the other from being repaired. Returns true only when both ended correct, and the caller passes that to the engine as `hostsFileHealthy`. `causedByCommand` is true when the block list was just changed on purpose, so the rewrite is not logged as tampering.
+    /// Everything SiteBlock writes outside its own files: the hosts to block and the browsers' lists. Two readings compare equal when nothing the enforcers write would change, so the runtime can tell a block-list change it caused (a command, or a countdown that finished) from tampering.
+    private func currentBlockLists() -> (hosts: [String], browsers: BrowserBlockLists) {
+        (engine.hostsToWrite, engine.browserBlockLists)
+    }
+
+    /// Makes the hosts file and the browsers' policy files match the engine's block list and the adult content filter: the hosts file first, then the browsers. Both always run, so a failure in one never stops the other from being repaired. Returns true only when both ended correct, and the caller passes that to the engine as `hostsFileHealthy`. `causedByCommand` is true when the block list was just changed on purpose, so the rewrite is not logged as tampering.
     private func enforceBlocks(causedByCommand: Bool) -> Bool {
         let hostsHealthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: causedByCommand)
-        // Sites with a pending unblock stay in `blocked` until their countdown ends, so they stay in Chrome's list too.
-        let chromeHealthy = chromeEnforcer.enforce(blockedSites: engine.state.blocked, adultFilterActive: engine.adultFilterActive, causedByCommand: causedByCommand)
-        return hostsHealthy && chromeHealthy
+        // Sites and rules with a pending unblock stay in the engine's lists until their countdown ends, so they stay in the browsers' lists too.
+        let browsersHealthy = browserEnforcer.enforce(blockLists: engine.browserBlockLists, adultFilterActive: engine.adultFilterActive, causedByCommand: causedByCommand)
+        return hostsHealthy && browsersHealthy
     }
 
     /// Runs one DNS pass on the engine queue. It reads the latest reachability result and sends no network query itself: while the family servers answer, every managed network service gets them; while they do not, the services keep (or get back) the network's own DNS; until the first result exists, nothing changes. The originals are recorded in the state first (the enforcer calls back before it changes anything), so the uninstaller can put them back. Does nothing once an uninstall has begun, because the uninstaller restores the servers itself.
@@ -378,7 +395,7 @@ final class DaemonRuntime {
     /// True when any countdown is running, which means the state must be saved regularly.
     private var anyCountdownRunning: Bool {
         let state = engine.state
-        return state.blocked.contains { $0.pendingUnblock != nil } || state.pendingDelayChange != nil || state.pendingUninstall != nil || state.recovery != nil || state.lockout != nil
+        return state.blocked.contains { $0.pendingUnblock != nil } || (state.blockedPaths ?? []).contains { $0.pendingUnblock != nil } || state.pendingDelayChange != nil || state.pendingUninstall != nil || state.recovery != nil || state.lockout != nil
     }
 
     /// Turns a Duration into seconds as a Double.
@@ -399,13 +416,13 @@ final class DaemonRuntime {
     /// Runs at the start of every command, on the engine queue: advances every countdown by the time since the last tick or command, then applies whatever finished the way a timer tick would. It saves the state, and runs an enforcement pass when something finished, so a site whose wait just ended is already out of the hosts file when the command runs. It does nothing once an uninstall has begun.
     private func catchUpCountdowns() {
         if uninstallStarted.isSet { return }
-        let hostsBefore = engine.hostsToWrite
+        let listsBefore = currentBlockLists()
         let changed = advanceCountdowns(now: ContinuousClock.now)
         // A countdown that ended inside engine.tick may have started the uninstall; nothing else may happen then.
         if uninstallStarted.isSet || !changed { return }
         _ = saveState()
         // A finished unblock changes the block list on purpose, so that rewrite is not reported as tampering.
-        let blockListChanged = engine.hostsToWrite != hostsBefore
+        let blockListChanged = currentBlockLists() != listsBefore
         let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
     }
@@ -414,13 +431,13 @@ final class DaemonRuntime {
     private func tick() {
         if uninstallStarted.isSet { return }
         let now = ContinuousClock.now
-        let hostsBefore = engine.hostsToWrite
+        let listsBefore = currentBlockLists()
         let changed = advanceCountdowns(now: now)
         // When the uninstall countdown ended inside engine.tick, the uninstall has already run; nothing else may happen.
         if uninstallStarted.isSet { return }
 
-        // A countdown that finished (a site whose wait is over) changes the block list on purpose, so that rewrite is not reported as tampering.
-        let blockListChanged = engine.hostsToWrite != hostsBefore
+        // A countdown that finished (a site or rule whose wait is over) changes the block list on purpose, so that rewrite is not reported as tampering.
+        let blockListChanged = currentBlockLists() != listsBefore
         let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
 
@@ -468,7 +485,7 @@ final class DaemonRuntime {
         guardQueue.sync {}
         server?.stop()
 
-        Uninstaller.run(paths: paths, enforcer: enforcer, chromeEnforcer: chromeEnforcer, dnsEnforcer: dnsEnforcer, savedDNS: engine.state.savedDNS, saveUninstallingState: { [self] () -> Bool in
+        Uninstaller.run(paths: paths, enforcer: enforcer, browserEnforcer: browserEnforcer, dnsEnforcer: dnsEnforcer, savedDNS: engine.state.savedDNS, saveUninstallingState: { [self] () -> Bool in
             // The engine set `uninstalling` before calling us, or the saved state already had it; saving the engine's state records that. A failed save is reported back so the uninstaller can stop before touching anything.
             var state = engine.state
             state.uninstalling = true

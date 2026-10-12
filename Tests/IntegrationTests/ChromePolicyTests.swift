@@ -3,7 +3,7 @@ import SiteBlockCore
 import Testing
 
 // Chrome's mandatory URLBlocklist policy, written by the real siteblockd running in sandbox mode.
-// Design: 03-daemon-cli-app.md § 9 ChromePolicyEnforcer (files written, content rules, writing, tamper repair and logging, uninstall);
+// Design: 03-daemon-cli-app.md § 9 ChromePolicyEnforcer (files written, content rules, writing, tamper repair and logging, uninstall), generalized by § 13 BrowserPolicyEnforcer;
 // 04-infrastructure.md § Installed Paths and § Sandbox Mode (the sandbox copies live under root/ManagedPreferences/);
 // 01-overview-and-data.md § How Blocking Works (Chrome paragraph).
 //
@@ -15,6 +15,10 @@ import Testing
 // duplicates, and without any host whose parent domain (whole labels) is also in the list, because a URLBlocklist entry such as youtube.com
 // already blocks every subdomain. The expectations here were changed for that; the hosts file still holds every expanded name.
 //
+// Design change in 03 § 13: the managed preferences folder now also holds the Edge, Brave and Firefox files, so every check of "which files exist" below
+// counts all of them (`allPolicyFileNames`), while every check of CONTENT still looks at the Chrome files only. The Edge, Brave and Firefox files are
+// tested in BrowserPolicyTests.
+//
 // Design change in 03 § 9 "Adult-filter keys": the adult content filter is always on, so both files ALWAYS carry SafeSitesFilterBehavior = 1
 // (integer), ForceGoogleSafeSearch = true (boolean) and DnsOverHttpsMode = "off" (string), plus URLBlocklist while any site is blocked. With
 // nothing blocked the files still exist and hold exactly those three keys; only the uninstaller removes them. The expectations here were
@@ -22,7 +26,10 @@ import Testing
 
 private let policyFileName = "com.google.Chrome.plist"
 private let blocklistKey = "URLBlocklist"
-private let repairedLine = "Chrome policy repaired"
+// The file names of all four browsers' policy files, typed from 03 § 13: the preference domain of each browser plus ".plist". Firefox's third file lives in the Preferences folder, not here.
+private let allPolicyFileNames = ["com.google.Chrome.plist", "com.microsoft.Edge.plist", "com.brave.Browser.plist", "org.mozilla.firefox.plist"]
+// Design change (03 § 13 BrowserPolicyEnforcer): the Chrome-only enforcer became the browser policy enforcer, and the line it logs for tampering is now "browser policy repaired (<target>)". The Chrome files log "browser policy repaired (Chrome)"; the other three browsers have their own line.
+private let repairedLine = "browser policy repaired (Chrome)"
 
 // The three keys of the adult content filter with the values and types the design gives them, typed here from 03 § 9. (NSDictionary equality
 // treats the boolean true and the integer 1 as equal, so the types are checked separately by `filterKeyTypesAreRight`.)
@@ -120,49 +127,9 @@ private extension SandboxDaemon {
     }
 }
 
-// True when something (a file, folder or link, even a dangling one) exists at the path.
-private func exists(_ path: String) -> Bool {
-    var info = stat()
-    return lstat(path, &info) == 0
-}
-
-// The top-level dictionary of a property list file, or nil when the file is missing, is not a property list, or is not a dictionary.
-private func readPlist(_ path: String) -> [String: Any]? {
-    guard let data = FileManager.default.contents(atPath: path) else { return nil }
-    return (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any]
-}
-
-// The storage format of a property list file (xml1 or binary1), or nil when it cannot be parsed.
-private func plistFormat(_ path: String) -> PropertyListSerialization.PropertyListFormat? {
-    guard let data = FileManager.default.contents(atPath: path) else { return nil }
-    var format = PropertyListSerialization.PropertyListFormat.binary
-    guard (try? PropertyListSerialization.propertyList(from: data, options: [], format: &format)) != nil else { return nil }
-    return format
-}
-
 // The URLBlocklist strings in a policy file, or nil when the file or the key is missing or the value is not an array of strings.
-private func listed(_ path: String) -> [String]? {
+func listed(_ path: String) -> [String]? {
     readPlist(path)?[blocklistKey] as? [String]
-}
-
-// Writes a dictionary as an XML property list through a rename, so the daemon can never read a half-written file.
-private func writePlist(_ plist: [String: Any], to path: String) throws {
-    try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-    let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
-}
-
-// Reads a file's dictionary (empty when missing), lets the change edit it, and writes it back.
-private func editPlist(at path: String, _ change: (inout [String: Any]) -> Void) throws {
-    var plist = readPlist(path) ?? [:]
-    change(&plist)
-    try writePlist(plist, to: path)
-}
-
-// True when the dictionary has exactly the given keys with equal values.
-private func isExactly(_ plist: [String: Any]?, _ expected: [String: Any]) -> Bool {
-    guard let plist else { return false }
-    return NSDictionary(dictionary: plist).isEqual(to: expected)
 }
 
 // True when the file holds exactly the filter keys plus {URLBlocklist: list} (no URLBlocklist for an empty list), with the right types, and has the mode 0644 the design gives the files.
@@ -170,27 +137,9 @@ private func isRight(_ path: String, list: [String]) -> Bool {
     isExactly(readPlist(path), expectedPlist(list: list)) && filterKeyTypesAreRight(path) && permissions(of: path) == 0o644
 }
 
-// The design's covering rule, written independently of the library: lowercase, remove duplicates, drop every host that ends in "." plus another
-// host of the set (a parent domain, whole labels only), sort.
-private func shortestCover(_ hosts: [String]) -> [String] {
-    let all = Set(hosts.map { $0.lowercased() })
-    return all.filter { host in !all.contains(where: { $0 != host && host.hasSuffix("." + $0) }) }.sorted()
-}
-
 // What the Chrome list must hold when these domains are blocked: every host the design expands them to (ExpectedHosts), shortened by the covering rule. The Private Relay names are not part of it.
 private func chromeList(_ domains: [String]) -> [String] {
     shortestCover(ExpectedHosts.expand(all: domains))
-}
-
-// The relative paths of every regular file under a folder (empty when the folder does not exist), sorted. Hidden files are included, so a leftover temp file with a dotted name is seen.
-private func regularFiles(under directory: String) -> [String] {
-    guard let walker = FileManager.default.enumerator(atPath: directory) else { return [] }
-    var found: [String] = []
-    for case let relative as String in walker {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: directory + "/" + relative)
-        if (attributes?[.type] as? FileAttributeType) != .typeDirectory { found.append(relative) }
-    }
-    return found.sorted()
 }
 
 @Suite("Chrome policy files")
@@ -225,8 +174,8 @@ struct ChromePolicyTests {
             #expect(daemon.hosts().blocks("mask.icloud.com"))
             #expect(daemon.hosts().blocks("www.youtube.com"))
             #expect(chrome.all.allSatisfy { !(listed($0) ?? []).contains("www.youtube.com") }, "a host covered by youtube.com must not be listed")
-            // When nobody is logged in only the machine-wide copy exists; otherwise the folder holds the machine file and one folder named after the console user.
-            let expectedEntries = ([policyFileName] + (chrome.consoleUser.map { [$0] } ?? [])).sorted()
+            // When nobody is logged in only the machine-wide copies exist; otherwise the folder holds the four machine files (one per browser, 03 § 13) and one folder named after the console user.
+            let expectedEntries = (allPolicyFileNames + (chrome.consoleUser.map { [$0] } ?? [])).sorted()
             #expect(daemon.listing(of: chrome.directory).sorted() == expectedEntries)
         }
     }
@@ -249,14 +198,14 @@ struct ChromePolicyTests {
             let repaired = waitUntil(timeout: 1.5, interval: 0.01) { chrome.all.allSatisfy { isRight($0, list: expected) } }
             #expect(repaired != nil)
             pause(0.6)
-            let relative = chrome.all.map { String($0.dropFirst(chrome.directory.count + 1)) }.sorted()
+            let relative = Self.everyPolicyFile(chrome)
             #expect(regularFiles(under: chrome.directory) == relative, "only the policy files may exist, found \(regularFiles(under: chrome.directory))")
         }
     }
 
     // MARK: tamper repair
 
-    // 03 § ChromePolicyEnforcer "Tamper repair and logging": a deleted file comes back within one second (the sandbox tick is 0.2 s), and the pass that rewrote it, which no command caused, logs "Chrome policy repaired". The log must NOT hold that line before the tampering, because the writes caused by the commands are not repairs: without that check a daemon that logged on every write would pass.
+    // 03 § ChromePolicyEnforcer "Tamper repair and logging": a deleted file comes back within one second (the sandbox tick is 0.2 s), and the pass that rewrote it, which no command caused, logs "browser policy repaired (Chrome)" (03 § 13). The log must NOT hold that line before the tampering, because the writes caused by the commands are not repairs: without that check a daemon that logged on every write would pass.
     @Test(arguments: ChromePolicyFile.allCases)
     func aDeletedPolicyFileComesBackWithinOneSecondAndIsLogged(file: ChromePolicyFile) throws {
         try withDaemon { daemon in
@@ -553,7 +502,7 @@ struct ChromePolicyTests {
     @Test func nothingBlockedMeansBothFilesHoldOnlyTheFilterKeysAndNoTempFilesAreLeftBehind() throws {
         try withDaemon { daemon in
             let chrome = try daemon.chromePaths()
-            let relative = chrome.all.map { String($0.dropFirst(chrome.directory.count + 1)) }.sorted()
+            let relative = Self.everyPolicyFile(chrome)
             pause(0.5)
             #expect(chrome.all.allSatisfy { isRight($0, list: []) }, "a fresh daemon writes the three filter keys at once: \(chrome.all.map { String(describing: readPlist($0)) })")
             #expect(regularFiles(under: chrome.directory) == relative, "found \(regularFiles(under: chrome.directory))")
@@ -696,6 +645,11 @@ struct ChromePolicyTests {
     static func expectNoUserCopy(_ daemon: SandboxDaemon, _ chrome: ChromePolicyPaths) {
         #expect(chrome.consoleUser == nil, "the per-user file was asked for although there is a console user")
         let entries = daemon.listing(of: chrome.directory)
-        #expect(entries.filter { $0 != policyFileName }.isEmpty, "with root at the console only the machine-wide file is written, found \(entries)")
+        #expect(entries.filter { !allPolicyFileNames.contains($0) }.isEmpty, "with root at the console only the machine-wide files are written, found \(entries)")
+    }
+
+    // The relative path (under the ManagedPreferences folder, sorted) of every file the daemon writes there for all four browsers: each browser's machine-wide file and, when somebody is logged in, each browser's file in the console user's folder (03 § 13). Firefox's third file is in the Preferences folder and is not counted here.
+    static func everyPolicyFile(_ chrome: ChromePolicyPaths) -> [String] {
+        (allPolicyFileNames + (chrome.consoleUser.map { user in allPolicyFileNames.map { user + "/" + $0 } } ?? [])).sorted()
     }
 }

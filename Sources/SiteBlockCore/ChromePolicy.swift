@@ -12,6 +12,12 @@ public enum ChromePolicy {
         return all.filter { !isCovered($0, by: all) }.sorted()
     }
 
+    /// True when the list holds the host itself or one of its parent domains, so a whole-site entry already blocks it. For example the list `["youtube.com"]` covers "youtube.com" and "music.youtube.com" but not "notyoutube.com". The engine uses it to leave out path rules that a whole-site block makes redundant.
+    public static func covers(_ list: [String], host: String) -> Bool {
+        let all = Set(list)
+        return all.contains(host) || isCovered(host, by: all)
+    }
+
     /// True when some other name in the set is a parent domain of the host, for example "youtube.com" for "m.youtube.com". Only whole labels count, so "notyoutube.com" is not covered by "youtube.com".
     private static func isCovered(_ host: String, by all: Set<String>) -> Bool {
         var rest = Substring(host)
@@ -46,9 +52,6 @@ public enum ChromePolicy {
 
     /// Returns the contents the policy file should have: everything already in the file except SiteBlock's own keys, plus the wanted values for those keys. Every other key is kept, so a real company policy in the same file is never lost. A key SiteBlock owns that is not in `managed` is removed (for example `URLBlocklist` once nothing is blocked). When nothing is left the result is nil, which means the file should be deleted. A nil `existing` (no file, or a file that was not a property list dictionary) counts as an empty file.
     public static func merged(existing: [String: Any]?, managed: [String: Any]) -> [String: Any]? {
-        var contents = existing ?? [:]
-        for key in managedKeys { contents.removeValue(forKey: key) }
-        for (key, value) in managed { contents[key] = value }
-        return contents.isEmpty ? nil : contents
+        BrowserPolicy.merged(existing: existing, managedKeys: managedKeys, managed: managed)
     }
 }

@@ -19,8 +19,10 @@ usage:
   siteblock status
   siteblock setup                      asks for a new password twice
   siteblock add <site> [<site> ...]    the first time, asks you to choose the password
-  siteblock unblock <site>             asks for the password
-  siteblock cancel <site>              cancel a pending unblock
+  siteblock add youtube.com/shorts     a path after the name blocks only that part of the site
+  siteblock add --whole-site <link>    block the whole site even though the text has a path
+  siteblock unblock <site>             asks for the password; a path unblocks that part of a site
+  siteblock cancel <site>              cancel a pending unblock; a path cancels that part's unblock
   siteblock delay                      show the current unblock delay
   siteblock delay <duration>           for example 45m or 2h; asks for the password
   siteblock delay --cancel
@@ -69,17 +71,27 @@ func send(_ request: Request, prefix: String = "") -> SendResult {
     }
 }
 
-/// Builds the text `siteblock status` prints from a snapshot: the delay, then each blocked site with its host count and any countdown, then the adult content filter line, then any pending delay change, uninstall, recovery or lockout.
+/// Builds the text `siteblock status` prints from a snapshot: the delay, then each blocked site with its host count and any countdown, then each blocked part of a site, then the adult content filter line, then any pending delay change, uninstall, recovery or lockout.
 func formatStatus(_ status: StatusSnapshot) -> String {
     var lines = ["SiteBlock \(status.version) — unblock delay: \(Formatting.duration(status.delaySeconds))"]
     if !status.passwordSet { lines.append("No password yet. You choose it the first time you block a site.") }
+    let rules = status.blockedPaths ?? []
     if status.blocked.isEmpty {
-        lines.append("No sites blocked.")
+        // With only path rules in place, "No sites blocked." would sit right above the list of blocked parts; it is said only when nothing at all is blocked.
+        if rules.isEmpty { lines.append("No sites blocked.") }
     } else {
         lines.append("Blocked sites (\(status.blocked.count)):")
         for site in status.blocked {
             var line = "  \(site.domain) (\(site.hosts.count) \(site.hosts.count == 1 ? "host" : "hosts"))"
             if let seconds = site.unblockSecondsRemaining { line += " — unblocks in \(Formatting.clock(seconds))" }
+            lines.append(line)
+        }
+    }
+    if !rules.isEmpty {
+        lines.append("Blocked parts of sites (\(rules.count)):")
+        for rule in rules {
+            var line = "  \(rule.rule)"
+            if let seconds = rule.unblockSecondsRemaining { line += " — unblocks in \(Formatting.clock(seconds))" }
             lines.append(line)
         }
     }
@@ -216,8 +228,15 @@ private func chooseFirstPassword() -> Int32? {
     return code == ExitCode.success ? nil : code
 }
 
-/// Blocks each given site with one request per site, carries on after a failure, and exits with 1 if any failed (or 2 as soon as the daemon is found not running). When no password is set yet, it first asks for one and sets it, because the password is chosen at the first block; if that fails, no site is sent.
-private func runAdd(_ sites: [String]) -> Int32 {
+/// True when the text names a part of a site (it has a path after the name), which is a path rule; text without a path names a whole site.
+private func hasPath(_ text: String) -> Bool {
+    PathRuleParser.split(text).path != nil
+}
+
+/// Blocks each given site with one request per site, carries on after a failure, and exits with 1 if any failed (or 2 as soon as the daemon is found not running). Text with a path after the name (`youtube.com/shorts`) blocks only that part of the site; `--whole-site` blocks the whole site instead. When no password is set yet, it first asks for one and sets it, because the password is chosen at the first block; if that fails, nothing is sent.
+private func runAdd(_ arguments: [String]) -> Int32 {
+    let wholeSite = arguments.contains("--whole-site")
+    let sites = arguments.filter { $0 != "--whole-site" }
     if sites.isEmpty { return usageFailure("add needs at least one site") }
     if let flag = sites.first(where: { $0.hasPrefix("-") }) { return usageFailure("unknown option '\(flag)'") }
     // Ask the daemon first whether a password exists. Nothing is prompted for when one does, so scripts that pipe nothing keep working.
@@ -230,7 +249,9 @@ private func runAdd(_ sites: [String]) -> Int32 {
     var anyFailed = false
     for site in sites {
         // With several sites, each error is prefixed with the site so it is clear which one failed.
-        switch send(Request(command: .add, domain: site), prefix: sites.count > 1 ? "\(site): " : "") {
+        // A path means a path rule, unless the person asked for the whole site.
+        let command: Command = !wholeSite && hasPath(site) ? .addPath : .add
+        switch send(Request(command: command, domain: site), prefix: sites.count > 1 ? "\(site): " : "") {
         case .failed(let code):
             // A missing daemon will not come back during this command, so stop instead of repeating the same message.
             if code == ExitCode.notRunning { return code }
@@ -251,17 +272,17 @@ private func singleSite(_ arguments: [String], command: String) -> String? {
     return arguments[0]
 }
 
-/// Starts the unblock countdown for one site after asking for the password.
+/// Starts the unblock countdown for one site, or for one blocked part of a site when the text has a path, after asking for the password.
 private func runUnblock(_ arguments: [String]) -> Int32 {
     guard let site = singleSite(arguments, command: "unblock") else { return ExitCode.usage }
     guard let password = readPassword() else { return ExitCode.usage }
-    return sendAndPrint(Request(command: .unblock, domain: site, password: password))
+    return sendAndPrint(Request(command: hasPath(site) ? .unblockPath : .unblock, domain: site, password: password))
 }
 
-/// Cancels a pending unblock; no password is needed.
+/// Cancels a pending unblock of a site, or of a blocked part of a site when the text has a path; no password is needed.
 private func runCancel(_ arguments: [String]) -> Int32 {
     guard let site = singleSite(arguments, command: "cancel") else { return ExitCode.usage }
-    return sendAndPrint(Request(command: .cancelUnblock, domain: site))
+    return sendAndPrint(Request(command: hasPath(site) ? .cancelUnblockPath : .cancelUnblock, domain: site))
 }
 
 /// Shows the current delay, changes it to a given duration (after asking for the password), or cancels a pending change.

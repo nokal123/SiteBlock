@@ -47,9 +47,12 @@ enum ExpectedHosts {
     // The two names Apple documents as the signal that turns iCloud Private Relay off. 01-overview-and-data.md § How Blocking Works (the Adult content filter paragraph) and 02-core-components.md § Engine (`privateRelayHosts`, `hostsToWrite`): the adult content filter is always on, so the daemon always writes these two names into its hosts section, even with no site blocked. They are written out here from the design, not read from the code.
     static let privateRelayHosts = ["mask-h2.icloud.com", "mask.icloud.com"]
 
-    // Everything the daemon writes into the section for a set of blocked hosts: the blocked hosts plus the two Private Relay names, sorted, without duplicates. Design change (02 § Engine, `hostsToWrite`): with nothing blocked the result is the two Private Relay names, not an empty list, because the family DNS layer of the adult content filter is always on.
+    // The four hostnames Firefox and other browsers use for their own DNS-over-HTTPS by default, typed from 01-overview-and-data.md § How Blocking Works ("Other browsers") and 02-core-components.md § Engine (`dohBypassHosts`). The adult content filter is always on, so the daemon always writes these into the hosts section too: a browser that tries them falls back to the Mac's own lookups.
+    static let dohBypassHosts = ["doh.xfinity.com", "firefox.dns.nextdns.io", "mozilla.cloudflare-dns.com", "private.canadianshield.cira.ca"]
+
+    // Everything the daemon writes into the section for a set of blocked hosts: the blocked hosts plus the two Private Relay names and the four DNS-over-HTTPS names, sorted, without duplicates. Design change (02 § Engine, `hostsToWrite`): with nothing blocked the result is those six names, not an empty list, because the family DNS layer of the adult content filter is always on. The DNS-over-HTTPS names were added by the design that protects Firefox, Edge and Brave (01 § How Blocking Works, "Other browsers").
     static func hostsToWrite(blocking hosts: [String]) -> [String] {
-        Array(Set(hosts + privateRelayHosts)).sorted()
+        Array(Set(hosts + privateRelayHosts + dohBypassHosts)).sorted()
     }
 
     // The two lines written for one host name.
@@ -69,7 +72,7 @@ enum ExpectedHosts {
         original + "\n" + section(for: hosts)
     }
 
-    // The file a running daemon keeps when nothing is blocked: the macOS lines plus a section of only the Private Relay names.
+    // The file a running daemon keeps when nothing is blocked: the macOS lines plus a section of only the always-written names (Private Relay and DNS-over-HTTPS).
     static let idleText = text(blocking: [])
 }
 

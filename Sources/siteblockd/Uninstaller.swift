@@ -8,8 +8,8 @@ enum Uninstaller {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Runs the uninstall steps in order. `saveUninstallingState` must write the state with `uninstalling` set and return false when the write fails. In sandbox mode the function ends the process with exit code 0 after removing the hosts section, SiteBlock's Chrome policy keys, restoring the DNS servers, the sandbox's own plist files, its socket and its app and backup app bundles. In production it returns after starting the detached cleanup shell, and the caller then waits for launchd to stop the daemon. If the state cannot be saved, the watchdog cannot be unloaded, or the cleanup shell cannot be started, it exits with code 1 before (or instead of) deleting anything further, so launchd restarts the daemon and the next start retries from the saved finished countdown.
-    static func run(paths: Paths, enforcer: HostsEnforcer, chromeEnforcer: ChromePolicyEnforcer, dnsEnforcer: DNSEnforcer, savedDNS: [String: [String]]?, saveUninstallingState: () -> Bool, log: Logger) {
+    /// Runs the uninstall steps in order. `saveUninstallingState` must write the state with `uninstalling` set and return false when the write fails. In sandbox mode the function ends the process with exit code 0 after removing the hosts section, SiteBlock's keys from every browser's policy files, restoring the DNS servers, the sandbox's own plist files, its socket and its app and backup app bundles. In production it returns after starting the detached cleanup shell, and the caller then waits for launchd to stop the daemon. If the state cannot be saved, the watchdog cannot be unloaded, or the cleanup shell cannot be started, it exits with code 1 before (or instead of) deleting anything further, so launchd restarts the daemon and the next start retries from the saved finished countdown.
+    static func run(paths: Paths, enforcer: HostsEnforcer, browserEnforcer: BrowserPolicyEnforcer, dnsEnforcer: DNSEnforcer, savedDNS: [String: [String]]?, saveUninstallingState: () -> Bool, log: Logger) {
         // Step 1: record that an uninstall is under way before anything is touched, so a crash part-way is finished on the next start. If the save fails (for example the disk is full), nothing has been changed yet, so stop here; the restarted daemon retries from the saved finished countdown. Going on with an old state file on disk could leave a half-removed install that the next start cannot recognize.
         guard saveUninstallingState() else {
             log.log("uninstall stopped: the uninstall marker could not be saved; exiting so it is retried")
@@ -26,9 +26,9 @@ enum Uninstaller {
             unloadWatchdog(log: log)
         }
 
-        // Step 3: take SiteBlock's lines out of the hosts file (an empty block list) and flush the name cache. The same step takes every SiteBlock key out of Chrome's policy files (03 § 9: the block list and the adult-filter keys; a file with nothing else in it is deleted, and a file with other settings keeps them) and puts the original DNS servers back (03 § 11). All of it runs in production and in sandbox mode. A failed DNS restore is logged by the enforcer and does not stop the uninstall: a retry that can never succeed would leave SiteBlock installed for good.
+        // Step 3: take SiteBlock's lines out of the hosts file (an empty block list) and flush the name cache. The same step takes every SiteBlock key out of every browser's policy files (03 § 13: the Chrome, Edge, Brave and Firefox files, including Firefox's third file; the block lists and the adult-filter and DNS keys; a file with nothing else in it is deleted, and a file with other settings keeps them) and puts the original DNS servers back (03 § 11). All of it runs in production and in sandbox mode. A failed DNS restore is logged by the enforcer and does not stop the uninstall: a retry that can never succeed would leave SiteBlock installed for good.
         _ = enforcer.enforce(blockedHosts: [], causedByCommand: true)
-        _ = chromeEnforcer.enforce(blockedSites: [], adultFilterActive: false, causedByCommand: true)
+        _ = browserEnforcer.enforce(blockLists: .empty, adultFilterActive: false, causedByCommand: true)
         // The saved record is not cleared on disk: the state folder is deleted a moment later, and a retry after a crash restores the same servers again.
         _ = dnsEnforcer.enforce(adultFilterActive: false, savedDNS: savedDNS, familyDNS: nil, persist: { _ in true })
 

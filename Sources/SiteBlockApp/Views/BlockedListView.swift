@@ -1,37 +1,50 @@
 import SiteBlockCore
 import SwiftUI
 
-/// The list of blocked sites, or a short message when there are none. A long list scrolls instead of making the panel taller.
+/// The list of blocked sites and blocked parts of sites, or a short message when there are none. A long list scrolls instead of making the panel taller.
 struct BlockedListView: View {
     @ObservedObject var model: StatusModel
     /// The latest status from the daemon.
     let snapshot: StatusSnapshot
 
-    /// How many sites the list box shows at once; more sites scroll inside it.
+    /// How many rows the list box shows at once; more rows scroll inside it.
     private static let visibleRows: CGFloat = 4
     /// The gap between two rows, in points.
     private static let rowSpacing: CGFloat = 8
     /// The height of one closed row, measured from the rows on screen. The box is sized from it so exactly four rows fit, whatever the system text size. It starts at a typical row height until the first measurement arrives.
     @State private var rowHeight: CGFloat = 56
 
-    /// The list box's fixed height: four closed rows and the three gaps between them. It never changes with the number of sites, so the panel keeps its size; a scroll view in a menu bar panel also needs an explicit height, or it shrinks to a thin strip.
+    /// The list box's fixed height: four closed rows and the three gaps between them. It never changes with the number of rows, so the panel keeps its size; a scroll view in a menu bar panel also needs an explicit height, or it shrinks to a thin strip.
     private var listHeight: CGFloat { rowHeight * Self.visibleRows + Self.rowSpacing * (Self.visibleRows - 1) }
 
+    /// The blocked parts of sites, or an empty list when the daemon sent none.
+    private var rules: [BlockedPathStatus] { snapshot.blockedPaths ?? [] }
+
     var body: some View {
-        if snapshot.blocked.isEmpty {
+        if snapshot.blocked.isEmpty && rules.isEmpty {
             emptyState
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text("Blocked sites").font(.subheadline.weight(.semibold))
-                    Text("\(snapshot.blocked.count)")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
+                // The heading above the box names the first group, so the panel is the same height whichever groups exist.
+                groupHeading(snapshot.blocked.isEmpty ? "Blocked parts of sites" : "Blocked sites", count: snapshot.blocked.isEmpty ? rules.count : snapshot.blocked.count)
+                // Both groups share this one scroll box, so its height stays the same however many sites and rules there are.
                 ScrollView {
-                    VStack(spacing: Self.rowSpacing) {
+                    VStack(alignment: .leading, spacing: Self.rowSpacing) {
+                        // With no sites, the blocked parts are the first group, and its heading is the one above the box, so only its note is left to show here.
+                        if snapshot.blocked.isEmpty { limitsNote }
                         ForEach(snapshot.blocked, id: \.domain) { site in
-                            BlockedRow(model: model, site: site, delaySeconds: snapshot.delaySeconds, canUnblock: snapshot.passwordSet)
+                            BlockedRow(model: model, item: siteItem(site), delaySeconds: snapshot.delaySeconds, canUnblock: snapshot.passwordSet)
+                        }
+                        // With sites above them, the blocked parts get their own heading and note inside the box.
+                        if !snapshot.blocked.isEmpty && !rules.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                groupHeading("Blocked parts of sites", count: rules.count)
+                                limitsNote
+                            }
+                            .padding(.top, 6)
+                        }
+                        ForEach(rules, id: \.rule) { rule in
+                            BlockedRow(model: model, item: ruleItem(rule), delaySeconds: snapshot.delaySeconds, canUnblock: snapshot.passwordSet)
                         }
                     }
                 }
@@ -40,6 +53,50 @@ struct BlockedListView: View {
                 .scrollBounceBehavior(.basedOnSize)
             }
         }
+    }
+
+    /// A group's title with the number of entries next to it.
+    private func groupHeading(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text("\(count)")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The one line under the "Blocked parts of sites" heading that says which browsers can enforce a part of a site.
+    private var limitsNote: some View {
+        Text("Works in Chrome, Firefox, Edge and Brave. Safari can only block whole sites.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// What a row needs to show and control one blocked site.
+    private func siteItem(_ site: BlockedSiteStatus) -> BlockedRow.Item {
+        BlockedRow.Item(
+            title: site.domain,
+            pendingSeconds: site.unblockSecondsRemaining,
+            scope: .site(site.domain),
+            detail: .hosts(site.hosts),
+            unblock: { password in await model.unblock(domain: site.domain, password: password) },
+            keepBlocked: { await model.cancelUnblock(domain: site.domain) }
+        )
+    }
+
+    /// What a row needs to show and control one blocked part of a site. The rule text (for example youtube.com/shorts) is what goes back to the daemon.
+    private func ruleItem(_ rule: BlockedPathStatus) -> BlockedRow.Item {
+        BlockedRow.Item(
+            title: rule.rule,
+            pendingSeconds: rule.unblockSecondsRemaining,
+            scope: .rule(rule.rule),
+            detail: .rule(domain: rule.domain, path: rule.path),
+            unblock: { password in await model.unblockPath(rule: rule.rule, password: password) },
+            keepBlocked: { await model.cancelUnblockPath(rule: rule.rule) }
+        )
     }
 
     /// The message shown before anything is blocked.
@@ -64,37 +121,61 @@ private struct ClosedRowHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
 }
 
-/// One blocked site. It shows the site name and either an "Unblock…" button or, once an unblock has been approved, a live countdown that says plainly the site is still blocked. A disclosure lists every host name SiteBlock writes for the site.
+/// One blocked site or one blocked part of a site. It shows the name and either an "Unblock…" button or, once an unblock has been approved, a live countdown that says plainly it is still blocked. A disclosure underneath shows what is blocked: the host names written to the hosts file for a site, or the sentence that explains a path rule.
 struct BlockedRow: View {
+    /// What the row shows below its name when the disclosure is open.
+    enum Detail {
+        /// Every host name SiteBlock writes to the hosts file for a site.
+        case hosts([String])
+        /// The domain and path of a path rule.
+        case rule(domain: String, path: String)
+    }
+
+    /// Everything a row needs to know about the site or rule it shows, and the two things it can ask the daemon to do.
+    struct Item {
+        /// The name shown in the row: the domain, or the rule such as youtube.com/shorts.
+        let title: String
+        /// Seconds until the unblock finishes, or nil when no unblock is pending.
+        let pendingSeconds: Int?
+        /// Where this row's messages appear.
+        let scope: FeedbackScope
+        /// What the disclosure shows.
+        let detail: Detail
+        /// Starts the unblock countdown with the typed password; returns true when the daemon accepted it.
+        let unblock: (String) async -> Bool
+        /// Cancels a pending unblock; returns true when the daemon accepted it.
+        let keepBlocked: () async -> Bool
+    }
+
     @ObservedObject var model: StatusModel
-    /// The site to show.
-    let site: BlockedSiteStatus
+    /// The site or rule to show.
+    let item: Item
     /// The current unblock delay, used to tell the user how long the wait will be.
     let delaySeconds: Int
     /// False while no password exists (after a password reset, before a new one is chosen), because the daemon would refuse an unblock anyway.
     let canUnblock: Bool
 
-    /// Whether the list of host names is open.
-    @State private var showHosts = false
+    /// Whether the details are open.
+    @State private var showDetail = false
     /// Whether the password form for starting an unblock is open.
     @State private var enteringPassword = false
     /// The password as typed.
     @State private var password = ""
     @FocusState private var passwordFocused: Bool
 
-    /// Seconds until this site unblocks, or nil when no unblock is pending.
-    private var pendingSeconds: Int? { site.unblockSecondsRemaining }
+    /// Seconds until this row unblocks, or nil when no unblock is pending.
+    private var pendingSeconds: Int? { item.pendingSeconds }
 
-    /// True when the row shows only its title line and the closed host list, with no countdown, no unblock form and no message, which is the row height the list box is sized from.
-    private var isPlainClosed: Bool { !showHosts && !enteringPassword && pendingSeconds == nil && model.feedback?.scope != .site(site.domain) }
+    /// True when the row shows only its title line and the closed detail line, with no countdown, no unblock form and no message, which is the row height the list box is sized from.
+    private var isPlainClosed: Bool { !showDetail && !enteringPassword && pendingSeconds == nil && model.feedback?.scope != item.scope }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             titleLine
             if let pendingSeconds { stillBlockedLine(pendingSeconds) }
             if enteringPassword, pendingSeconds == nil { unblockForm }
-            FeedbackLine(model: model, scope: .site(site.domain))
-            hostsDisclosure
+            FeedbackLine(model: model, scope: item.scope)
+            detailDisclosure
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -112,15 +193,15 @@ struct BlockedRow: View {
             Image(systemName: pendingSeconds == nil ? "lock.fill" : "lock.badge.clock.fill")
                 .foregroundStyle(pendingSeconds == nil ? Color.secondary : Color.orange)
                 .frame(width: 18)
-            Text(site.domain)
+            Text(item.title)
                 .font(.system(.body, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .help(site.domain)
+                .help(item.title)
             Spacer(minLength: 8)
             if pendingSeconds != nil {
                 // The safe choice is the prominent one: it keeps the site blocked and needs no password.
-                Button("Keep blocked") { Task { _ = await model.cancelUnblock(domain: site.domain) } }
+                Button("Keep blocked") { Task { _ = await item.keepBlocked() } }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(model.isBusy)
@@ -146,7 +227,7 @@ struct BlockedRow: View {
     /// The password form: an explanation of what happens next, the password field, and the two buttons.
     private var unblockForm: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Enter your password to start the countdown. The site stays blocked for \(Formatting.duration(delaySeconds)) first, and you can cancel any time before then.")
+            Text("Enter your password to start the countdown. It stays blocked for \(Formatting.duration(delaySeconds)) first, and you can cancel any time before then.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -164,40 +245,65 @@ struct BlockedRow: View {
         }
     }
 
-    /// The "24 hosts" toggle and, when open, the host names in two columns.
-    private var hostsDisclosure: some View {
+    /// The text on the disclosure toggle: the number of hosts for a site, or a fixed label for a path rule.
+    private var detailLabel: String {
+        switch item.detail {
+        case .hosts(let hosts): return "\(hosts.count) \(hosts.count == 1 ? "host" : "hosts")"
+        case .rule: return "What this blocks"
+        }
+    }
+
+    /// The tooltip on the disclosure toggle.
+    private var detailHelp: String {
+        switch item.detail {
+        case .hosts: return "Every name SiteBlock writes to the hosts file for this site"
+        case .rule: return "Which addresses this rule blocks"
+        }
+    }
+
+    /// The "24 hosts" toggle (or "What this blocks" for a path rule) and, when open, the host names in two columns or the sentence that explains the rule.
+    private var detailDisclosure: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { showHosts.toggle() }
+                withAnimation(.easeInOut(duration: 0.15)) { showDetail.toggle() }
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.semibold))
-                        .rotationEffect(.degrees(showHosts ? 90 : 0))
+                        .rotationEffect(.degrees(showDetail ? 90 : 0))
                         .frame(width: 10)
-                    Text("\(site.hosts.count) \(site.hosts.count == 1 ? "host" : "hosts")")
+                    Text(detailLabel)
                         .font(.caption)
                 }
                 .foregroundStyle(.secondary)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Every name SiteBlock writes to the hosts file for this site")
-            .accessibilityLabel(showHosts ? "Hide hosts" : "Show hosts")
+            .help(detailHelp)
+            .accessibilityLabel(showDetail ? "Hide details" : "Show details")
 
-            if showHosts {
-                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 2) {
-                    ForEach(site.hosts, id: \.self) { host in
-                        Text(host)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                            .help(host)
+            if showDetail {
+                switch item.detail {
+                case .hosts(let hosts):
+                    LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 2) {
+                        ForEach(hosts, id: \.self) { host in
+                            Text(host)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                                .help(host)
+                        }
                     }
+                    .padding(.leading, 14)
+                case .rule(let domain, let path):
+                    Text("Blocks every address on \(domain) and its subdomains whose path starts with \(path). The rest of the site stays open.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 14)
                 }
-                .padding(.leading, 14)
             }
         }
     }
@@ -214,7 +320,7 @@ struct BlockedRow: View {
         let typed = password
         password = ""
         Task {
-            if await model.unblock(domain: site.domain, password: typed) {
+            if await item.unblock(typed) {
                 enteringPassword = false
             } else {
                 // The form stays open after a refusal (for example a wrong password) so the user can try again.

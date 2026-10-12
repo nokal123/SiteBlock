@@ -384,20 +384,27 @@ import SiteBlockCore
 // always), sorted and without duplicates."
 // Design change: hostsToWrite used to include the relay names only when a site was blocked and was empty otherwise. The adult content filter is
 // always on (01 § How Blocking Works, Adult content filter), so the names are written even with nothing blocked.
+// Design change (02 § Engine, `dohBypassHosts` and `hostsToWrite`; 01 § How Blocking Works, "Other browsers"): hostsToWrite also holds the four
+// DNS-over-HTTPS hostnames whenever the filter is active, so every expectation below that listed only the relay names now lists all six names.
 @Suite struct EngineHostsToWriteTests {
     @Test func theTwoPrivateRelayNamesAreExactlyTheOnesInTheDesign() {
         #expect(Engine.privateRelayHosts == ["mask-h2.icloud.com", "mask.icloud.com"])
     }
 
-    @Test func withNothingBlockedOnlyThePrivateRelayNamesAreWritten() {
+    // 02 § Engine: `static let dohBypassHosts` is exactly the four names in the design.
+    @Test func theFourDoHBypassNamesAreExactlyTheOnesInTheDesign() {
+        #expect(Engine.dohBypassHosts == ["doh.xfinity.com", "firefox.dns.nextdns.io", "mozilla.cloudflare-dns.com", "private.canadianshield.cira.ca"])
+    }
+
+    @Test func withNothingBlockedOnlyTheAlwaysWrittenNamesAreWritten() {
         let engine = makeEngine()
-        #expect(engine.hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"])
-        #expect(makeEngine(password: nil).hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"], "the filter does not wait for a password")
+        #expect(engine.hostsToWrite == designAlwaysWrittenHosts)
+        #expect(makeEngine(password: nil).hostsToWrite == designAlwaysWrittenHosts, "the filter does not wait for a password")
     }
 
     @Test func withASiteBlockedTheRelayNamesAreAddedToItsHostsInSortedOrder() {
         let engine = makeEngine(blocking: ["reddit.com"])
-        let expected = (DomainExpander.expand("reddit.com") + ["mask-h2.icloud.com", "mask.icloud.com"]).sorted()
+        let expected = (DomainExpander.expand("reddit.com") + designAlwaysWrittenHosts).sorted()
         #expect(engine.hostsToWrite == expected)
         #expect(Set(engine.hostsToWrite).count == engine.hostsToWrite.count)
     }
@@ -420,13 +427,13 @@ import SiteBlockCore
     }
 
     // A site waiting to unblock is still blocked, so its hosts stay with the relay names; when the last site's wait ends, only the relay names are left.
-    @Test func theRelayNamesStayWhileAnUnblockWaitsAndAfterTheLastSiteIsRemoved() {
+    @Test func theAlwaysWrittenNamesStayWhileAnUnblockWaitsAndAfterTheLastSiteIsRemoved() {
         let engine = makeEngine(blocking: ["reddit.com"])
         expectSuccess(engine.send(.unblock, domain: "reddit.com", password: rightPassword))
         #expect(engine.hostsToWrite.contains("mask.icloud.com") && engine.hostsToWrite.contains("mask-h2.icloud.com"))
         #expect(engine.tick(elapsed: 1800) == true)
         #expect(engine.blockedHosts.isEmpty)
-        #expect(engine.hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"])
+        #expect(engine.hostsToWrite == designAlwaysWrittenHosts)
     }
 
     // With two sites, finishing one unblock keeps the relay names because the other site is still blocked.
@@ -435,7 +442,7 @@ import SiteBlockCore
         expectSuccess(engine.send(.unblock, domain: "reddit.com", password: rightPassword))
         _ = engine.tick(elapsed: 1800)
         #expect(engine.state.blocked.map(\.domain) == ["example.com"])
-        #expect(engine.hostsToWrite == (DomainExpander.expand("example.com") + Engine.privateRelayHosts).sorted())
+        #expect(engine.hostsToWrite == (DomainExpander.expand("example.com") + designAlwaysWrittenHosts).sorted())
     }
 
     // The list goes straight into the hosts file renderer, which writes the two address lines for each name.

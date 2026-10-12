@@ -20,6 +20,9 @@ public enum Command: String, Codable, CaseIterable, Sendable {
     case add
     case unblock
     case cancelUnblock
+    case addPath
+    case unblockPath
+    case cancelUnblockPath
     case setDelay
     case cancelDelayChange
     case changePassword
@@ -45,6 +48,7 @@ public enum ErrorCode: String, Codable, CaseIterable, Sendable {
     case notRoot
     case notAllowed
     case tooManySites
+    case invalidPath
     case `internal`
 }
 
@@ -52,7 +56,7 @@ public enum ErrorCode: String, Codable, CaseIterable, Sendable {
 public struct Request: Codable, Equatable, Sendable {
     /// Which command to run.
     public var command: Command
-    /// The site, for add, unblock and cancelUnblock.
+    /// The site for add, unblock and cancelUnblock. For addPath, unblockPath and cancelUnblockPath it holds the whole rule text, for example youtube.com/shorts or a pasted link.
     public var domain: String?
     /// The current password, for commands that loosen anything.
     public var password: String?
@@ -84,6 +88,26 @@ public struct BlockedSiteStatus: Codable, Equatable, Sendable {
     public init(domain: String, hosts: [String], unblockSecondsRemaining: Int?) {
         self.domain = domain
         self.hosts = hosts
+        self.unblockSecondsRemaining = unblockSecondsRemaining
+    }
+}
+
+/// One path rule as shown to clients.
+public struct BlockedPathStatus: Codable, Equatable, Sendable {
+    /// The base name, for example youtube.com.
+    public let domain: String
+    /// The path prefix, for example /shorts.
+    public let path: String
+    /// The domain and path joined as people read them, for example youtube.com/shorts. Clients also send this text back to unblock or cancel the rule.
+    public let rule: String
+    /// Seconds until the rule is removed, or nil when no unblock is pending.
+    public let unblockSecondsRemaining: Int?
+
+    /// Creates a path rule status.
+    public init(domain: String, path: String, rule: String, unblockSecondsRemaining: Int?) {
+        self.domain = domain
+        self.path = path
+        self.rule = rule
         self.unblockSecondsRemaining = unblockSecondsRemaining
     }
 }
@@ -124,9 +148,11 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
     public let hostsFileHealthy: Bool
     /// Whether the adult content filter is on. A daemon that has the filter always sends true. A reply from an older daemon has no such key, and then this reads as false, so a newer client never mistakes "the daemon does not know about the filter" for "the filter is on".
     public let adultFilterEnabled: Bool?
+    /// Every path rule. A daemon that has path rules always sends the list (empty when there are none). A reply from an older daemon has no such key, and then this reads as an empty list.
+    public let blockedPaths: [BlockedPathStatus]?
 
-    /// Creates a snapshot from every field. `adultFilterEnabled` defaults to false, the value a reader gets when the key is missing.
-    public init(version: String, passwordSet: Bool, blocked: [BlockedSiteStatus], delaySeconds: Int, pendingDelay: PendingDelayStatus?, uninstallSecondsRemaining: Int?, recoverySecondsRemaining: Int?, lockoutSecondsRemaining: Int?, hostsFileHealthy: Bool, adultFilterEnabled: Bool? = false) {
+    /// Creates a snapshot from every field. `adultFilterEnabled` defaults to false and `blockedPaths` to an empty list, the values a reader gets when the keys are missing.
+    public init(version: String, passwordSet: Bool, blocked: [BlockedSiteStatus], delaySeconds: Int, pendingDelay: PendingDelayStatus?, uninstallSecondsRemaining: Int?, recoverySecondsRemaining: Int?, lockoutSecondsRemaining: Int?, hostsFileHealthy: Bool, adultFilterEnabled: Bool? = false, blockedPaths: [BlockedPathStatus]? = []) {
         self.version = version
         self.passwordSet = passwordSet
         self.blocked = blocked
@@ -137,14 +163,15 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
         self.lockoutSecondsRemaining = lockoutSecondsRemaining
         self.hostsFileHealthy = hostsFileHealthy
         self.adultFilterEnabled = adultFilterEnabled
+        self.blockedPaths = blockedPaths
     }
 
     /// The keys of the JSON snapshot; spelled out so `init(from:)` can be written by hand.
     private enum CodingKeys: String, CodingKey {
-        case version, passwordSet, blocked, delaySeconds, pendingDelay, uninstallSecondsRemaining, recoverySecondsRemaining, lockoutSecondsRemaining, hostsFileHealthy, adultFilterEnabled
+        case version, passwordSet, blocked, delaySeconds, pendingDelay, uninstallSecondsRemaining, recoverySecondsRemaining, lockoutSecondsRemaining, hostsFileHealthy, adultFilterEnabled, blockedPaths
     }
 
-    /// Reads a snapshot from JSON. Every field an older daemon sent stays as it was; `adultFilterEnabled` is new, so a missing key reads as false. That keeps an old daemon and a new client (or the reverse) working together.
+    /// Reads a snapshot from JSON. Every field an older daemon sent stays as it was; `adultFilterEnabled` and `blockedPaths` are newer, so a missing `adultFilterEnabled` reads as false and a missing `blockedPaths` reads as an empty list. That keeps an old daemon and a new client (or the reverse) working together.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.version = try container.decode(String.self, forKey: .version)
@@ -157,6 +184,7 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
         self.lockoutSecondsRemaining = try container.decodeIfPresent(Int.self, forKey: .lockoutSecondsRemaining)
         self.hostsFileHealthy = try container.decode(Bool.self, forKey: .hostsFileHealthy)
         self.adultFilterEnabled = try container.decodeIfPresent(Bool.self, forKey: .adultFilterEnabled) ?? false
+        self.blockedPaths = try container.decodeIfPresent([BlockedPathStatus].self, forKey: .blockedPaths) ?? []
     }
 }
 

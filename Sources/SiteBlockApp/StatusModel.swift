@@ -18,6 +18,8 @@ enum FeedbackScope: Hashable {
     case add
     /// One blocked-site row, named by its domain.
     case site(String)
+    /// One blocked-part-of-a-site row, named by its rule text such as youtube.com/shorts.
+    case rule(String)
     /// The warning banners at the top of the panel.
     case banner
     /// The delay form in Settings.
@@ -180,8 +182,13 @@ final class StatusModel: ObservableObject {
         await run(Request(command: .add, domain: domain), scope: .add)
     }
 
-    /// The first block: sets the SiteBlock password, and only when the daemon accepts it, blocks `domain`. If the password is refused (too short, or one is already set), no block is requested at all.
-    func setupThenAdd(password: String, domain: String) async -> FirstBlockOutcome {
+    /// Blocks only the typed part of a site (for example youtube.com/shorts) at once. The text goes to the daemon as typed, and the daemon works out the site and the path. Returns true when the daemon accepted it.
+    func addPath(rule: String) async -> Bool {
+        await run(Request(command: .addPath, domain: rule), scope: .add)
+    }
+
+    /// The first block: sets the SiteBlock password, and only when the daemon accepts it, blocks `domain` (the whole site, or only the typed part of it when `onlyThisPart` is true). If the password is refused (too short, or one is already set), no block is requested at all.
+    func setupThenAdd(password: String, domain: String, onlyThisPart: Bool = false) async -> FirstBlockOutcome {
         // Both requests count as one piece of work, so the buttons stay disabled in the gap between them.
         commandsInFlight += 1
         isBusy = true
@@ -190,7 +197,8 @@ final class StatusModel: ObservableObject {
             isBusy = commandsInFlight > 0
         }
         guard await setup(password: password) else { return .passwordNotSet }
-        return await add(domain: domain) ? .blocked : .passwordSetSiteRefused
+        let accepted = onlyThisPart ? await addPath(rule: domain) : await add(domain: domain)
+        return accepted ? .blocked : .passwordSetSiteRefused
     }
 
     /// Starts the unblock countdown for a site. The site stays blocked until the countdown ends. Returns true when the daemon accepted it.
@@ -201,6 +209,16 @@ final class StatusModel: ObservableObject {
     /// Cancels a pending unblock so the site stays blocked for good. Needs no password.
     func cancelUnblock(domain: String) async -> Bool {
         await run(Request(command: .cancelUnblock, domain: domain), scope: .site(domain))
+    }
+
+    /// Starts the unblock countdown for a blocked part of a site, named by its rule text. The rule stays blocked until the countdown ends. Returns true when the daemon accepted it.
+    func unblockPath(rule: String, password: String) async -> Bool {
+        await run(Request(command: .unblockPath, domain: rule, password: password), scope: .rule(rule))
+    }
+
+    /// Cancels a pending unblock of a blocked part of a site so it stays blocked for good. Needs no password.
+    func cancelUnblockPath(rule: String) async -> Bool {
+        await run(Request(command: .cancelUnblockPath, domain: rule), scope: .rule(rule))
     }
 
     /// Asks for a new unblock delay. A longer delay applies at once; a shorter one waits out the current delay first.

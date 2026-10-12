@@ -76,6 +76,7 @@ When Xcode is installed, plain `swift test` also works, and the script detects `
 - Socket: `/var/run/siteblock.sock`
 - Hosts file: `/etc/hosts`
 - Chrome policy, machine-wide copy: `/Library/Managed Preferences/com.google.Chrome.plist`
+- The same policy files for Edge (`com.microsoft.Edge.plist`), Brave (`com.brave.Browser.plist`) and Firefox (`org.mozilla.firefox.plist`), machine-wide and per console user under `/Library/Managed Preferences`, plus Firefox's `/Library/Preferences/org.mozilla.firefox.plist` (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer).
 - Chrome policy, copy for the user logged in at the screen: `/Library/Managed Preferences/<console user>/com.google.Chrome.plist` (not written when nobody is logged in)
 - Log file: `/Library/Logs/SiteBlock/siteblockd.log` (watchdog: `watchdog.log`)
 - Daemon plist: `/Library/LaunchDaemons/com.nokal.siteblock.daemon.plist`

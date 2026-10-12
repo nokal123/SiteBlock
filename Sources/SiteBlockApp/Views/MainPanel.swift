@@ -63,15 +63,29 @@ private struct HomeView: View {
     @FocusState private var addFocused: Bool
     /// The password form that is open right now, or nil when none is.
     @State private var passwordForm: PasswordFormMode?
+    /// Which of the two choices under the field is selected while the typed text has a path: true for "Only this part" (a path rule), false for "Whole site".
+    @State private var onlyThisPart = true
 
     /// The typed site name without surrounding spaces or line breaks (a pasted address often has them).
     private var trimmedSite: String { newSite.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// True when the typed text has a path after the site name (youtube.com/shorts), which is when the choice between a part of the site and the whole site is offered.
+    private var hasPath: Bool { PathRuleParser.split(trimmedSite).path != nil }
+
+    /// True when pressing Block will add a path rule instead of blocking the whole site.
+    private var blocksOnlyThisPart: Bool { hasPath && onlyThisPart }
+
+    /// The rule that "Only this part" would add, written the way the list shows it (youtube.com/shorts), or nil when the text cannot be read as a rule. Used only for the caption under the choice; the daemon checks the text again when Block is pressed.
+    private var ruleCaption: String? {
+        guard let rule = try? PathRuleParser.parse(trimmedSite) else { return nil }
+        return PathRuleParser.display(domain: rule.domain, path: rule.path)
+    }
 
     /// True while the first-block password form is showing. It also needs "no password yet": if one was set in the meantime (for example from Terminal) the form has nothing left to do, so it goes away and Block works normally.
     private var isChoosingFirstPassword: Bool { passwordForm == .firstBlock && !snapshot.passwordSet }
 
     /// True when a password reset left sites blocked but no password to unblock them with, so the banner offering a new password should show.
-    private var needsNewPassword: Bool { !snapshot.passwordSet && !snapshot.blocked.isEmpty }
+    private var needsNewPassword: Bool { !snapshot.passwordSet && (!snapshot.blocked.isEmpty || !(snapshot.blockedPaths ?? []).isEmpty) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,8 +127,35 @@ private struct HomeView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(trimmedSite.isEmpty || model.isBusy || isChoosingFirstPassword)
             }
+            // A typed path (youtube.com/shorts) offers the part or the whole site; "Only this part" is selected first.
+            if hasPath { partOrWholeChoice }
             FeedbackLine(model: model, scope: .add)
             if isChoosingFirstPassword { firstBlockForm }
+        }
+        // Each time a path appears in the field, the narrow choice is selected again; the person can then widen it. This sits on the section, which is always on screen, because the choice itself exists only while the text has a path and so cannot watch for the path to appear.
+        .onChange(of: hasPath) { _, nowHasPath in if nowHasPath { onlyThisPart = true } }
+    }
+
+    /// The two-choice control that appears under the field when the text has a path, and a caption that says what the selected choice will block. It is switched off with the field while the first-block password form is open.
+    private var partOrWholeChoice: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Picker("What to block", selection: $onlyThisPart) {
+                Text("Only this part").tag(true)
+                Text("Whole site").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(isChoosingFirstPassword)
+            if onlyThisPart, let rule = ruleCaption {
+                Text("Blocks \(rule) and everything under it. The rest of the site stays open.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !onlyThisPart {
+                Text("Blocks the whole site, not just the part after its name.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -158,7 +199,7 @@ private struct HomeView: View {
         }
     }
 
-    /// Asks the daemon to block the typed site. The field is emptied only when the daemon accepts it, so a typo can be fixed instead of retyped. When no password exists yet, nothing is sent: the password form opens instead, with the typed site kept, because the daemon refuses to block until a password is set.
+    /// Asks the daemon to block the typed site, or only the typed part of it when the text has a path and "Only this part" is selected. The field is emptied only when the daemon accepts it, so a typo can be fixed instead of retyped. When no password exists yet, nothing is sent: the password form opens instead, with the typed site kept, because the daemon refuses to block until a password is set.
     private func addSite() {
         let site = trimmedSite
         guard !site.isEmpty, !model.isBusy, !isChoosingFirstPassword else { return }
@@ -167,14 +208,15 @@ private struct HomeView: View {
             return
         }
         Task {
-            if await model.add(domain: site) { newSite = "" }
+            let accepted = blocksOnlyThisPart ? await model.addPath(rule: site) : await model.add(domain: site)
+            if accepted { newSite = "" }
             addFocused = true
         }
     }
 
     /// Sets the chosen password and then blocks the typed site; the site is sent only if the daemon accepted the password. Returns true when the password was set, so the form can go away; if the site itself was then refused, its reason shows under the add field and the site stays typed so it can be fixed. Returns false when the password was refused, so the form stays open with the reason inside it.
     private func setPasswordAndBlock(_ password: String) async -> Bool {
-        switch await model.setupThenAdd(password: password, domain: trimmedSite) {
+        switch await model.setupThenAdd(password: password, domain: trimmedSite, onlyThisPart: blocksOnlyThisPart) {
         case .passwordNotSet:
             return false
         case .passwordSetSiteRefused:
