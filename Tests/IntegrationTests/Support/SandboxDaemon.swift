@@ -253,6 +253,11 @@ final class SandboxDaemon {
         waitUntil(timeout: seconds, interval: 0.02) { logText().contains(text) } != nil
     }
 
+    // How many times the text appears in the log. Design change (01 § How Blocking Works, Adult content filter): the adult content filter is always on, so a daemon that starts on a hosts file without its section writes the Private Relay names at its very first pass and logs "hosts file repaired" for it. A test that wants to know whether a LATER pass logged a repair therefore compares counts taken before and after, instead of requiring the text to be absent.
+    func logCount(of text: String) -> Int {
+        logText().components(separatedBy: text).count - 1
+    }
+
     // The saved state file as a JSON object, or nil when it is missing or not an object.
     func stateObject() -> NSDictionary? { readJSONObject(statePath) }
 

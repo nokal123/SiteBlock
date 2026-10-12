@@ -219,6 +219,14 @@ final class HostsEnforcer {
     /// Clears the macOS name cache so a recently visited site cannot keep working from its cached address. Does nothing in sandbox mode.
     private func flushNameCache() {
         guard !paths.isSandbox else { return }
+        NameCache.flush(log: log)
+    }
+}
+
+/// The macOS name cache (the memory of recent site lookups). The hosts file enforcer and the DNS enforcer both need it cleared after they change what a lookup returns.
+enum NameCache {
+    /// Runs `dscacheutil -flushcache` and sends `mDNSResponder` a reload signal, waiting at most 5 seconds for each, and logs when either reports an error. Callers skip this in sandbox mode, because it touches the real system.
+    static func flush(log: Logger) {
         let flush = runProcess("/usr/bin/dscacheutil", ["-flushcache"], timeout: 5)
         let signal = runProcess("/usr/bin/killall", ["-HUP", "mDNSResponder"], timeout: 5)
         if flush != 0 || signal != 0 { log.log("name cache flush reported errors (dscacheutil \(flush), mDNSResponder \(signal))") }

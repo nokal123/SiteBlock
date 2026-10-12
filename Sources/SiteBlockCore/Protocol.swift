@@ -122,9 +122,11 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
     public let lockoutSecondsRemaining: Int?
     /// True when the last enforcement pass found or left the hosts file in the right state.
     public let hostsFileHealthy: Bool
+    /// Whether the adult content filter is on. A daemon that has the filter always sends true. A reply from an older daemon has no such key, and then this reads as false, so a newer client never mistakes "the daemon does not know about the filter" for "the filter is on".
+    public let adultFilterEnabled: Bool?
 
-    /// Creates a snapshot from every field.
-    public init(version: String, passwordSet: Bool, blocked: [BlockedSiteStatus], delaySeconds: Int, pendingDelay: PendingDelayStatus?, uninstallSecondsRemaining: Int?, recoverySecondsRemaining: Int?, lockoutSecondsRemaining: Int?, hostsFileHealthy: Bool) {
+    /// Creates a snapshot from every field. `adultFilterEnabled` defaults to false, the value a reader gets when the key is missing.
+    public init(version: String, passwordSet: Bool, blocked: [BlockedSiteStatus], delaySeconds: Int, pendingDelay: PendingDelayStatus?, uninstallSecondsRemaining: Int?, recoverySecondsRemaining: Int?, lockoutSecondsRemaining: Int?, hostsFileHealthy: Bool, adultFilterEnabled: Bool? = false) {
         self.version = version
         self.passwordSet = passwordSet
         self.blocked = blocked
@@ -134,6 +136,27 @@ public struct StatusSnapshot: Codable, Equatable, Sendable {
         self.recoverySecondsRemaining = recoverySecondsRemaining
         self.lockoutSecondsRemaining = lockoutSecondsRemaining
         self.hostsFileHealthy = hostsFileHealthy
+        self.adultFilterEnabled = adultFilterEnabled
+    }
+
+    /// The keys of the JSON snapshot; spelled out so `init(from:)` can be written by hand.
+    private enum CodingKeys: String, CodingKey {
+        case version, passwordSet, blocked, delaySeconds, pendingDelay, uninstallSecondsRemaining, recoverySecondsRemaining, lockoutSecondsRemaining, hostsFileHealthy, adultFilterEnabled
+    }
+
+    /// Reads a snapshot from JSON. Every field an older daemon sent stays as it was; `adultFilterEnabled` is new, so a missing key reads as false. That keeps an old daemon and a new client (or the reverse) working together.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decode(String.self, forKey: .version)
+        self.passwordSet = try container.decode(Bool.self, forKey: .passwordSet)
+        self.blocked = try container.decode([BlockedSiteStatus].self, forKey: .blocked)
+        self.delaySeconds = try container.decode(Int.self, forKey: .delaySeconds)
+        self.pendingDelay = try container.decodeIfPresent(PendingDelayStatus.self, forKey: .pendingDelay)
+        self.uninstallSecondsRemaining = try container.decodeIfPresent(Int.self, forKey: .uninstallSecondsRemaining)
+        self.recoverySecondsRemaining = try container.decodeIfPresent(Int.self, forKey: .recoverySecondsRemaining)
+        self.lockoutSecondsRemaining = try container.decodeIfPresent(Int.self, forKey: .lockoutSecondsRemaining)
+        self.hostsFileHealthy = try container.decode(Bool.self, forKey: .hostsFileHealthy)
+        self.adultFilterEnabled = try container.decodeIfPresent(Bool.self, forKey: .adultFilterEnabled) ?? false
     }
 }
 

@@ -73,10 +73,18 @@ public final class Engine {
     /// The host names iCloud Private Relay needs. Apple documents blocking these as the way a network turns Private Relay off, and Private Relay would otherwise send Safari's lookups to Apple's servers past the hosts file.
     public static let privateRelayHosts = ["mask-h2.icloud.com", "mask.icloud.com"]
 
-    /// Everything the hosts file must block: every blocked site's hosts, plus the Private Relay names whenever at least one site is blocked. With nothing blocked, Private Relay is left alone.
+    /// True while the adult content filter is in force, which is always, except once an uninstall has begun (the uninstaller then takes the filter's settings away). There is no command, password or wait that turns it off.
+    public var adultFilterActive: Bool { !state.uninstalling }
+
+    /// Everything the hosts file must block: every blocked site's hosts, plus the Private Relay names whenever the adult content filter is active. The filter sets the Mac's DNS servers to the family servers, and Private Relay would send Safari's lookups to Apple instead, so the names stay blocked even with no site on the list.
     public var hostsToWrite: [String] {
-        let hosts = blockedHosts
-        return hosts.isEmpty ? [] : Array(Set(hosts + Engine.privateRelayHosts)).sorted()
+        let hosts = adultFilterActive ? blockedHosts + Engine.privateRelayHosts : blockedHosts
+        return Array(Set(hosts)).sorted()
+    }
+
+    /// Records the original DNS servers the DNS enforcer found (keyed by network service ID), or clears the record with nil or an empty dictionary. The enforcer calls this before it overrides a service, so the originals are known to the engine (and saved with the state) before they are lost.
+    public func setSavedDNS(_ saved: [String: [String]]?) {
+        state.savedDNS = (saved?.isEmpty ?? true) ? nil : saved
     }
 
     /// Records whether the last hosts file enforcement pass left the file correct, so later status responses can report it.
@@ -95,7 +103,9 @@ public final class Engine {
             uninstallSecondsRemaining: state.pendingUninstall?.displaySeconds,
             recoverySecondsRemaining: state.recovery?.displaySeconds,
             lockoutSecondsRemaining: state.lockout?.displaySeconds,
-            hostsFileHealthy: hostsFileHealthy
+            hostsFileHealthy: hostsFileHealthy,
+            // The filter cannot be switched off, so a daemon that has it always says so. (A daemon from before the filter existed sends no such key, which clients read as false.)
+            adultFilterEnabled: true
         )
     }
 

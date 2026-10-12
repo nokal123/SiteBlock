@@ -67,7 +67,7 @@ struct CLITests {
             #expect(line.range(of: "[0-9]:[0-9][0-9]", options: .regularExpression) != nil, "status shows the countdown as a clock: \(line)")
             #expect(daemon.hostsText() == blocked)
 
-            let removed = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
+            let removed = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == ExpectedHosts.idleText }
             let took = watch.elapsed
             #expect(removed != nil)
             #expect(took >= 2.0, "the site went \(took) s after the tool was started, before the 2 s delay was over (started \(phase) s into a tick)")
@@ -98,6 +98,17 @@ struct CLITests {
         }
     }
 
+    // 03 § 12 (CLI): `siteblock status` prints "Adult content filter: always on", before a password exists and after sites are blocked alike.
+    @Test func statusPrintsThatTheAdultContentFilterIsAlwaysOn() throws {
+        try withDaemon { daemon in
+            let fresh = try Self.cli(daemon, ["status"])
+            #expect(fresh.status == 0 && fresh.stdout.components(separatedBy: "\n").contains("Adult content filter: always on"), "got: \(fresh.stdout)")
+            try daemon.prepare(blocking: "reddit.com")
+            let blocked = try Self.cli(daemon, ["status"])
+            #expect(blocked.stdout.components(separatedBy: "\n").contains("Adult content filter: always on"), "got: \(blocked.stdout)")
+        }
+    }
+
     // One CLI call and the exit code it must give.
     struct ExitCase: Sendable {
         let arguments: [String]
@@ -112,6 +123,9 @@ struct CLITests {
             // 64: the command line itself is wrong.
             ExitCase(arguments: [], stdin: nil, exit: 64),
             ExitCase(arguments: ["bogus"], stdin: nil, exit: 64),
+            // 03 § 12: the adult content filter has no switch, so there is no `adult` subcommand to turn it on or off.
+            ExitCase(arguments: ["adult"], stdin: nil, exit: 64),
+            ExitCase(arguments: ["adult", "off"], stdin: password, exit: 64),
             ExitCase(arguments: ["status", "extra"], stdin: nil, exit: 64),
             ExitCase(arguments: ["add"], stdin: nil, exit: 64),
             ExitCase(arguments: ["unblock"], stdin: password, exit: 64),

@@ -80,8 +80,9 @@ private func decodeRequest(_ text: String) throws -> Request {
         #expect(failure.ok == false && failure.error == "Locked." && failure.errorCode == .lockedOut && failure.status == nil && failure.message == nil)
     }
 
+    // Design change: 01-overview-and-data.md § StatusSnapshot added `adultFilterEnabled`, which a daemon that has the adult content filter always sends as true. The sample is a snapshot from such a daemon, so the exact-JSON tests below include the new key.
     private static func sampleStatus() -> StatusSnapshot {
-        StatusSnapshot(version: "1.0.0", passwordSet: true, blocked: [BlockedSiteStatus(domain: "reddit.com", hosts: ["reddit.com", "www.reddit.com"], unblockSecondsRemaining: 1800), BlockedSiteStatus(domain: "example.com", hosts: ["example.com"], unblockSecondsRemaining: nil)], delaySeconds: 1800, pendingDelay: PendingDelayStatus(newDelaySeconds: 600, secondsRemaining: 1700), uninstallSecondsRemaining: 10, recoverySecondsRemaining: 20, lockoutSecondsRemaining: 30, hostsFileHealthy: true)
+        StatusSnapshot(version: "1.0.0", passwordSet: true, blocked: [BlockedSiteStatus(domain: "reddit.com", hosts: ["reddit.com", "www.reddit.com"], unblockSecondsRemaining: 1800), BlockedSiteStatus(domain: "example.com", hosts: ["example.com"], unblockSecondsRemaining: nil)], delaySeconds: 1800, pendingDelay: PendingDelayStatus(newDelaySeconds: 600, secondsRemaining: 1700), uninstallSecondsRemaining: 10, recoverySecondsRemaining: 20, lockoutSecondsRemaining: 30, hostsFileHealthy: true, adultFilterEnabled: true)
     }
 
     @Test func aSuccessResponseCarriesTheStatusAndTheMessage() throws {
@@ -96,7 +97,7 @@ private func decodeRequest(_ text: String) throws -> Request {
     @Test func theStatusSnapshotUsesExactlyTheFieldNamesFromTheDesign() throws {
         let data = try JSONCoding.encoder.encode(Self.sampleStatus())
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(Set(object.keys) == ["version", "passwordSet", "blocked", "delaySeconds", "pendingDelay", "uninstallSecondsRemaining", "recoverySecondsRemaining", "lockoutSecondsRemaining", "hostsFileHealthy"])
+        #expect(Set(object.keys) == ["version", "passwordSet", "blocked", "delaySeconds", "pendingDelay", "uninstallSecondsRemaining", "recoverySecondsRemaining", "lockoutSecondsRemaining", "hostsFileHealthy", "adultFilterEnabled"])
         let sites = try #require(object["blocked"] as? [[String: Any]])
         let site = try #require(sites.first)
         #expect(Set(site.keys) == ["domain", "hosts", "unblockSecondsRemaining"])
@@ -126,8 +127,8 @@ private func decodeRequest(_ text: String) throws -> Request {
     // carry; `error`, `errorCode` and `message` are optional. The wire format is the default encoder with sorted keys, so a nil
     // optional is left out entirely (never written as null) and every object lists its keys alphabetically.
     @Test func aMinimalSuccessResponseEncodesToExactlyTheDesignsJSON() throws {
-        let idle = StatusSnapshot(version: "1.0.0", passwordSet: false, blocked: [], delaySeconds: 1800, pendingDelay: nil, uninstallSecondsRemaining: nil, recoverySecondsRemaining: nil, lockoutSecondsRemaining: nil, hostsFileHealthy: true)
-        let statusJSON = #"{"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
+        let idle = StatusSnapshot(version: "1.0.0", passwordSet: false, blocked: [], delaySeconds: 1800, pendingDelay: nil, uninstallSecondsRemaining: nil, recoverySecondsRemaining: nil, lockoutSecondsRemaining: nil, hostsFileHealthy: true, adultFilterEnabled: true)
+        let statusJSON = #"{"adultFilterEnabled":true,"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
         #expect(try json(Response.success(status: idle)) == #"{"ok":true,"status":"# + statusJSON + "}")
         #expect(try json(Response.success(status: idle, message: "Password set.")) == #"{"message":"Password set.","ok":true,"status":"# + statusJSON + "}")
     }
@@ -135,13 +136,13 @@ private func decodeRequest(_ text: String) throws -> Request {
     // A success with every optional field filled in, written out by hand from the design's field names in sorted order.
     @Test func aFullSuccessResponseEncodesToExactlyTheDesignsJSON() throws {
         let response = Response.success(status: Self.sampleStatus(), message: "reddit.com will unblock in 30 minutes.")
-        let expected = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
+        let expected = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"adultFilterEnabled":true,"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
         #expect(try json(response) == expected)
     }
 
     // The same JSON typed by hand must decode into the matching values, so a client written from the design alone can read replies.
     @Test func aSuccessResponseWrittenByHandFromTheDesignDecodes() throws {
-        let text = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
+        let text = #"{"message":"reddit.com will unblock in 30 minutes.","ok":true,"status":{"adultFilterEnabled":true,"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"unblockSecondsRemaining":1800},{"domain":"example.com","hosts":["example.com"]}],"delaySeconds":1800,"hostsFileHealthy":true,"lockoutSecondsRemaining":30,"passwordSet":true,"pendingDelay":{"newDelaySeconds":600,"secondsRemaining":1700},"recoverySecondsRemaining":20,"uninstallSecondsRemaining":10,"version":"1.0.0"}}"#
         let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))
         #expect(decoded == Response.success(status: Self.sampleStatus(), message: "reddit.com will unblock in 30 minutes."))
         #expect(decoded.ok && decoded.error == nil && decoded.errorCode == nil)
@@ -152,6 +153,31 @@ private func decodeRequest(_ text: String) throws -> Request {
         let text = #" { "status" : { "version":"1.0.0", "passwordSet":false, "blocked":[ ], "delaySeconds":1800, "hostsFileHealthy":true, "pendingDelay":null, "lockoutSecondsRemaining":null }, "message":null, "error":null, "errorCode":null, "ok":true } "#
         let idle = StatusSnapshot(version: "1.0.0", passwordSet: false, blocked: [], delaySeconds: 1800, pendingDelay: nil, uninstallSecondsRemaining: nil, recoverySecondsRemaining: nil, lockoutSecondsRemaining: nil, hostsFileHealthy: true)
         #expect(try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8)) == Response.success(status: idle))
+    }
+
+    // 01-overview-and-data.md § StatusSnapshot: `adultFilterEnabled` is "decoded as `false` when missing, for an older daemon", so a newer client
+    // reading a reply from an older daemon sees a filter that is not on, and an older client reading a newer reply ignores the extra key.
+    @Test func aSnapshotWithoutAdultFilterEnabledDecodesItAsFalse() throws {
+        let text = #"{"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"0.9.0"}"#
+        let decoded = try JSONCoding.decoder.decode(StatusSnapshot.self, from: Data(text.utf8))
+        #expect(decoded.adultFilterEnabled == false)
+        #expect(decoded.delaySeconds == 1800 && decoded.version == "0.9.0")
+    }
+
+    @Test func anExplicitAdultFilterEnabledTrueAndFalseDecodeAsWritten() throws {
+        for value in [true, false] {
+            let text = #"{"adultFilterEnabled":\#(value),"blocked":[],"delaySeconds":1800,"hostsFileHealthy":true,"passwordSet":false,"version":"1.0.0"}"#
+            #expect(try JSONCoding.decoder.decode(StatusSnapshot.self, from: Data(text.utf8)).adultFilterEnabled == value)
+        }
+    }
+
+    // The engine is the daemon: every snapshot it builds says the filter is on, whatever else is going on.
+    @Test func everySnapshotFromTheEngineReportsTheAdultFilterOn() throws {
+        let fresh = makeEngine(password: nil)
+        #expect(fresh.send(.status).status?.adultFilterEnabled == true)
+        let busy = makeEngine(blocking: ["reddit.com"])
+        busy.send(.unblock, domain: "reddit.com", password: rightPassword)
+        #expect(busy.send(.status).status?.adultFilterEnabled == true)
     }
 
     // A failure written by hand, using the two codes added in the current design.

@@ -47,7 +47,7 @@ struct UnblockTests {
             let midwayRemaining = try #require(midway.blocked.first?.unblockSecondsRemaining)
             #expect((1...2).contains(midwayRemaining), "about 1 s of 2 s should be left, the display shows \(midwayRemaining)")
 
-            let removedAfter = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
+            let removedAfter = waitUntil(timeout: 3.5, interval: 0.02) { daemon.hostsText() == ExpectedHosts.idleText }
             let tookTotal = watch.elapsed
             #expect(removedAfter != nil, "the block was not removed within 3.5 s after the 2 s delay; file:\n\(daemon.hostsText())")
             #expect(tookTotal >= 2.0, "the block was removed \(tookTotal) s after the request was sent, before the 2 s delay was over (request sent \(phase) s into a tick)")
@@ -71,7 +71,7 @@ struct UnblockTests {
             let second = try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
             let remaining = try #require(second.status?.blocked.first?.unblockSecondsRemaining)
             #expect(remaining <= 1, "a restarted countdown would show 2; got \(remaining)")
-            let removedAfter = waitUntil(timeout: 3.0, interval: 0.02) { daemon.hostsText() == StandardHosts.text }
+            let removedAfter = waitUntil(timeout: 3.0, interval: 0.02) { daemon.hostsText() == ExpectedHosts.idleText }
             #expect(removedAfter != nil)
             #expect(watch.elapsed < 3.2, "the site should be gone about 2 s after the FIRST unblock")
         }

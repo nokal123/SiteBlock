@@ -42,9 +42,15 @@ public struct Paths: Sendable {
     public let newsyslogConf: String
     /// The folder where macOS keeps mandatory app settings that only root can change. Chrome's block list is written here.
     public let managedPreferencesDir: String
+    /// Sandbox only: the JSON file that stands in for the Mac's network services, so tests can create services and tamper with their DNS servers. It is nil for the installed service, which reads the real network settings through the SystemConfiguration framework.
+    public let networkServicesFile: String?
+    /// Sandbox only: a file whose presence makes the DNS enforcer behave as if the family DNS servers did not answer, so tests can switch that on and off while a daemon runs. It is nil for the installed service, so the installed service has no code path that reads a fake.
+    public let familyDNSUnreachableMarker: String?
+    /// Sandbox only: a file holding a number of seconds that each family-DNS check sleeps before it answers, so tests can make the check slow. It is nil for the installed service.
+    public let familyDNSProbeDelayFile: String?
 
     /// Builds the layout shared by production and sandbox: each location is a fixed spot under the given folders.
-    private init(isSandbox: Bool, appBundle: String, cliPath: String, backupDaemon: String, appBackup: String, stateDir: String, socket: String, hosts: String, logDir: String, launchDaemonsDir: String, launchAgentsDir: String, newsyslogConf: String, managedPreferencesDir: String) {
+    private init(isSandbox: Bool, appBundle: String, cliPath: String, backupDaemon: String, appBackup: String, stateDir: String, socket: String, hosts: String, logDir: String, launchDaemonsDir: String, launchAgentsDir: String, newsyslogConf: String, managedPreferencesDir: String, networkServicesFile: String?, familyDNSUnreachableMarker: String?, familyDNSProbeDelayFile: String?) {
         self.isSandbox = isSandbox
         self.appBundle = appBundle
         self.appExecutable = appBundle + "/Contents/MacOS/SiteBlock"
@@ -66,6 +72,9 @@ public struct Paths: Sendable {
         self.appAgentPlist = launchAgentsDir + "/com.nokal.siteblock.app.plist"
         self.newsyslogConf = newsyslogConf
         self.managedPreferencesDir = managedPreferencesDir
+        self.networkServicesFile = networkServicesFile
+        self.familyDNSUnreachableMarker = familyDNSUnreachableMarker
+        self.familyDNSProbeDelayFile = familyDNSProbeDelayFile
     }
 
     /// The name of Chrome's settings file inside the managed preferences folder (Chrome's app identifier plus ".plist").
@@ -87,7 +96,7 @@ public struct Paths: Sendable {
         backupDaemon: "/usr/local/libexec/siteblock/siteblockd", appBackup: "/usr/local/libexec/siteblock/SiteBlock.app", stateDir: "/Library/Application Support/SiteBlock",
         socket: "/var/run/siteblock.sock", hosts: "/etc/hosts", logDir: "/Library/Logs/SiteBlock",
         launchDaemonsDir: "/Library/LaunchDaemons", launchAgentsDir: "/Library/LaunchAgents",
-        newsyslogConf: "/etc/newsyslog.d/siteblock.conf", managedPreferencesDir: "/Library/Managed Preferences"
+        newsyslogConf: "/etc/newsyslog.d/siteblock.conf", managedPreferencesDir: "/Library/Managed Preferences", networkServicesFile: nil, familyDNSUnreachableMarker: nil, familyDNSProbeDelayFile: nil
     )
 
     /// Puts every location under the given folder, for tests and manual checks. A Unix socket path must be shorter than 104 bytes, so callers should pick a short root such as one under /tmp.
@@ -100,7 +109,7 @@ public struct Paths: Sendable {
             backupDaemon: base + "/libexec/siteblock/siteblockd", appBackup: base + "/libexec/siteblock/SiteBlock.app", stateDir: base + "/state",
             socket: base + "/siteblock.sock", hosts: base + "/hosts", logDir: base + "/logs",
             launchDaemonsDir: base + "/LaunchDaemons", launchAgentsDir: base + "/LaunchAgents",
-            newsyslogConf: base + "/newsyslog.d/siteblock.conf", managedPreferencesDir: base + "/ManagedPreferences"
+            newsyslogConf: base + "/newsyslog.d/siteblock.conf", managedPreferencesDir: base + "/ManagedPreferences", networkServicesFile: base + "/network-services.json", familyDNSUnreachableMarker: base + "/family-dns-unreachable", familyDNSProbeDelayFile: base + "/family-dns-probe-delay"
         )
     }
 }

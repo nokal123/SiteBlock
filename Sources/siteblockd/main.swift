@@ -12,6 +12,7 @@ enum Mode {
     case watchdog
     case version
     case printPlist(LaunchdPlists.Job)
+    case printDNSPlan
 }
 
 /// The parsed command line.
@@ -28,6 +29,7 @@ usage: siteblockd --daemon [--sandbox <dir> [--tick <seconds>] [--policy-fast]]
        siteblockd --watchdog
        siteblockd --version
        siteblockd --print-plist <daemon|watchdog|app> [--sandbox <dir>]
+       siteblockd --print-dns-plan [--sandbox <dir>]
 
 """
 
@@ -51,7 +53,7 @@ func parseOptions(_ arguments: [String]) -> Options {
     }
     /// Records that a mode flag was seen; exactly one mode is allowed.
     func setMode(_ mode: Mode, flag: String) {
-        if options.mode != nil { usageError("only one of --daemon, --watchdog, --version and --print-plist may be given") }
+        if options.mode != nil { usageError("only one of --daemon, --watchdog, --version, --print-plist and --print-dns-plan may be given") }
         options.mode = mode
     }
     while index < arguments.count {
@@ -61,6 +63,7 @@ func parseOptions(_ arguments: [String]) -> Options {
         case "--daemon": setMode(.daemon, flag: flag)
         case "--watchdog": setMode(.watchdog, flag: flag)
         case "--version": setMode(.version, flag: flag)
+        case "--print-dns-plan": setMode(.printDNSPlan, flag: flag)
         case "--print-plist":
             let name = value(for: flag)
             guard let job = LaunchdPlists.Job(argument: name) else { usageError("--print-plist needs daemon, watchdog or app") }
@@ -78,7 +81,7 @@ func parseOptions(_ arguments: [String]) -> Options {
         }
         index += 1
     }
-    guard options.mode != nil else { usageError("one of --daemon, --watchdog, --version or --print-plist is required") }
+    guard options.mode != nil else { usageError("one of --daemon, --watchdog, --version, --print-plist or --print-dns-plan is required") }
     // Short waits and fast ticks are only for sandbox runs, so the installed daemon can never be started with them.
     if options.sandboxRoot == nil && options.tickSeconds != nil { usageError("--tick is only accepted together with --sandbox") }
     if options.sandboxRoot == nil && options.policyFast { usageError("--policy-fast is only accepted together with --sandbox") }
@@ -97,6 +100,14 @@ case .version:
 case .printPlist(let job):
     // The install script writes the plist files from this output, so the plist text has a single source.
     print(LaunchdPlists.xml(for: job, paths: paths), terminator: "")
+case .printDNSPlan:
+    // A read-only diagnostic: it lists the network services, what DNS servers each has, and what SiteBlock would set, without changing anything. It needs no root, and (without --sandbox) it reads the real network settings.
+    do {
+        print(try DNSPlanReport.text(paths: paths), terminator: "")
+    } catch {
+        FileHandle.standardError.write(Data("siteblockd: cannot read the network settings: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
 case .watchdog:
     // The watchdog's whole job is to call launchctl, which sandbox mode forbids, so the combination is refused instead of silently doing nothing.
     if options.sandboxRoot != nil { usageError("--watchdog cannot be combined with --sandbox") }

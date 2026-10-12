@@ -12,9 +12,15 @@ Three programs make this work:
 - A second copy of `siteblockd` runs as a watchdog. The service and the watchdog each restart the other if it is stopped.
 - `SiteBlock.app` (the shield icon in the menu bar) and the `siteblock` Terminal command are how you control it.
 
-While at least one site is blocked, SiteBlock also turns off iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers). Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. Private Relay comes back on its own once nothing is blocked. SiteBlock also writes your blocked sites into Chrome's own block list, a setting Chrome normally uses on company computers. Chrome then refuses those sites itself, in every window and profile, even in a Chrome window that sends its traffic through a proxy or SSH tunnel and so never checks `/etc/hosts`. While any site is blocked, Chrome's menu shows "Managed by your organization"; that only refers to this block list.
+SiteBlock also keeps iCloud Private Relay (Apple's paid service that sends Safari's traffic through Apple's servers) turned off, for as long as SiteBlock is installed. Private Relay sends Safari's site lookups to Apple instead of checking `/etc/hosts`, which would let Safari skip the block, and it would also skip the adult content filter described below. SiteBlock uses the method Apple documents for networks: it blocks the two names Private Relay needs, so macOS reports Private Relay as unavailable. SiteBlock also writes your blocked sites into Chrome's own block list, a setting Chrome normally uses on company computers. Chrome then refuses those sites itself, in every window and profile, even in a Chrome window that sends its traffic through a proxy or SSH tunnel and so never checks `/etc/hosts`. Chrome's menu always shows "Managed by your organization"; that only refers to SiteBlock's settings.
 
 A site you block also blocks its common variants, because the hosts file cannot use wildcards. Blocking `youtube.com` also blocks `www.youtube.com`, `m.youtube.com`, `youtu.be`, `music.youtube.com`, YouTube Kids, and the servers that hold YouTube's thumbnails and page files.
+
+## Adult content filter (always on)
+
+SiteBlock blocks adult websites whether or not they are on your list. There is no setting, password or waiting period that turns this off; only uninstalling SiteBlock removes it. It has two layers. First, it sets the DNS servers (the servers that turn site names into addresses) of every network connection to Cloudflare for Families, which refuses to look up adult sites. SiteBlock saves the servers each connection had before and puts them back when you uninstall. Second, through the same Chrome settings file that holds your block list, it turns on SafeSearch and Chrome's adult-site filter, and it turns off Chrome's Secure DNS so that Chrome uses the Mac's DNS servers too.
+
+The family servers are used only while they answer. On Wi-Fi with a sign-in page (a captive portal, such as in a hotel or café) and on networks that force their own DNS, they do not answer, so SiteBlock leaves the network's own DNS in place and you can sign in and browse. It checks again every 30 seconds and when the network changes, and sets the family servers again as soon as they answer. Until then only the Chrome layer is active. A VPN supplies its own DNS servers, and SiteBlock does not change VPN connections, so a VPN bypasses the DNS layer; the Chrome layer still applies in Chrome.
 
 ## Install
 
@@ -63,7 +69,7 @@ After 48 hours the SiteBlock password is cleared and you can set a new one. Your
 
 ## Uninstall
 
-Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait 48 hours (or your unblock delay, if you have set it longer than that) before removing SiteBlock. Every site stays blocked during the wait. When it ends, SiteBlock removes its background service, the menu bar app and its lines in `/etc/hosts`. `siteblock uninstall --cancel` stops a pending uninstall.
+Open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the password and then wait 48 hours (or your unblock delay, if you have set it longer than that) before removing SiteBlock. Every site stays blocked during the wait. When it ends, SiteBlock removes its background service, the menu bar app, its lines in `/etc/hosts` and its settings in Chrome, and puts your original DNS servers back. `siteblock uninstall --cancel` stops a pending uninstall.
 
 ## What SiteBlock can and cannot stop
 
@@ -75,12 +81,14 @@ For the strongest protection, use a standard (non-administrator) macOS account d
 
 ## Logs
 
-The service writes to `/Library/Logs/SiteBlock/siteblockd.log` and the watchdog to `/Library/Logs/SiteBlock/watchdog.log`. A line saying "hosts file repaired" means something edited `/etc/hosts` and SiteBlock put its lines back.
+The service writes to `/Library/Logs/SiteBlock/siteblockd.log` and the watchdog to `/Library/Logs/SiteBlock/watchdog.log`. A line saying "hosts file repaired" means something edited `/etc/hosts` and SiteBlock put its lines back. A line saying "family DNS unreachable" means the family DNS servers do not answer on the current network, so SiteBlock is using the network's own DNS until they do.
 
 ## For developers
 
 The design documents are in `Design Plans/`, starting with `00-INDEX.md`.
 
 Run the tests with `scripts/test.sh`. It adds the compiler flags that Swift Testing needs on a Mac that has only the Command Line Tools and not Xcode. The integration tests start the real `siteblockd` in sandbox mode, which uses a temporary folder in place of `/etc/hosts` and the system folders, so the tests need no administrator password.
+
+To see what SiteBlock finds on each network connection and what it would do about its DNS servers, run `siteblockd --print-dns-plan` (the installed copy is `/usr/local/libexec/siteblock/siteblockd`, and `build/` holds the copy that `scripts/build.sh` made). It only reads, needs no administrator rights, and changes nothing.
 
 If an install breaks, run `sudo scripts/install.sh` again. It replaces the programs and restarts the background jobs, and it keeps every block, the password and every countdown.

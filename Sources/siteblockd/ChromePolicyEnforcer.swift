@@ -1,7 +1,7 @@
 import Foundation
 import SiteBlockCore
 
-/// Keeps Chrome's mandatory `URLBlocklist` policy equal to the block list, so Chrome refuses blocked sites even in windows whose traffic goes through a proxy and never reads the hosts file. The text rules (which names, how to merge with other settings) live in `ChromePolicy`; this class finds the files, reads them, writes them safely, and reports whether they are right.
+/// Keeps Chrome's mandatory policy file equal to what SiteBlock wants: the `URLBlocklist` list (so Chrome refuses blocked sites even in windows whose traffic goes through a proxy and never reads the hosts file) and the three adult content filter settings. The text rules (which names and values, how to merge with other settings) live in `ChromePolicy`; this class finds the files, reads them, writes them safely, and reports whether they are right.
 final class ChromePolicyEnforcer {
     // A failure message that repeats is logged at most this often, so a persistent problem (such as a read-only disk) does not write a line every tick.
     private static let repeatedFailureLogInterval = Duration.seconds(60)
@@ -42,9 +42,9 @@ final class ChromePolicyEnforcer {
         var attributesCorrect = false
     }
 
-    /// Makes the machine-wide file and the console user's file hold the block list. Returns true when both are correct after the pass. `causedByCommand` should be true when the caller just changed the block list on purpose (a command, or a countdown that finished), so the rewrite is expected and is not logged.
-    func enforce(blockedSites: [BlockedSite], causedByCommand: Bool = false) -> Bool {
-        let blocklist = ChromePolicy.urlBlocklist(for: blockedSites)
+    /// Makes the machine-wide file and the console user's file hold the block list and, while `adultFilterActive` is true, the adult content filter settings. Returns true when both are correct after the pass. `causedByCommand` should be true when the caller just changed the block list on purpose (a command, or a countdown that finished), so the rewrite is expected and is not logged. The uninstaller passes an empty site list and `adultFilterActive: false`, which takes every SiteBlock key out of the files.
+    func enforce(blockedSites: [BlockedSite], adultFilterActive: Bool, causedByCommand: Bool = false) -> Bool {
+        let managed = ChromePolicy.managedValues(blocklist: ChromePolicy.urlBlocklist(for: blockedSites), adultFilter: adultFilterActive)
         var targets = [paths.chromePolicyMachinePlist]
         // The per-user copy is what Chrome reloads within seconds of a change, so it is kept next to the machine-wide one.
         if let user = consoleUserName() { targets.append(paths.chromePolicyUserPlist(forUser: user)) }
@@ -52,7 +52,7 @@ final class ChromePolicyEnforcer {
         var healthy = true
         var changedAny = false
         for target in targets {
-            switch enforceFile(at: target, blocklist: blocklist) {
+            switch enforceFile(at: target, managed: managed) {
             case .unchanged: break
             case .changed: changedAny = true
             case .failed: healthy = false
@@ -78,10 +78,10 @@ final class ChromePolicyEnforcer {
         return name
     }
 
-    /// Brings one policy file in line with the block list: leaves it alone when its settings and attributes are right, deletes it when nothing should remain in it, and otherwise rewrites it with the block list merged into its other settings.
-    private func enforceFile(at path: String, blocklist: [String]) -> FileOutcome {
+    /// Brings one policy file in line with what SiteBlock wants: leaves it alone when its settings and attributes are right, deletes it when nothing should remain in it, and otherwise rewrites it with SiteBlock's keys merged into its other settings. Any SiteBlock key with a different value, a different type, or no value at all makes the file differ, so it is rewritten.
+    private func enforceFile(at path: String, managed: [String: Any]) -> FileOutcome {
         let existing = readExisting(path)
-        guard let wanted = ChromePolicy.merged(existing: existing.contents, blocklist: blocklist) else {
+        guard let wanted = ChromePolicy.merged(existing: existing.contents, managed: managed) else {
             // Nothing should remain in the file, so a leftover file (or a symlink or damaged file in its place) is deleted. An absent file is already right.
             guard existing.exists else { return .unchanged }
             if unlink(path) == 0 || errno == ENOENT { return .changed }
@@ -89,7 +89,7 @@ final class ChromePolicyEnforcer {
             return .failed
         }
         // Compared as property list dictionaries, so the order of keys and the file format (XML or binary) do not matter.
-        if existing.attributesCorrect, let current = existing.contents, NSDictionary(dictionary: current).isEqual(to: wanted) { return .unchanged }
+        if existing.attributesCorrect, let current = existing.contents, ChromePolicyEnforcer.sameSettings(current, wanted) { return .unchanged }
 
         let folder = URL(fileURLWithPath: path).deletingLastPathComponent().path
         let data: Data
@@ -104,6 +104,18 @@ final class ChromePolicyEnforcer {
             return .failed
         }
         return .changed
+    }
+
+    /// True when two policy dictionaries hold equal values and every SiteBlock key has the same kind of value in both. The kind check is needed because Foundation treats the boolean true and the whole number 1 as equal, but Chrome ignores a boolean policy whose value is a number (and the reverse), so a hand edit that swaps one for the other must not look correct.
+    private static func sameSettings(_ current: [String: Any], _ wanted: [String: Any]) -> Bool {
+        guard NSDictionary(dictionary: current).isEqual(to: wanted) else { return false }
+        return ChromePolicy.managedKeys.allSatisfy { isBoolean(current[$0]) == isBoolean(wanted[$0]) }
+    }
+
+    /// True when the value is a property list boolean (`<true/>` or `<false/>`) as opposed to a number.
+    private static func isBoolean(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 
     /// Opens the file without following a symlink, checks that it is a plain file of reasonable size, and reads its settings. A missing file gives `exists == false`. A file that cannot be opened, is not a plain file, is too big, is not a property list, or is not a dictionary gives `exists == true` and no contents, so it is replaced as if it were empty.

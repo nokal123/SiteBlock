@@ -14,6 +14,14 @@ import SiteBlockCore
 
 private let policyKey = "URLBlocklist"
 
+// Design change: 03-daemon-cli-app.md § 9 ChromePolicyEnforcer ("Content rules") replaced `merged(existing:blocklist:)` with
+// `merged(existing:managed:)`, where `managed` comes from `managedValues(blocklist:adultFilter:)` and also carries the three adult-filter
+// keys. The tests below were written for the old signature and only exercise the URLBlocklist key, so this helper builds the `managed`
+// dictionary the way the enforcer does with the adult filter off (adultFilter: false adds no adult-filter keys). Their expected values are unchanged.
+private func mergedBlocklist(existing: [String: Any]?, blocklist: [String]) -> [String: Any]? {
+    ChromePolicy.merged(existing: existing, managed: ChromePolicy.managedValues(blocklist: blocklist, adultFilter: false))
+}
+
 // A blocked site with the given expanded hosts, as the engine would store it. A pending unblock is optional.
 private func site(_ domain: String, _ hosts: [String], pending: Countdown? = nil) -> BlockedSite {
     BlockedSite(domain: domain, hosts: hosts, pendingUnblock: pending)
@@ -254,20 +262,20 @@ struct ChromePolicyBlocklistTests {
     }
 }
 
-@Suite("ChromePolicy.merged(existing:blocklist:)")
+@Suite("mergedBlocklist(existing:blocklist:)")
 struct ChromePolicyMergeTests {
     // MARK: a non-empty list
 
     // No file yet: the policy file holds only the block list.
     @Test func nilExistingWithAListGivesJustTheBlocklist() throws {
-        let merged = ChromePolicy.merged(existing: nil, blocklist: ["a.com", "b.com"])
+        let merged = mergedBlocklist(existing: nil, blocklist: ["a.com", "b.com"])
         #expect(same(merged, [policyKey: ["a.com", "b.com"]]))
         #expect(merged?.count == 1)
     }
 
     // An empty file (a property list with no keys) is the same as no file.
     @Test func anEmptyExistingDictionaryWithAListGivesJustTheBlocklist() {
-        #expect(same(ChromePolicy.merged(existing: [:], blocklist: ["a.com"]), [policyKey: ["a.com"]]))
+        #expect(same(mergedBlocklist(existing: [:], blocklist: ["a.com"]), [policyKey: ["a.com"]]))
     }
 
     // A real company policy in the same file must survive, whatever the type of its value.
@@ -280,7 +288,7 @@ struct ChromePolicyMergeTests {
             "ManagedBookmarks": [["name": "Wiki", "url": "https://wiki.example/"]],
             "ProxySettings": ["ProxyMode": "direct"],
         ]
-        let merged = ChromePolicy.merged(existing: existing, blocklist: ["a.com"])
+        let merged = mergedBlocklist(existing: existing, blocklist: ["a.com"])
         var expected = existing
         expected[policyKey] = ["a.com"]
         #expect(same(merged, expected))
@@ -288,7 +296,7 @@ struct ChromePolicyMergeTests {
 
     // SiteBlock's list replaces an older URLBlocklist; it is not appended to it, or an unblocked site would stay blocked forever.
     @Test func anExistingBlocklistIsReplacedNotExtended() {
-        let merged = ChromePolicy.merged(existing: [policyKey: ["old.com", "a.com"], "HomepageLocation": "https://h.example/"], blocklist: ["a.com", "new.com"])
+        let merged = mergedBlocklist(existing: [policyKey: ["old.com", "a.com"], "HomepageLocation": "https://h.example/"], blocklist: ["a.com", "new.com"])
         #expect(listValue(merged) == ["a.com", "new.com"])
         #expect(merged?["HomepageLocation"] as? String == "https://h.example/")
         #expect(merged?.count == 2)
@@ -314,7 +322,7 @@ struct ChromePolicyMergeTests {
     // A hand-edited file may hold a URLBlocklist of the wrong type. Chrome would ignore it, so it is overwritten with the list.
     @Test(arguments: WrongType.allCases)
     func anExistingNonArrayBlocklistIsReplaced(wrong: WrongType) {
-        let merged = ChromePolicy.merged(existing: [policyKey: wrong.value, "Other": "kept"], blocklist: ["a.com"])
+        let merged = mergedBlocklist(existing: [policyKey: wrong.value, "Other": "kept"], blocklist: ["a.com"])
         #expect(listValue(merged) == ["a.com"], "URLBlocklist was \(wrong)")
         #expect(merged?["Other"] as? String == "kept", "URLBlocklist was \(wrong)")
         #expect(merged?.count == 2, "URLBlocklist was \(wrong)")
@@ -324,39 +332,39 @@ struct ChromePolicyMergeTests {
 
     // With nothing blocked the key goes, and the company's other keys stay.
     @Test func anEmptyListRemovesTheBlocklistAndKeepsOtherKeys() {
-        let merged = ChromePolicy.merged(existing: [policyKey: ["a.com"], "HomepageLocation": "https://h.example/", "ShowHomeButton": true], blocklist: [])
+        let merged = mergedBlocklist(existing: [policyKey: ["a.com"], "HomepageLocation": "https://h.example/", "ShowHomeButton": true], blocklist: [])
         #expect(same(merged, ["HomepageLocation": "https://h.example/", "ShowHomeButton": true]))
         #expect(merged?[policyKey] == nil)
     }
 
     // The empty list must not leave an empty array behind either: Chrome would treat "URLBlocklist = []" as a company policy of "block nothing".
     @Test func anEmptyListDoesNotLeaveAnEmptyArrayBehind() {
-        let merged = ChromePolicy.merged(existing: ["Other": 1], blocklist: [])
+        let merged = mergedBlocklist(existing: ["Other": 1], blocklist: [])
         #expect(merged != nil)
         #expect(merged?.keys.contains(policyKey) == false)
     }
 
     // Nothing left means the file should be deleted, which merged signals with nil.
     @Test func anEmptyListWithOnlyTheBlocklistPresentGivesNil() {
-        #expect(ChromePolicy.merged(existing: [policyKey: ["a.com", "b.com"]], blocklist: []) == nil)
+        #expect(mergedBlocklist(existing: [policyKey: ["a.com", "b.com"]], blocklist: []) == nil)
     }
 
     @Test func anEmptyListWithOnlyANonArrayBlocklistPresentGivesNil() {
-        #expect(ChromePolicy.merged(existing: [policyKey: "not an array"], blocklist: []) == nil)
+        #expect(mergedBlocklist(existing: [policyKey: "not an array"], blocklist: []) == nil)
     }
 
     @Test func anEmptyListWithNoExistingFileGivesNil() {
-        #expect(ChromePolicy.merged(existing: nil, blocklist: []) == nil)
+        #expect(mergedBlocklist(existing: nil, blocklist: []) == nil)
     }
 
     @Test func anEmptyListWithAnEmptyExistingDictionaryGivesNil() {
-        #expect(ChromePolicy.merged(existing: [:], blocklist: []) == nil)
+        #expect(mergedBlocklist(existing: [:], blocklist: []) == nil)
     }
 
     // An empty list and no blocklist key in the file: the file is already right and keeps its keys.
     @Test func anEmptyListWithOtherKeysAndNoBlocklistLeavesThemAlone() {
         let existing: [String: Any] = ["HomepageLocation": "https://h.example/"]
-        #expect(same(ChromePolicy.merged(existing: existing, blocklist: []), existing))
+        #expect(same(mergedBlocklist(existing: existing, blocklist: []), existing))
     }
 
     // MARK: idempotence
@@ -364,8 +372,70 @@ struct ChromePolicyMergeTests {
     // Running the merge on its own output changes nothing, so a pass that finds a correct file has nothing to write. Clearing then leaves exactly the other keys.
     @Test func mergingTheResultAgainGivesTheSameDictionary() {
         let list = ["a.com", "b.com"]
-        let once = ChromePolicy.merged(existing: ["HomepageLocation": "https://h.example/"], blocklist: list)
-        #expect(same(ChromePolicy.merged(existing: once, blocklist: list), once))
-        #expect(same(ChromePolicy.merged(existing: once, blocklist: []), ["HomepageLocation": "https://h.example/"]))
+        let once = mergedBlocklist(existing: ["HomepageLocation": "https://h.example/"], blocklist: list)
+        #expect(same(mergedBlocklist(existing: once, blocklist: list), once))
+        #expect(same(mergedBlocklist(existing: once, blocklist: []), ["HomepageLocation": "https://h.example/"]))
+    }
+}
+
+// 03-daemon-cli-app.md § 9 ChromePolicyEnforcer, "Adult-filter keys" and "Content rules": while the adult content filter is on, the policy file
+// carries SafeSitesFilterBehavior = 1 (integer), ForceGoogleSafeSearch = true (boolean) and DnsOverHttpsMode = "off" (string), and URLBlocklist
+// only when the list is not empty. The key names and the value types are typed here from the design. Chrome ignores a policy whose type is wrong,
+// so the types are checked through a property list round trip, the way the file is written.
+@Suite("ChromePolicy adult filter keys")
+struct ChromePolicyAdultFilterTests {
+    private let filterKeys = ["SafeSitesFilterBehavior", "ForceGoogleSafeSearch", "DnsOverHttpsMode"]
+
+    // Writes the dictionary as an XML property list and returns the text, so the types show as elements (<integer>, <true/>, <string>).
+    private func xml(_ dictionary: [String: Any]) throws -> String {
+        String(decoding: try PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0), as: UTF8.self)
+    }
+
+    @Test func managedKeysAreExactlyTheFourDesignKeys() {
+        #expect(Set(ChromePolicy.managedKeys) == ["URLBlocklist", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch", "DnsOverHttpsMode"])
+    }
+
+    @Test func withTheFilterOnAndNoSitesTheManagedValuesAreTheThreeFilterKeysWithTheRightTypes() throws {
+        let values = ChromePolicy.managedValues(blocklist: [], adultFilter: true)
+        #expect(Set(values.keys) == Set(filterKeys))
+        let text = try xml(values)
+        #expect(text.contains("<key>SafeSitesFilterBehavior</key>\n\t<integer>1</integer>"))
+        #expect(text.contains("<key>ForceGoogleSafeSearch</key>\n\t<true/>"))
+        #expect(text.contains("<key>DnsOverHttpsMode</key>\n\t<string>off</string>"))
+    }
+
+    @Test func withTheFilterOnAndSitesTheListIsAddedToTheThreeFilterKeys() {
+        let values = ChromePolicy.managedValues(blocklist: ["a.com", "b.com"], adultFilter: true)
+        #expect(Set(values.keys) == Set(filterKeys + ["URLBlocklist"]))
+        #expect(values["URLBlocklist"] as? [String] == ["a.com", "b.com"])
+    }
+
+    @Test func withTheFilterOffTheFilterKeysAreLeftOutAndAnEmptyListIsLeftOutToo() {
+        #expect(ChromePolicy.managedValues(blocklist: [], adultFilter: false).isEmpty)
+        #expect(Set(ChromePolicy.managedValues(blocklist: ["a.com"], adultFilter: false).keys) == ["URLBlocklist"])
+    }
+
+    // merged keeps keys that are not SiteBlock's, replaces SiteBlock's own keys with the wanted values (a stale value of the wrong type included), and leaves nothing behind when the wanted values are empty.
+    @Test func mergedReplacesEveryManagedKeyAndKeepsTheOthers() throws {
+        let existing: [String: Any] = ["HomepageLocation": "https://h.example/", "SafeSitesFilterBehavior": true, "ForceGoogleSafeSearch": 1, "DnsOverHttpsMode": "secure", "URLBlocklist": ["old.com"]]
+        let merged = try #require(ChromePolicy.merged(existing: existing, managed: ChromePolicy.managedValues(blocklist: [], adultFilter: true)))
+        #expect(Set(merged.keys) == Set(filterKeys + ["HomepageLocation"]), "the stale URLBlocklist must go because the wanted list is empty")
+        let text = try xml(merged)
+        #expect(text.contains("<key>SafeSitesFilterBehavior</key>\n\t<integer>1</integer>"), "the boolean must become the integer 1")
+        #expect(text.contains("<key>ForceGoogleSafeSearch</key>\n\t<true/>"), "the integer must become the boolean true")
+        #expect(text.contains("<key>DnsOverHttpsMode</key>\n\t<string>off</string>"))
+        #expect(merged["HomepageLocation"] as? String == "https://h.example/")
+    }
+
+    @Test func mergedWithNoWantedValuesRemovesAllFourKeysAndDeletesAnOtherwiseEmptyFile() {
+        let all: [String: Any] = ["SafeSitesFilterBehavior": 1, "ForceGoogleSafeSearch": true, "DnsOverHttpsMode": "off", "URLBlocklist": ["a.com"]]
+        #expect(ChromePolicy.merged(existing: all, managed: [:]) == nil)
+        var withOther = all
+        withOther["Other"] = "kept"
+        #expect((ChromePolicy.merged(existing: withOther, managed: [:]) as NSDictionary?) == ["Other": "kept"] as NSDictionary)
+    }
+
+    @Test func mergedWithTheFilterOnNeverReturnsNilEvenWithNothingBlocked() {
+        #expect(ChromePolicy.merged(existing: nil, managed: ChromePolicy.managedValues(blocklist: [], adultFilter: true)) != nil)
     }
 }

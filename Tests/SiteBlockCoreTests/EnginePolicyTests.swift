@@ -380,17 +380,19 @@ import SiteBlockCore
 }
 
 // 02-core-components.md § Engine, Properties: "`static let privateRelayHosts` — [mask-h2.icloud.com, mask.icloud.com]" and "`var hostsToWrite`
-// — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` when `blockedHosts` is not empty, sorted and
-// without duplicates; empty when nothing is blocked."
+// — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` whenever `adultFilterActive` is true (so, in practice,
+// always), sorted and without duplicates."
+// Design change: hostsToWrite used to include the relay names only when a site was blocked and was empty otherwise. The adult content filter is
+// always on (01 § How Blocking Works, Adult content filter), so the names are written even with nothing blocked.
 @Suite struct EngineHostsToWriteTests {
     @Test func theTwoPrivateRelayNamesAreExactlyTheOnesInTheDesign() {
         #expect(Engine.privateRelayHosts == ["mask-h2.icloud.com", "mask.icloud.com"])
     }
 
-    @Test func withNothingBlockedThereIsNothingToWriteSoPrivateRelayIsLeftAlone() {
+    @Test func withNothingBlockedOnlyThePrivateRelayNamesAreWritten() {
         let engine = makeEngine()
-        #expect(engine.hostsToWrite.isEmpty)
-        #expect(makeEngine(password: nil).hostsToWrite.isEmpty)
+        #expect(engine.hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"])
+        #expect(makeEngine(password: nil).hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"], "the filter does not wait for a password")
     }
 
     @Test func withASiteBlockedTheRelayNamesAreAddedToItsHostsInSortedOrder() {
@@ -417,14 +419,14 @@ import SiteBlockCore
         #expect(engine.hostsToWrite == engine.hostsToWrite.sorted())
     }
 
-    // A site waiting to unblock is still blocked, so the relay names stay; when the last site's wait ends, they go with it.
-    @Test func theRelayNamesStayWhileAnUnblockWaitsAndGoWhenTheLastSiteIsRemoved() {
+    // A site waiting to unblock is still blocked, so its hosts stay with the relay names; when the last site's wait ends, only the relay names are left.
+    @Test func theRelayNamesStayWhileAnUnblockWaitsAndAfterTheLastSiteIsRemoved() {
         let engine = makeEngine(blocking: ["reddit.com"])
         expectSuccess(engine.send(.unblock, domain: "reddit.com", password: rightPassword))
         #expect(engine.hostsToWrite.contains("mask.icloud.com") && engine.hostsToWrite.contains("mask-h2.icloud.com"))
         #expect(engine.tick(elapsed: 1800) == true)
         #expect(engine.blockedHosts.isEmpty)
-        #expect(engine.hostsToWrite.isEmpty)
+        #expect(engine.hostsToWrite == ["mask-h2.icloud.com", "mask.icloud.com"])
     }
 
     // With two sites, finishing one unblock keeps the relay names because the other site is still blocked.

@@ -122,6 +122,8 @@ struct StateRepairTests {
     func withNoReadableStateTheDaemonStartsFreshInsteadOfCrashing(kind: String) throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
+            // The first start wrote the Private Relay names and logged a repair for it (see logCount); only a repair logged after the restart would be wrong.
+            let repairsBeforeRestart = daemon.logCount(of: "hosts file repaired")
             daemon.kill9()
             for path in [daemon.statePath, daemon.stateBackupPath] {
                 if kind == "missing" { try FileManager.default.removeItem(atPath: path) } else { try writeText("###", to: path) }
@@ -132,13 +134,13 @@ struct StateRepairTests {
             #expect(status.blocked.isEmpty)
             #expect(status.delaySeconds == 2, "a fresh state has the policy's default delay")
             #expect(daemon.isRunning)
-            // With nothing left to block, the startup pass takes the managed section out of the hosts file.
-            #expect(daemon.hostsText() == StandardHosts.text)
+            // With nothing left to block, the startup pass takes the blocked sites out of the managed section. Design change (01 § How Blocking Works, Adult content filter): the section stays, holding only the Private Relay names.
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
             // 03 § HostsEnforcer step 7: a daemon that started with lost state does not report its removal of blocks as a repair.
             let logged = daemon.logContains("blocks removed from hosts file")
             let log = daemon.logText()
             #expect(logged, "log was:\n\(log)")
-            #expect(!log.contains("hosts file repaired"), "removing blocks because the state was lost is not a repair")
+            #expect(daemon.logCount(of: "hosts file repaired") == repairsBeforeRestart, "removing blocks because the state was lost is not a repair")
             let reply = try daemon.send(.add, domain: "reddit.com")
             #expect(reply.errorCode == .notSetUp)
             try daemon.setUp()

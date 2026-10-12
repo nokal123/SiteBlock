@@ -13,7 +13,8 @@ struct BlockingTests {
     @Test func addRedditWritesBlockLinesBeforeTheResponseReturns() throws {
         try withDaemon(tick: Self.neverTick) { daemon in
             try daemon.setUp()
-            #expect(daemon.hostsText() == StandardHosts.text, "nothing blocked yet, so the hosts file keeps only the macOS lines")
+            // Design change (01 § How Blocking Works, Adult content filter): nothing is blocked yet, but the section already holds the Private Relay names, because the adult content filter is always on.
+            #expect(daemon.hostsText() == ExpectedHosts.idleText, "nothing blocked yet, so the hosts file holds the macOS lines and a section of only the Private Relay names")
             let reply = try daemon.send(.add, domain: "reddit.com")
             // Read at once, with no waiting: only the command path can have written it.
             let hosts = daemon.hosts()
@@ -33,8 +34,10 @@ struct BlockingTests {
     // A change caused by a command is not tampering, so the log must not say the hosts file was repaired (03 § HostsEnforcer step 5).
     @Test func addDoesNotLogAHostsFileRepair() throws {
         try withDaemon(tick: Self.neverTick) { daemon in
+            // The first pass of the daemon wrote the Private Relay names and logged a repair for it (see logCount); the add must not log another.
+            let repairsAtStart = daemon.logCount(of: "hosts file repaired")
             try daemon.prepare(blocking: "reddit.com")
-            #expect(!daemon.logText().contains("hosts file repaired"))
+            #expect(daemon.logCount(of: "hosts file repaired") == repairsAtStart)
         }
     }
 
@@ -59,16 +62,20 @@ struct BlockingTests {
             let reply = try daemon.send(.add, domain: "reddit.com")
             #expect(reply.ok == false)
             #expect(reply.errorCode == .notSetUp)
-            #expect(daemon.hostsText() == StandardHosts.text)
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
             let status = try daemon.status()
             #expect(status.blocked.isEmpty)
         }
     }
 
-    // 03 § HostsEnforcer step 1: a missing hosts file counts as empty, and the next write creates it.
+    // 03 § HostsEnforcer step 1: a missing hosts file counts as empty, and the next write creates it. Design change (01 § How Blocking Works, Adult content filter): the first write is now the daemon's own startup pass, which creates the file with a section of only the Private Relay names; the add then fills the same section.
     @Test func addCreatesTheHostsFileWhenItDoesNotExist() throws {
-        try withDaemon(hosts: nil) { daemon in
-            try #require(!FileManager.default.fileExists(atPath: daemon.hostsPath))
+        try withDaemon(hosts: nil, start: false) { daemon in
+            try require(!FileManager.default.fileExists(atPath: daemon.hostsPath), "the sandbox must start without a hosts file")
+            try daemon.start()
+            let idle = daemon.hosts()
+            #expect(idle.beginCount == 1 && idle.endCount == 1, "the startup pass creates the file with the section; file now:\n\(daemon.hostsText())")
+            #expect(ExpectedHosts.privateRelayHosts.allSatisfy { idle.blocks($0) })
             try daemon.prepare(blocking: "reddit.com")
             let hosts = daemon.hosts()
             #expect(hosts.blocks("reddit.com") && hosts.blocks("i.redd.it"))
@@ -220,9 +227,10 @@ struct BlockingTests {
             let blockedText = ExpectedHosts.text(blocking: ExpectedHosts.expand("reddit.com"))
             let edited = "# reddit.com is blocked on purpose\n10.0.0.5 intranet.example\n" + blockedText
             try writeText(edited, to: daemon.hostsPath)
+            let repairsBefore = daemon.logCount(of: "hosts file repaired")
             pause(0.8)
             #expect(daemon.hostsText() == edited, "a file that is already correct must not be rewritten")
-            #expect(!daemon.logText().contains("hosts file repaired"))
+            #expect(daemon.logCount(of: "hosts file repaired") == repairsBefore)
         }
     }
 
@@ -255,9 +263,10 @@ extension BlockingTests {
             ]
             let edited = userLines.joined(separator: "\n") + "\n" + blockedText
             try writeText(edited, to: daemon.hostsPath)
+            let repairsBefore = daemon.logCount(of: "hosts file repaired")
             pause(0.8)
             #expect(daemon.hostsText() == edited, "lines with no blocked name must be left exactly as they were")
-            #expect(!daemon.logText().contains("hosts file repaired"))
+            #expect(daemon.logCount(of: "hosts file repaired") == repairsBefore)
         }
     }
 

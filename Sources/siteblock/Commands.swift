@@ -69,7 +69,7 @@ func send(_ request: Request, prefix: String = "") -> SendResult {
     }
 }
 
-/// Builds the text `siteblock status` prints from a snapshot: the delay, then each blocked site with its host count and any countdown, then any pending delay change, uninstall, recovery or lockout.
+/// Builds the text `siteblock status` prints from a snapshot: the delay, then each blocked site with its host count and any countdown, then the adult content filter line, then any pending delay change, uninstall, recovery or lockout.
 func formatStatus(_ status: StatusSnapshot) -> String {
     var lines = ["SiteBlock \(status.version) — unblock delay: \(Formatting.duration(status.delaySeconds))"]
     if !status.passwordSet { lines.append("No password yet. You choose it the first time you block a site.") }
@@ -83,6 +83,8 @@ func formatStatus(_ status: StatusSnapshot) -> String {
             lines.append(line)
         }
     }
+    // The filter has no switch: a SiteBlock service that has it always reports it on. A service from before the filter existed sends nothing, which reads as false, and then the line says so instead of claiming protection that is not there.
+    lines.append(status.adultFilterEnabled == true ? "Adult content filter: always on" : "Adult content filter: not provided by this version of the SiteBlock service")
     if let pending = status.pendingDelay {
         lines.append("Unblock delay will change to \(Formatting.duration(pending.newDelaySeconds)) in \(Formatting.clock(pending.secondsRemaining)).")
     }

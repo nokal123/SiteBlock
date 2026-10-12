@@ -707,6 +707,94 @@ private func fullState(delay: Int = 1800, sites: Int = 2) -> PersistedState {
     }
 }
 
+// A state.json exactly as the daemon wrote it before the adult content filter existed: the JSON encoder's sorted keys, every field of the
+// PersistedState of that time with values filled in (including every countdown), and no `savedDNS` key. It is typed out here, not produced
+// by the current encoder, so it stays an old-format file whatever the current PersistedState does. The real installed daemon's file has this shape.
+private let oldFormatStateJSON = """
+{"blocked":[{"domain":"reddit.com","hosts":["reddit.com","www.reddit.com"],"pendingUnblock":{"remainingSeconds":1234.5,"totalSeconds":1800}},{"domain":"example.com","hosts":["example.com","www.example.com"]}],"delaySeconds":1800,"failedAttempts":2,"lockout":{"remainingSeconds":12.5,"totalSeconds":900},"passwordHash":{"algorithm":"pbkdf2-sha256","hash":"aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g=","iterations":210000,"salt":"c2FsdHNhbHRzYWx0c2FsdA=="},"pendingDelayChange":{"countdown":{"remainingSeconds":600,"totalSeconds":1800},"newDelaySeconds":300},"pendingUninstall":{"remainingSeconds":42,"totalSeconds":172800},"recovery":{"remainingSeconds":100,"totalSeconds":172800},"uninstalling":false,"version":1}
+"""
+
+// 01-overview-and-data.md § Data Model (PersistedState): `savedDNS` is "optional in the file: a state.json written before this field existed
+// has no such key, and it must decode as nil rather than being treated as corrupt (which would discard the block list)". Today a missing
+// required key makes the whole file count as corrupt, so these tests use the real StateStore on real files.
+@Suite struct StateStoreOldFormatTests {
+    @Test func anOldFormatStateDecodesWithTheBlockListIntactAndNoSavedDNS() throws {
+        let state = try JSONCoding.decoder.decode(PersistedState.self, from: Data(oldFormatStateJSON.utf8))
+        #expect(state.savedDNS == nil)
+        #expect(state.blocked.map(\.domain) == ["reddit.com", "example.com"])
+        #expect(state.blocked.map(\.hosts) == [["reddit.com", "www.reddit.com"], ["example.com", "www.example.com"]])
+        #expect(state.blocked[0].pendingUnblock == Countdown(remainingSeconds: 1234.5, totalSeconds: 1800))
+        #expect(state.blocked[1].pendingUnblock == nil)
+        #expect(state.passwordHash == PasswordHash(algorithm: "pbkdf2-sha256", iterations: 210_000, salt: "c2FsdHNhbHRzYWx0c2FsdA==", hash: "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g="))
+        #expect(state.delaySeconds == 1800 && state.version == 1 && state.failedAttempts == 2 && !state.uninstalling)
+        #expect(state.pendingDelayChange == PendingDelayChange(newDelaySeconds: 300, countdown: Countdown(remainingSeconds: 600, totalSeconds: 1800)))
+        #expect(state.pendingUninstall == Countdown(remainingSeconds: 42, totalSeconds: 172_800))
+        #expect(state.recovery == Countdown(remainingSeconds: 100, totalSeconds: 172_800))
+        #expect(state.lockout == Countdown(remainingSeconds: 12.5, totalSeconds: 900))
+    }
+
+    // The path that matters: the daemon loads the file at startup. The old file must come back as a state with its blocks, must not be set aside
+    // as state.json.corrupt-*, and must not be changed on disk by the load.
+    @Test func loadReadsAnOldFormatFileWithItsBlocksAndDoesNotSetItAsideAsCorrupt() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("state.json")
+            try Data(oldFormatStateJSON.utf8).write(to: url)
+            let loaded = try #require(StateStore(url: url).load(), "an old-format file was treated as corrupt and the block list was lost")
+            #expect(loaded.blocked.map(\.domain) == ["reddit.com", "example.com"])
+            #expect(loaded.savedDNS == nil)
+            let listing = try names(in: dir)
+            #expect(listing == ["state.json"], "nothing may be set aside or added: \(listing)")
+            #expect(try Data(contentsOf: url) == Data(oldFormatStateJSON.utf8), "a load must not rewrite the file")
+        }
+    }
+
+    // The same through the backup: a primary that is missing falls back to an old-format backup, which must also load.
+    @Test func anOldFormatBackupLoadsWhenThePrimaryIsMissing() throws {
+        try withTempDirectory { dir in
+            let backup = dir.appendingPathComponent("backup.json")
+            try Data(oldFormatStateJSON.utf8).write(to: backup)
+            let loaded = try #require(StateStore(url: dir.appendingPathComponent("state.json"), backupURL: backup).load())
+            #expect(loaded.blocked.map(\.domain) == ["reddit.com", "example.com"])
+        }
+    }
+
+    // After the old file has been loaded, the next save writes the new format, and that loads back to the same state.
+    @Test func savingAnOldFormatStateWritesTheNewFormatAndLoadsBackEqual() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("state.json")
+            try Data(oldFormatStateJSON.utf8).write(to: url)
+            let store = StateStore(url: url)
+            var state = try #require(store.load())
+            state.savedDNS = ["service-a": ["192.168.1.1"], "service-b": []]
+            try store.save(state)
+            let reloaded = try #require(StateStore(url: url).load())
+            #expect(reloaded == state)
+            #expect(reloaded.savedDNS == ["service-a": ["192.168.1.1"], "service-b": []], "an empty list means the service had no servers set by hand and must survive")
+        }
+    }
+
+    // Only the field added later is optional. The fields of the first release are still required, so a damaged file is still recognized as damaged.
+    @Test(arguments: ["blocked", "delaySeconds", "failedAttempts", "uninstalling", "version"])
+    func anOldFormatFileMissingAFirstReleaseFieldIsStillCorrupt(missing: String) throws {
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(oldFormatStateJSON.utf8)) as? [String: Any])
+        var damaged = object
+        damaged.removeValue(forKey: missing)
+        let data = try JSONSerialization.data(withJSONObject: damaged)
+        #expect(throws: (any Error).self) { try JSONCoding.decoder.decode(PersistedState.self, from: data) }
+    }
+
+    // A new-format file carries savedDNS in the JSON under that exact key.
+    @Test func aStateWithSavedDNSEncodesItUnderTheKeySavedDNS() throws {
+        var state = PersistedState.fresh()
+        state.savedDNS = ["A1": ["8.8.8.8", "2001:4860:4860::8888"]]
+        let object = try #require(try JSONSerialization.jsonObject(with: try JSONCoding.encoder.encode(state)) as? [String: Any])
+        #expect((object["savedDNS"] as? [String: [String]]) == ["A1": ["8.8.8.8", "2001:4860:4860::8888"]])
+        // And a state without it leaves the key out, so the file stays readable by a daemon that predates the field.
+        let plain = try #require(try JSONSerialization.jsonObject(with: try JSONCoding.encoder.encode(PersistedState.fresh())) as? [String: Any])
+        #expect(plain["savedDNS"] == nil)
+    }
+}
+
 // A tiny thread-safe box for the test's "writer finished" flag.
 private final class Locked<Value> {
     private var value: Value

@@ -8,7 +8,8 @@ let package = Package(
     targets: [
         // All policy logic lives here so it can be unit-tested without root access.
         .target(name: "SiteBlockCore", linkerSettings: [.linkedFramework("Security")]),
-        .executableTarget(name: "siteblockd", dependencies: ["SiteBlockCore"]),
+        // siteblockd links SystemConfiguration so the adult content filter can read and set the Mac's DNS servers in-process.
+        .executableTarget(name: "siteblockd", dependencies: ["SiteBlockCore"], linkerSettings: [.linkedFramework("SystemConfiguration")]),
         .executableTarget(name: "siteblock", dependencies: ["SiteBlockCore"]),
         .executableTarget(name: "SiteBlockApp", dependencies: ["SiteBlockCore"]),
         .testTarget(name: "SiteBlockCoreTests", dependencies: ["SiteBlockCore"]),

@@ -190,8 +190,8 @@ check_connection() {
 }
 
 # Check 6: the daemon says the hosts file is healthy, and the managed section is really in the file. SiteBlock
-# removes its section from the hosts file while nothing is blocked, so the BEGIN and END markers are expected only
-# once at least one site is blocked.
+# always keeps its section in the hosts file: the adult content filter is always on, so the section holds at least
+# the two iCloud Private Relay names even when no site is blocked. The BEGIN and END markers are expected every time.
 check_hosts_healthy() {
     heading 6 "the daemon reports a healthy hosts file"
     local output code
@@ -205,13 +205,18 @@ check_hosts_healthy() {
         pass "siteblock status shows no hosts file warning"
     fi
     if [[ $code -ne 0 ]]; then
-        skip "cannot tell whether $HOSTS_FILE should hold a SiteBlock section, because siteblock status failed"
-    elif [[ "$output" != *"Blocked sites ("* ]]; then
-        pass "no site is blocked yet, so SiteBlock keeps no section in $HOSTS_FILE (nothing to look for)"
+        skip "cannot check $HOSTS_FILE for SiteBlock's section, because siteblock status failed"
     elif grep -q "^# BEGIN SiteBlock" "$HOSTS_FILE" 2>/dev/null && grep -q "^# END SiteBlock" "$HOSTS_FILE" 2>/dev/null; then
         pass "$HOSTS_FILE has SiteBlock's BEGIN and END markers"
     else
         fail "$HOSTS_FILE is missing SiteBlock's BEGIN and END markers"
+    fi
+    if [[ $code -eq 0 ]]; then
+        if grep -qxF "0.0.0.0 mask.icloud.com" "$HOSTS_FILE" 2>/dev/null && grep -qxF "0.0.0.0 mask-h2.icloud.com" "$HOSTS_FILE" 2>/dev/null; then
+            pass "$HOSTS_FILE blocks the two iCloud Private Relay names (always, because the adult content filter is always on)"
+        else
+            fail "$HOSTS_FILE does not block the two iCloud Private Relay names"
+        fi
     fi
 }
 

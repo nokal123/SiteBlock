@@ -50,6 +50,8 @@
 19a. `Sources/siteblockd/ChromePolicyEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromePolicyEnforcer
 19b. `Sources/SiteBlockCore/ChromePolicy.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromePolicyEnforcer
 19c. `Sources/siteblockd/AppGuard.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § AppGuard
+19e. `Sources/SiteBlockCore/DNSProbePacket.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)
+19f. `Sources/SiteBlockCore/FamilyDNSProbe.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)
 19d. `Sources/siteblockd/DNSEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer
 20. `Sources/siteblockd/Uninstaller.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Uninstaller
 21. `Sources/siteblock/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI

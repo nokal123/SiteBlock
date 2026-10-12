@@ -71,10 +71,10 @@ struct InjectionTests {
                 let reply = try Self.rawAdd(payload, to: daemon)
                 #expect(reply.ok == false, "accepted: \(payload.debugDescription) -> \(reply.text.prefix(200))")
                 #expect(reply.errorCode == "invalidDomain", "\(payload.debugDescription) got \(String(describing: reply.errorCode))")
-                #expect(daemon.hostsText() == StandardHosts.text, "hosts file changed after \(payload.debugDescription)")
+                #expect(daemon.hostsText() == ExpectedHosts.idleText, "hosts file changed after \(payload.debugDescription)")
             }
             pause(0.5)
-            #expect(daemon.hostsText() == StandardHosts.text)
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
             let status = try daemon.status()
             #expect(status.blocked.isEmpty)
             let saved = try #require(daemon.stateObject())
@@ -179,7 +179,7 @@ struct InjectionTests {
             let reply = try rawExchange("{\"command\":\"add\",\"domain\":\"evil.com\n0.0.0.0 bank.com\"}\n", socketPath: daemon.socketPath)
             #expect(reply.errorCode == "badRequest", "got: \(reply.text.prefix(200))")
             pause(0.5)
-            #expect(daemon.hostsText() == StandardHosts.text)
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
             let status = try daemon.status()
             #expect(status.blocked.isEmpty)
         }
@@ -193,7 +193,7 @@ struct InjectionTests {
             let reply = try rawExchange(request, socketPath: daemon.socketPath)
             #expect(reply.ok == false, "\(request.debugDescription): \(reply.text.prefix(200))")
             #expect(["badRequest", "invalidDomain"].contains(reply.errorCode ?? "none"), "got \(String(describing: reply.errorCode))")
-            #expect(daemon.hostsText() == StandardHosts.text)
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
         }
     }
 

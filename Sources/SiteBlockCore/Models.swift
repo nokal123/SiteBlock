@@ -118,9 +118,11 @@ public struct PersistedState: Codable, Equatable, Sendable {
     public var lockout: Countdown?
     /// Set to true when an uninstall starts so the watchdog stops reloading the daemon.
     public var uninstalling: Bool
+    /// For each network service (keyed by its SystemConfiguration service ID), the DNS servers it had before SiteBlock replaced them with the family servers; an empty list means the service had none set by hand. Written the first time a service is overridden and used only by the uninstaller to put the originals back. Nil until the first override, and nil in any state file written before the adult content filter existed.
+    public var savedDNS: [String: [String]]?
 
     /// Creates a state record from every field.
-    public init(version: Int = PersistedState.currentVersion, passwordHash: PasswordHash? = nil, blocked: [BlockedSite] = [], delaySeconds: Int, pendingDelayChange: PendingDelayChange? = nil, pendingUninstall: Countdown? = nil, recovery: Countdown? = nil, failedAttempts: Int = 0, lockout: Countdown? = nil, uninstalling: Bool = false) {
+    public init(version: Int = PersistedState.currentVersion, passwordHash: PasswordHash? = nil, blocked: [BlockedSite] = [], delaySeconds: Int, pendingDelayChange: PendingDelayChange? = nil, pendingUninstall: Countdown? = nil, recovery: Countdown? = nil, failedAttempts: Int = 0, lockout: Countdown? = nil, uninstalling: Bool = false, savedDNS: [String: [String]]? = nil) {
         self.version = version
         self.passwordHash = passwordHash
         self.blocked = blocked
@@ -131,6 +133,28 @@ public struct PersistedState: Codable, Equatable, Sendable {
         self.failedAttempts = failedAttempts
         self.lockout = lockout
         self.uninstalling = uninstalling
+        self.savedDNS = savedDNS
+    }
+
+    /// The keys of the stored JSON; spelled out so `init(from:)` can be written by hand.
+    private enum CodingKeys: String, CodingKey {
+        case version, passwordHash, blocked, delaySeconds, pendingDelayChange, pendingUninstall, recovery, failedAttempts, lockout, uninstalling, savedDNS
+    }
+
+    /// Reads a state from JSON. The fields that existed in the first release stay required, so a file missing one (such as `{}`) is still rejected as damaged. `savedDNS` was added later, so a file written before it existed must still load, and a missing key becomes nil. Without that, an old file would count as corrupt, be set aside, and the daemon would start with an empty block list.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decode(Int.self, forKey: .version)
+        self.passwordHash = try container.decodeIfPresent(PasswordHash.self, forKey: .passwordHash)
+        self.blocked = try container.decode([BlockedSite].self, forKey: .blocked)
+        self.delaySeconds = try container.decode(Int.self, forKey: .delaySeconds)
+        self.pendingDelayChange = try container.decodeIfPresent(PendingDelayChange.self, forKey: .pendingDelayChange)
+        self.pendingUninstall = try container.decodeIfPresent(Countdown.self, forKey: .pendingUninstall)
+        self.recovery = try container.decodeIfPresent(Countdown.self, forKey: .recovery)
+        self.failedAttempts = try container.decode(Int.self, forKey: .failedAttempts)
+        self.lockout = try container.decodeIfPresent(Countdown.self, forKey: .lockout)
+        self.uninstalling = try container.decode(Bool.self, forKey: .uninstalling)
+        self.savedDNS = try container.decodeIfPresent([String: [String]].self, forKey: .savedDNS)
     }
 
     /// The state of a brand-new install: no password, nothing blocked, nothing pending.

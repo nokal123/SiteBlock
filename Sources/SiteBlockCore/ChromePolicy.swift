@@ -1,6 +1,6 @@
 import Foundation
 
-/// The pure rules for the Chrome policy file SiteBlock writes: which site names go into Chrome's `URLBlocklist` list, and how that list is put into a policy file that may already hold other settings. Nothing here reads or writes a file, so it can be tested without root access.
+/// The pure rules for the Chrome policy file SiteBlock writes: which site names go into Chrome's `URLBlocklist` list, which adult-filter settings sit beside it, and how they are put into a policy file that may already hold other settings. Nothing here reads or writes a file, so it can be tested without root access.
 public enum ChromePolicy {
     /// The key in Chrome's policy file that holds the list of sites Chrome must refuse.
     public static let blocklistKey = "URLBlocklist"
@@ -22,14 +22,33 @@ public enum ChromePolicy {
         return false
     }
 
-    /// Returns the contents the policy file should have: everything already in the file, with `URLBlocklist` set to the given list. Every other key is kept, so a real company policy in the same file is never lost. An empty list removes the `URLBlocklist` key instead, and when nothing else is left the result is nil, which means the file should be deleted. A nil `existing` (no file, or a file that was not a property list dictionary) counts as an empty file.
-    public static func merged(existing: [String: Any]?, blocklist: [String]) -> [String: Any]? {
-        var contents = existing ?? [:]
-        if blocklist.isEmpty {
-            contents.removeValue(forKey: blocklistKey)
-            return contents.isEmpty ? nil : contents
+    /// The key that makes Chrome check each top-level page against Google's adult-content classification and refuse flagged ones. The value 1 means "filter sites".
+    public static let safeSitesKey = "SafeSitesFilterBehavior"
+    /// The key that makes Google Search always use SafeSearch.
+    public static let safeSearchKey = "ForceGoogleSafeSearch"
+    /// The key that sets Chrome's Secure DNS mode. "off" makes Chrome use the Mac's own name lookups, so the family DNS servers reach Chrome too.
+    public static let dnsOverHTTPSKey = "DnsOverHttpsMode"
+
+    /// Every key SiteBlock owns in the policy file. `merged` removes all of them from the existing file before it adds the wanted values, so a stale value can never survive; every other key in the file is left alone.
+    public static let managedKeys: Set<String> = [blocklistKey, safeSitesKey, safeSearchKey, dnsOverHTTPSKey]
+
+    /// The keys SiteBlock wants in the policy file and their values. `URLBlocklist` is included only when the list is not empty (Chrome has nothing to refuse otherwise). The three adult-filter keys are included only when `adultFilter` is true: `SafeSitesFilterBehavior` as the whole number 1, `ForceGoogleSafeSearch` as the boolean true, and `DnsOverHttpsMode` as the text "off". The types matter, because Chrome ignores a policy whose type is wrong.
+    public static func managedValues(blocklist: [String], adultFilter: Bool) -> [String: Any] {
+        var values: [String: Any] = [:]
+        if !blocklist.isEmpty { values[blocklistKey] = blocklist }
+        if adultFilter {
+            values[safeSitesKey] = 1
+            values[safeSearchKey] = true
+            values[dnsOverHTTPSKey] = "off"
         }
-        contents[blocklistKey] = blocklist
-        return contents
+        return values
+    }
+
+    /// Returns the contents the policy file should have: everything already in the file except SiteBlock's own keys, plus the wanted values for those keys. Every other key is kept, so a real company policy in the same file is never lost. A key SiteBlock owns that is not in `managed` is removed (for example `URLBlocklist` once nothing is blocked). When nothing is left the result is nil, which means the file should be deleted. A nil `existing` (no file, or a file that was not a property list dictionary) counts as an empty file.
+    public static func merged(existing: [String: Any]?, managed: [String: Any]) -> [String: Any]? {
+        var contents = existing ?? [:]
+        for key in managedKeys { contents.removeValue(forKey: key) }
+        for (key, value) in managed { contents[key] = value }
+        return contents.isEmpty ? nil : contents
     }
 }

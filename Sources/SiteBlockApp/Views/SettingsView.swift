@@ -1,7 +1,7 @@
 import SiteBlockCore
 import SwiftUI
 
-/// The Settings screen, shown inside the panel (a back button returns to the list) rather than in a separate window. It holds three forms: the unblock delay, the password, and uninstall. Every form needs the current password, and every password field is emptied as soon as the form is submitted.
+/// The Settings screen, shown inside the panel (a back button returns to the list) rather than in a separate window. It holds three forms (the unblock delay, the password, and uninstall) and one information box about the adult content filter. Every form needs the current password, and every password field is emptied as soon as the form is submitted.
 struct SettingsView: View {
     @ObservedObject var model: StatusModel
     /// The latest status from the daemon.
@@ -47,6 +47,7 @@ struct SettingsView: View {
                     if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback) { BannersView(model: model, snapshot: snapshot) }
                     delaySection
                     passwordSection
+                    if snapshot.adultFilterEnabled == true { adultFilterSection }
                     uninstallSection
                 }
                 .padding(16)
@@ -175,6 +176,22 @@ struct SettingsView: View {
             return
         }
         Task { _ = await model.changePassword(old: old, new: new) }
+    }
+
+    // MARK: - Adult content filter
+
+    /// The information box about the adult content filter. It has no controls: the filter is always on, and only uninstalling SiteBlock removes it. The box is left out when the SiteBlock service is an older version that does not report the filter.
+    private var adultFilterSection: some View {
+        SectionCard(title: "Adult content filter: always on") {
+            Text("SiteBlock blocks adult websites in every browser, including sites that are not on your list. It uses the family DNS servers from Cloudflare, and it turns on SafeSearch and the adult-site filter in Chrome. It has no switch and no password. It is removed only by uninstalling SiteBlock.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("A VPN that supplies its own DNS servers can bypass the DNS part.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - Uninstall

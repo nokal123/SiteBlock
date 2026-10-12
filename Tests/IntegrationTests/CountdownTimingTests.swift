@@ -50,7 +50,7 @@ struct CountdownTimingTests {
             }
             let status = try daemon.status()
             #expect(status.blocked.isEmpty)
-            #expect(daemon.hostsText() == StandardHosts.text)
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
         }
     }
 
@@ -118,7 +118,7 @@ struct CountdownTimingTests {
             #expect(daemon.hostsText() == blocked, "a frozen daemon cannot have changed the file")
             daemon.resume()
             let resumed = Stopwatch()
-            let removed = waitUntil(timeout: 3.0, interval: 0.01) { daemon.hostsText() == StandardHosts.text }
+            let removed = waitUntil(timeout: 3.0, interval: 0.01) { daemon.hostsText() == ExpectedHosts.idleText }
             let afterResume = resumed.elapsed
             let total = watch.elapsed
             #expect(removed != nil, "the site was still blocked \(afterResume) s after the daemon was resumed")
@@ -151,7 +151,7 @@ struct CountdownTimingTests {
             pause(2.1 - watch.elapsed)
             let done = try daemon.status()
             #expect(done.blocked.isEmpty, "the command after the delay did not apply the finished unblock")
-            #expect(daemon.hostsText() == StandardHosts.text, "the removal must be on disk when that command has answered")
+            #expect(daemon.hostsText() == ExpectedHosts.idleText, "the removal must be on disk when that command has answered")
             let saved = try #require(daemon.stateObject())
             #expect((saved["blocked"] as? [Any])?.isEmpty == true, "the finished unblock is saved")
         }
@@ -180,7 +180,7 @@ struct CountdownTimingTests {
             #expect(gone >= 2.0, "the site was gone \(gone) s after the request, after \(polls) status requests: some time was counted twice (request \(phase) s into a tick)")
             #expect(gone < 4.0)
             #expect(polls >= 30, "only \(polls) status requests were sent during the countdown, too few to test anything")
-            #expect(daemon.hostsText() == StandardHosts.text)
+            #expect(daemon.hostsText() == ExpectedHosts.idleText)
         }
     }
 

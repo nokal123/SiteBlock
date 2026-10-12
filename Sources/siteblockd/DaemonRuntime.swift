@@ -73,6 +73,8 @@ final class DaemonRuntime {
     private static let saveInterval = Duration.seconds(15)
     // How often the guard timer runs: the watchdog check (production) and the app guard (production and sandbox).
     private static let guardIntervalSeconds = 5.0
+    // How often the fallback DNS pass and the family-DNS reachability check run in the installed service. Sandbox runs have no change notifications, so there both run every tick instead.
+    private static let dnsFallbackSeconds = 30.0
     // After a failed attempt to repair the state files, wait this long before trying again, so a full disk does not fill the log.
     private static let repairRetryInterval = Duration.seconds(30)
     // If an uninstall started but launchd has not stopped the daemon after this long, exit so launchd restarts it and the uninstall is retried.
@@ -86,6 +88,8 @@ final class DaemonRuntime {
     private let enforcer: HostsEnforcer
     // Keeps Chrome's mandatory URLBlocklist policy equal to the block list, for Chrome windows that never read the hosts file (see 03 § 9).
     private let chromeEnforcer: ChromePolicyEnforcer
+    // Keeps every network service's DNS servers on the family servers (the second layer of the adult content filter, see 03 § 11).
+    private let dnsEnforcer: DNSEnforcer
     // Counts requests turned away by the socket server or the command handler, so the log gets a summary line per minute instead of one line per bad request.
     private let rejections: RejectedRequestCounter
     // The serial queue that owns the engine, the store and the timers.
@@ -96,6 +100,12 @@ final class DaemonRuntime {
     private var server: SocketServer?
     private var tickTimer: DispatchSourceTimer?
     private var guardTimer: DispatchSourceTimer?
+    // Production only: runs a DNS pass soon after macOS reports a change to the DNS settings.
+    private var dnsWatcher: DNSChangeWatcher?
+    // Checks on a background queue whether the family DNS servers answer, and keeps the latest result for the engine queue to read. Created at startup.
+    private var dnsMonitor: FamilyDNSMonitor?
+    // The fallback that runs a DNS pass on a timer, in case a notification is missed.
+    private var dnsFallbackTimer: DispatchSourceTimer?
     private var signalSources: [DispatchSourceSignal] = []
     // The one clock reading that countdowns are measured from. Both the timer tick and the catch-up before each command read it, advance every countdown by the time since it, and move it to now, so no stretch of time is counted twice or skipped.
     private var lastTick = ContinuousClock.now
@@ -116,6 +126,7 @@ final class DaemonRuntime {
         self.store = store
         self.enforcer = HostsEnforcer(paths: paths, log: log)
         self.chromeEnforcer = ChromePolicyEnforcer(paths: paths, log: log)
+        self.dnsEnforcer = DNSEnforcer(paths: paths, log: log)
         self.rejections = RejectedRequestCounter(log: log)
 
         // Startup step 1: the state folder is root-only (mode 0700) because it holds the password hash.
@@ -174,6 +185,8 @@ final class DaemonRuntime {
         // Startup step 5: enforce the hosts file and Chrome's policy at once, so blocks apply at boot before any client connects. This pass is not "caused by a command", so tampering that happened while the daemon was stopped is logged.
         let healthy = enforceBlocks(causedByCommand: false)
         engine.setHostsHealthy(healthy)
+        // The adult content filter is on from the moment the daemon starts, even before a password exists. The first reachability check begins at once on its own queue; until it finishes the DNS settings are left as they are, and its result schedules the first DNS pass.
+        startDNSMonitor()
         // If the state came from the backup, or the backup does not exist yet, write both files now.
         if !store.matchesLastSave() {
             if saveState() { log.log("state file repaired") }
@@ -198,6 +211,8 @@ final class DaemonRuntime {
         timer.setEventHandler { [unowned self] in tick() }
         timer.resume()
         tickTimer = timer
+
+        startDNSWatching()
 
         // The guard timer keeps the menu bar app in place (03 § 10) and, in production only, the watchdog loaded. It is a separate timer on its own queue, and it runs in sandbox mode too so the app guard can be tested there.
         startGuardTimer()
@@ -301,6 +316,8 @@ final class DaemonRuntime {
         let blockListChanged = engine.hostsToWrite != hostsBefore
         let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
+        // The app asks for status once a second, so status requests skip the DNS pass; every other command runs it. The pass reads the stored reachability result and sends no query, so it adds no waiting.
+        if request.command != .status { enforceDNS() }
 
         logOutcome(request.command, response, peerUID: peerUID)
 
@@ -311,12 +328,49 @@ final class DaemonRuntime {
 
     // MARK: - Enforcement
 
-    /// Makes the hosts file and Chrome's policy files match the engine's block list: the hosts file first, then Chrome. Both always run, so a failure in one never stops the other from being repaired. Returns true only when both ended correct, and the caller passes that to the engine as `hostsFileHealthy`. `causedByCommand` is true when the block list was just changed on purpose, so the rewrite is not logged as tampering.
+    /// Makes the hosts file and Chrome's policy files match the engine's block list and the adult content filter: the hosts file first, then Chrome. Both always run, so a failure in one never stops the other from being repaired. Returns true only when both ended correct, and the caller passes that to the engine as `hostsFileHealthy`. `causedByCommand` is true when the block list was just changed on purpose, so the rewrite is not logged as tampering.
     private func enforceBlocks(causedByCommand: Bool) -> Bool {
         let hostsHealthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: causedByCommand)
         // Sites with a pending unblock stay in `blocked` until their countdown ends, so they stay in Chrome's list too.
-        let chromeHealthy = chromeEnforcer.enforce(blockedSites: engine.state.blocked, causedByCommand: causedByCommand)
+        let chromeHealthy = chromeEnforcer.enforce(blockedSites: engine.state.blocked, adultFilterActive: engine.adultFilterActive, causedByCommand: causedByCommand)
         return hostsHealthy && chromeHealthy
+    }
+
+    /// Runs one DNS pass on the engine queue. It reads the latest reachability result and sends no network query itself: while the family servers answer, every managed network service gets them; while they do not, the services keep (or get back) the network's own DNS; until the first result exists, nothing changes. The originals are recorded in the state first (the enforcer calls back before it changes anything), so the uninstaller can put them back. Does nothing once an uninstall has begun, because the uninstaller restores the servers itself.
+    private func enforceDNS() {
+        if uninstallStarted.isSet { return }
+        _ = dnsEnforcer.enforce(adultFilterActive: engine.adultFilterActive, savedDNS: engine.state.savedDNS, familyDNS: dnsMonitor?.latest) { [self] saved in
+            engine.setSavedDNS(saved)
+            return saveState()
+        }
+    }
+
+    /// Creates the reachability monitor and starts its first check at once. The monitor checks again every 30 seconds (every tick in a sandbox) and whenever `probeNow()` is called. Whenever the answer changes, including the first answer, it schedules a DNS pass on the engine queue.
+    private func startDNSMonitor() {
+        let monitor = FamilyDNSMonitor(probe: DNSEnforcer.makeProbe(paths: paths)) { [weak self] in
+            guard let self else { return }
+            self.engineQueue.async { self.enforceDNS() }
+        }
+        dnsMonitor = monitor
+        monitor.start(interval: paths.isSandbox ? tickInterval : DaemonRuntime.dnsFallbackSeconds, retryInterval: paths.isSandbox ? tickInterval : 5)
+    }
+
+    /// Starts the two things that keep the DNS servers right between commands. In the installed service a change notification from macOS starts a reachability check at once and triggers a pass within about a second, and a fallback timer runs a pass every 30 seconds in case a notification is missed. A sandbox run has no change notifications, so only the fallback timer runs, and it runs once per tick; that is the only difference between the two, and it lets tests see a repair in a fraction of a second.
+    private func startDNSWatching() {
+        if !paths.isSandbox {
+            // The pass repairs a hand edit from the stored reachability result; the new check is for a change of network, and a changed answer schedules a pass of its own.
+            dnsWatcher = DNSChangeWatcher(queue: engineQueue) { [unowned self] in
+                dnsMonitor?.probeNow()
+                enforceDNS()
+            }
+            if dnsWatcher == nil { log.log("DNS change notifications could not be started; relying on the \(Int(DaemonRuntime.dnsFallbackSeconds)) second check") }
+        }
+        let interval = paths.isSandbox ? tickInterval : DaemonRuntime.dnsFallbackSeconds
+        let timer = DispatchSource.makeTimerSource(queue: engineQueue)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(5))
+        timer.setEventHandler { [unowned self] in enforceDNS() }
+        timer.resume()
+        dnsFallbackTimer = timer
     }
 
     // MARK: - Tick
@@ -406,11 +460,15 @@ final class DaemonRuntime {
         log.log("uninstall starting")
         tickTimer?.cancel()
         guardTimer?.cancel()
+        // The DNS watching stops too; the uninstaller puts the original DNS servers back itself, and a late pass must not set the family servers again.
+        dnsFallbackTimer?.cancel()
+        dnsWatcher?.stop()
+        dnsMonitor?.stop()
         // Wait for a guard run that is already in progress, so it cannot reload the watchdog or restore the app after the uninstaller has deleted them.
         guardQueue.sync {}
         server?.stop()
 
-        Uninstaller.run(paths: paths, enforcer: enforcer, chromeEnforcer: chromeEnforcer, saveUninstallingState: { [self] () -> Bool in
+        Uninstaller.run(paths: paths, enforcer: enforcer, chromeEnforcer: chromeEnforcer, dnsEnforcer: dnsEnforcer, savedDNS: engine.state.savedDNS, saveUninstallingState: { [self] () -> Bool in
             // The engine set `uninstalling` before calling us, or the saved state already had it; saving the engine's state records that. A failed save is reported back so the uninstaller can stop before touching anything.
             var state = engine.state
             state.uninstalling = true

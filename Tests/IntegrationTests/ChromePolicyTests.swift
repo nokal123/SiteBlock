@@ -14,10 +14,38 @@ import Testing
 // Design change in 03 § 9: the Chrome list is no longer every expanded host. It is the shortest list that covers them: lowercased, without
 // duplicates, and without any host whose parent domain (whole labels) is also in the list, because a URLBlocklist entry such as youtube.com
 // already blocks every subdomain. The expectations here were changed for that; the hosts file still holds every expanded name.
+//
+// Design change in 03 § 9 "Adult-filter keys": the adult content filter is always on, so both files ALWAYS carry SafeSitesFilterBehavior = 1
+// (integer), ForceGoogleSafeSearch = true (boolean) and DnsOverHttpsMode = "off" (string), plus URLBlocklist while any site is blocked. With
+// nothing blocked the files still exist and hold exactly those three keys; only the uninstaller removes them. The expectations here were
+// changed for that: "no file" became "a file of exactly the three filter keys".
 
 private let policyFileName = "com.google.Chrome.plist"
 private let blocklistKey = "URLBlocklist"
 private let repairedLine = "Chrome policy repaired"
+
+// The three keys of the adult content filter with the values and types the design gives them, typed here from 03 § 9. (NSDictionary equality
+// treats the boolean true and the integer 1 as equal, so the types are checked separately by `filterKeyTypesAreRight`.)
+private let filterKeys: [String: Any] = ["SafeSitesFilterBehavior": 1, "ForceGoogleSafeSearch": true, "DnsOverHttpsMode": "off"]
+
+// What a policy file must hold: the three filter keys, the URLBlocklist when the list is not empty, and any other keys an administrator put there.
+private func expectedPlist(list: [String] = [], other: [String: Any] = [:]) -> [String: Any] {
+    var plist = other
+    for (key, value) in filterKeys { plist[key] = value }
+    if !list.isEmpty { plist[blocklistKey] = list }
+    return plist
+}
+
+// True when the file, read as text, writes the three filter keys with the property list types Chrome needs: an integer, a boolean and a string. A boolean written as the number 1 (or the reverse) is ignored by Chrome.
+private func filterKeyTypesAreRight(_ path: String) -> Bool {
+    guard let text = readText(path) else { return false }
+    return text.contains("<key>SafeSitesFilterBehavior</key>\n\t<integer>1</integer>") && text.contains("<key>ForceGoogleSafeSearch</key>\n\t<true/>") && text.contains("<key>DnsOverHttpsMode</key>\n\t<string>off</string>")
+}
+
+// True when the log gained a "Chrome policy repaired" line after the count `before` was taken (see SandboxDaemon.logCount). The daemon's first pass writes the files and logs a repair for it, so the plain presence of the line proves nothing.
+private func repairLogged(_ daemon: SandboxDaemon, after before: Int) -> Bool {
+    waitUntil(timeout: 1.5, interval: 0.02) { daemon.logCount(of: repairedLine) > before } != nil
+}
 
 // Which of the two policy files a test looks at.
 enum ChromePolicyFile: CaseIterable, CustomTestStringConvertible {
@@ -137,9 +165,9 @@ private func isExactly(_ plist: [String: Any]?, _ expected: [String: Any]) -> Bo
     return NSDictionary(dictionary: plist).isEqual(to: expected)
 }
 
-// True when the file holds exactly {URLBlocklist: list} and has the mode 0644 the design gives the files.
+// True when the file holds exactly the filter keys plus {URLBlocklist: list} (no URLBlocklist for an empty list), with the right types, and has the mode 0644 the design gives the files.
 private func isRight(_ path: String, list: [String]) -> Bool {
-    isExactly(readPlist(path), [blocklistKey: list]) && permissions(of: path) == 0o644
+    isExactly(readPlist(path), expectedPlist(list: list)) && filterKeyTypesAreRight(path) && permissions(of: path) == 0o644
 }
 
 // The design's covering rule, written independently of the library: lowercase, remove duplicates, drop every host that ends in "." plus another
@@ -174,18 +202,19 @@ struct ChromePolicyTests {
 
     // MARK: writing on a command
 
-    // 03 § ChromePolicyEnforcer "Files written" and "Content rules": after "add youtube.com" both files hold URLBlocklist equal to exactly the expanded YouTube hosts (the list of every host of the site, sorted, without the Private Relay names the hosts file also gets). The daemon here has a 60 s tick, so only the pass that follows the command can have written them; they are read the moment the reply arrives (03 § DaemonRuntime "After every command": a newly added site is blocked before the response is sent). The file must be an XML property list with nothing but the one key, mode 0644, in folders of mode 0755.
+    // 03 § ChromePolicyEnforcer "Files written" and "Content rules": after "add youtube.com" both files hold URLBlocklist equal to exactly the expanded YouTube hosts (the list of every host of the site, sorted, without the Private Relay names the hosts file also gets). The daemon here has a 60 s tick, so only the pass that follows the command can have written them; they are read the moment the reply arrives (03 § DaemonRuntime "After every command": a newly added site is blocked before the response is sent). The file must be an XML property list with nothing but those keys and the three adult-filter keys, mode 0644, in folders of mode 0755.
     @Test func addingASiteWritesBothPolicyFilesBeforeTheResponseReturns() throws {
         try withDaemon(tick: BlockingTests.neverTick) { daemon in
             let chrome = try daemon.chromePaths()
             try daemon.setUp()
-            #expect(chrome.all.allSatisfy { !exists($0) }, "nothing is blocked yet, so no policy file may exist")
+            #expect(chrome.all.allSatisfy { isRight($0, list: []) }, "nothing is blocked yet, so each policy file holds exactly the three adult-filter keys")
             try daemon.send(.add, domain: "youtube.com").requireOK()
             let expected = Self.youtube
             #expect(expected == Self.youtubeFromDesign, "the test's own expected list does not match the design's example")
             for path in chrome.all {
                 #expect(listed(path) == expected, "\(path) holds \(String(describing: listed(path)))")
-                #expect(isExactly(readPlist(path), [blocklistKey: expected]), "\(path) must hold nothing but URLBlocklist")
+                #expect(isExactly(readPlist(path), expectedPlist(list: expected)), "\(path) must hold nothing but URLBlocklist and the three adult-filter keys")
+                #expect(filterKeyTypesAreRight(path), "\(path) must write the filter keys as an integer, a boolean and a string")
                 #expect(plistFormat(path) == .xml, "\(path) must be an XML property list")
                 #expect(permissions(of: path) == 0o644, "\(path) must be mode 0644")
                 #expect(!(listed(path) ?? []).contains(where: { ExpectedHosts.privateRelayHosts.contains($0) }), "the Private Relay names belong in the hosts file only")
@@ -235,11 +264,12 @@ struct ChromePolicyTests {
             let chrome = try daemon.chromePaths()
             guard let path = chrome.path(file) else { return Self.expectNoUserCopy(daemon, chrome) }
             pause(0.5)
-            #expect(!daemon.logText().contains(repairedLine), "a write caused by a command is not a repair, yet the log says:\n\(daemon.logText())")
+            // The daemon's first pass wrote the files and logged a repair for it. The add after it is a command, which must not log another, and nothing since has changed the files, so the count stays put until the tampering.
+            let repairsBefore = daemon.logCount(of: repairedLine)
             try FileManager.default.removeItem(atPath: path)
             let back = waitUntil(timeout: 1.0, interval: 0.01) { isRight(path, list: Self.youtube) }
             #expect(back != nil, "\(path) was not restored within 1 s")
-            #expect(daemon.logContains(repairedLine), "the repair was not logged:\n\(daemon.logText())")
+            #expect(repairLogged(daemon, after: repairsBefore), "the repair was not logged:\n\(daemon.logText())")
         }
     }
 
@@ -248,16 +278,17 @@ struct ChromePolicyTests {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "youtube.com")
             let chrome = try daemon.chromePaths()
+            let repairsBefore = daemon.logCount(of: repairedLine)
             forceRemoveTree(chrome.directory)
             try #require(!exists(chrome.directory))
             let back = waitUntil(timeout: 1.0, interval: 0.01) { chrome.all.allSatisfy { isRight($0, list: Self.youtube) } }
             #expect(back != nil, "the folder and files were not recreated within 1 s; found \(regularFiles(under: chrome.directory))")
             #expect(permissions(of: chrome.directory) == 0o755)
-            #expect(daemon.logContains(repairedLine))
+            #expect(repairLogged(daemon, after: repairsBefore))
         }
     }
 
-    // 03 § ChromePolicyEnforcer "Writing": a file that is not a valid property list is treated as empty and replaced. Every kind of damage, in each file, is repaired within one second to exactly {URLBlocklist}, mode 0644 and an XML property list, and the repair is logged.
+    // 03 § ChromePolicyEnforcer "Writing": a file that is not a valid property list is treated as empty and replaced. Every kind of damage, in each file, is repaired within one second to exactly {URLBlocklist and the three adult-filter keys}, mode 0644 and an XML property list, and the repair is logged.
     @Test(arguments: ChromePolicyFile.allCases, ChromeTamper.allCases)
     func garbageContentIsRepairedWithinOneSecond(file: ChromePolicyFile, damage: ChromeTamper) throws {
         try withDaemon { daemon in
@@ -265,11 +296,12 @@ struct ChromePolicyTests {
             let chrome = try daemon.chromePaths()
             guard let path = chrome.path(file) else { return Self.expectNoUserCopy(daemon, chrome) }
             pause(0.4)
+            let repairsBefore = daemon.logCount(of: repairedLine)
             try damage.bytes.write(to: URL(fileURLWithPath: path))
             let repaired = waitUntil(timeout: 1.0, interval: 0.01) { isRight(path, list: Self.youtube) }
             #expect(repaired != nil, "\(damage) in \(path) was not repaired within 1 s; the file now holds \(String(describing: readText(path)))")
             #expect(plistFormat(path) == .xml)
-            #expect(daemon.logContains(repairedLine))
+            #expect(repairLogged(daemon, after: repairsBefore))
         }
     }
 
@@ -296,6 +328,7 @@ struct ChromePolicyTests {
             try daemon.prepare(blocking: "youtube.com")
             let chrome = try daemon.chromePaths()
             pause(0.4)
+            let repairsBefore = daemon.logCount(of: repairedLine)
             for (index, path) in chrome.all.enumerated() {
                 try editPlist(at: path) { plist in
                     plist["HomepageLocation"] = "https://home-\(index).example/"
@@ -306,9 +339,49 @@ struct ChromePolicyTests {
             #expect(repaired != nil, "the list was not repaired after \(edit); files now: \(chrome.all.map { String(describing: readPlist($0)) })")
             for (index, path) in chrome.all.enumerated() {
                 #expect(readPlist(path)?["HomepageLocation"] as? String == "https://home-\(index).example/", "the hand-added key was lost from \(path)")
-                #expect(readPlist(path)?.count == 2, "\(path) holds \(String(describing: readPlist(path)?.keys.sorted()))")
+                // The hand-added key, the list, and the three adult-filter keys: five keys and nothing else.
+                #expect(Set(readPlist(path)?.keys.map { $0 } ?? []) == Set(expectedPlist(list: Self.youtube, other: ["HomepageLocation": ""]).keys), "\(path) holds \(String(describing: readPlist(path)?.keys.sorted()))")
             }
-            #expect(daemon.logContains(repairedLine))
+            #expect(repairLogged(daemon, after: repairsBefore))
+        }
+    }
+
+    // 03 § 9 "Adult-filter keys": "A file is rewritten when any SiteBlock-managed key differs." Each of the three filter keys is changed by hand in both files, in the ways that switch the filter off: the key deleted, a different value, and the wrong type (Foundation counts the boolean true and the integer 1 as equal, but Chrome ignores a boolean policy given as a number, so a type swap has to be caught as well). Each is repaired within one second to the right value AND the right type, and the repair is logged.
+    enum FilterEdit: CaseIterable, CustomTestStringConvertible {
+        case safeSitesKeyDeleted, safeSitesOff, safeSitesAsBoolean, safeSearchOff, safeSearchAsInteger, secureDNSAutomatic, secureDNSKeyDeleted, allThreeDeleted
+
+        var testDescription: String { "\(self)" }
+
+        // Applies the edit to a file's dictionary.
+        func apply(to plist: inout [String: Any]) {
+            switch self {
+            case .safeSitesKeyDeleted: plist["SafeSitesFilterBehavior"] = nil
+            case .safeSitesOff: plist["SafeSitesFilterBehavior"] = 0
+            case .safeSitesAsBoolean: plist["SafeSitesFilterBehavior"] = true
+            case .safeSearchOff: plist["ForceGoogleSafeSearch"] = false
+            case .safeSearchAsInteger: plist["ForceGoogleSafeSearch"] = 1
+            case .secureDNSAutomatic: plist["DnsOverHttpsMode"] = "automatic"
+            case .secureDNSKeyDeleted: plist["DnsOverHttpsMode"] = nil
+            case .allThreeDeleted: for key in filterKeys.keys { plist[key] = nil }
+            }
+        }
+    }
+
+    @Test(arguments: ChromePolicyFile.allCases, FilterEdit.allCases)
+    func aHandEditedAdultFilterKeyIsRepairedToTheRightValueAndTypeAndLogged(file: ChromePolicyFile, edit: FilterEdit) throws {
+        try withDaemon { daemon in
+            try daemon.prepare(blocking: "youtube.com")
+            let chrome = try daemon.chromePaths()
+            guard let path = chrome.path(file) else { return Self.expectNoUserCopy(daemon, chrome) }
+            pause(0.4)
+            let repairsBefore = daemon.logCount(of: repairedLine)
+            try editPlist(at: path) { plist in
+                plist["HomepageLocation"] = "https://intranet.example/"
+                edit.apply(to: &plist)
+            }
+            let repaired = waitUntil(timeout: 1.0, interval: 0.01) { isExactly(readPlist(path), expectedPlist(list: Self.youtube, other: ["HomepageLocation": "https://intranet.example/"])) && filterKeyTypesAreRight(path) }
+            #expect(repaired != nil, "\(edit) in \(path) was not repaired within 1 s; the file now holds \(String(describing: readText(path)))")
+            #expect(repairLogged(daemon, after: repairsBefore))
         }
     }
 
@@ -415,6 +488,8 @@ struct ChromePolicyTests {
                 var wanted = shared
                 wanted["HomepageLocation"] = "https://home-\(index).example/"
                 wanted[blocklistKey] = expected
+                // The three adult-filter keys are SiteBlock's own and are present next to the administrator's keys.
+                for (key, value) in filterKeys { wanted[key] = value }
                 #expect(isExactly(plist, wanted), "\(path) now holds \(String(describing: plist))")
                 // A boolean must still be a boolean, not the number 1.
                 let flag = plist?["ShowHomeButton"] as? NSNumber
@@ -423,36 +498,34 @@ struct ChromePolicyTests {
         }
     }
 
-    // 03 "Content rules": with nothing blocked the file holds no URLBlocklist, but a file that has only other keys is left exactly as it is (no rewrite). A file that holds nothing but a URLBlocklist someone planted is deleted ("nothing else is left").
-    @Test func withNothingBlockedAFileOfOtherKeysIsLeftAloneAndAFileOfOnlyABlocklistIsDeleted() throws {
+    // 03 "Content rules" and "Adult-filter keys": with nothing blocked there is no URLBlocklist, but the three adult-filter keys are always there. A machine file that holds only an administrator's key gets the filter keys added next to it (the administrator's key stays). A per-user file that holds nothing but a planted URLBlocklist is not deleted any more: it becomes exactly the three filter keys.
+    @Test func withNothingBlockedAFileOfOtherKeysGainsTheFilterKeysAndAPlantedBlocklistIsReplacedByThem() throws {
         try withDaemon { daemon in
             let chrome = try daemon.chromePaths()
             pause(0.4)
             try writePlist(["HomepageLocation": "https://intranet.example/"], to: chrome.machine)
-            let before = identity(of: chrome.machine)
-            let bytes = FileManager.default.contents(atPath: chrome.machine)
             if let userPath = chrome.user { try writePlist([blocklistKey: ["planted.example"]], to: userPath) }
-            pause(1.0)
-            #expect(identity(of: chrome.machine) == before, "a file without a URLBlocklist was rewritten while nothing was blocked")
-            #expect(FileManager.default.contents(atPath: chrome.machine) == bytes)
-            if let userPath = chrome.user { #expect(!exists(userPath), "a file holding only a planted URLBlocklist must be deleted when nothing is blocked") }
+            let repaired = waitUntil(timeout: 1.0, interval: 0.01) {
+                isExactly(readPlist(chrome.machine), expectedPlist(other: ["HomepageLocation": "https://intranet.example/"])) && (chrome.user.map { isRight($0, list: []) } ?? true)
+            }
+            #expect(repaired != nil, "the files now hold \(chrome.all.map { String(describing: readPlist($0)) })")
         }
     }
 
-    // A URLBlocklist planted next to other keys while nothing is blocked is removed and the other keys stay.
-    @Test func withNothingBlockedAPlantedBlocklistIsRemovedAndTheOtherKeysStay() throws {
+    // A URLBlocklist planted next to other keys while nothing is blocked is removed; the other keys and the filter keys stay.
+    @Test func withNothingBlockedAPlantedBlocklistIsRemovedAndTheOtherKeysAndFilterKeysStay() throws {
         try withDaemon { daemon in
             let chrome = try daemon.chromePaths()
             pause(0.4)
-            try writePlist([blocklistKey: ["planted.example"], "HomepageLocation": "https://intranet.example/"], to: chrome.machine)
-            let cleaned = waitUntil(timeout: 1.0, interval: 0.01) { isExactly(readPlist(chrome.machine), ["HomepageLocation": "https://intranet.example/"]) }
+            try writePlist(expectedPlist(other: [blocklistKey: ["planted.example"], "HomepageLocation": "https://intranet.example/"]), to: chrome.machine)
+            let cleaned = waitUntil(timeout: 1.0, interval: 0.01) { isExactly(readPlist(chrome.machine), expectedPlist(other: ["HomepageLocation": "https://intranet.example/"])) }
             #expect(cleaned != nil, "the machine file now holds \(String(describing: readPlist(chrome.machine)))")
         }
     }
 
-    // 03 "Writing": a file that is not a valid property list counts as empty, and with nothing blocked an empty file is deleted. A symlink in place of the file is removed without being followed: the file it points at keeps every byte.
+    // 03 "Writing": a file that is not a valid property list counts as empty. Design change: with the filter always on, an empty file is not deleted but rewritten to exactly the three filter keys. A symlink in place of the file is replaced by a regular file without being followed: the file it points at keeps every byte.
     @Test(arguments: ChromePolicyFile.allCases, ["garbage", "symlink to a decoy"])
-    func withNothingBlockedADamagedFileOrALinkInItsPlaceIsRemovedWithoutTouchingTheTarget(file: ChromePolicyFile, kind: String) throws {
+    func withNothingBlockedADamagedFileOrALinkInItsPlaceIsReplacedByTheFilterKeysWithoutTouchingTheTarget(file: ChromePolicyFile, kind: String) throws {
         try withDaemon { daemon in
             let chrome = try daemon.chromePaths()
             guard let path = chrome.path(file) else { return Self.expectNoUserCopy(daemon, chrome) }
@@ -460,40 +533,45 @@ struct ChromePolicyTests {
             let decoy = daemon.root + "/decoy.plist"
             try writePlist(["HomepageLocation": "https://decoy.example/"], to: decoy)
             let decoyBytes = FileManager.default.contents(atPath: decoy)
-            try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
             if kind == "garbage" {
                 try ChromeTamper.notAPlistAtAll.bytes.write(to: URL(fileURLWithPath: path))
             } else {
+                try FileManager.default.removeItem(atPath: path)
                 try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: decoy)
             }
-            let removed = waitUntil(timeout: 1.0, interval: 0.01) { !exists(path) }
-            #expect(removed != nil, "\(kind) at \(path) was not removed within 1 s")
+            let replaced = waitUntil(timeout: 1.0, interval: 0.01) {
+                (try? FileManager.default.attributesOfItem(atPath: path)[.type] as? FileAttributeType) == .typeRegular && isRight(path, list: [])
+            }
+            #expect(replaced != nil, "\(kind) at \(path) was not replaced within 1 s; it holds \(String(describing: readText(path)))")
             #expect(FileManager.default.contents(atPath: decoy) == decoyBytes, "the file behind the link was changed")
         }
     }
 
     // MARK: nothing blocked
 
-    // Nothing blocked means no policy file (the design deletes a file when nothing else is left) and no temp file anywhere in ManagedPreferences, on a fresh daemon and again after a site has been blocked and its unblock countdown finished.
-    @Test func nothingBlockedMeansNeitherFileExistsAndNoTempFilesAreLeftBehind() throws {
+    // Design change (03 § 9 "Adult-filter keys"): nothing blocked means both files exist and hold exactly the three adult-filter keys, with no temp file anywhere in ManagedPreferences, on a fresh daemon and again after a site has been blocked and its unblock countdown finished. (Before, nothing blocked meant no file.) The passes that find everything right log no further repair.
+    @Test func nothingBlockedMeansBothFilesHoldOnlyTheFilterKeysAndNoTempFilesAreLeftBehind() throws {
         try withDaemon { daemon in
             let chrome = try daemon.chromePaths()
-            pause(1.0)
-            #expect(chrome.all.allSatisfy { !exists($0) }, "a fresh daemon with nothing blocked must not write a policy file")
-            #expect(regularFiles(under: chrome.directory) == [], "found \(regularFiles(under: chrome.directory))")
-            // About five passes ran and found everything already right, so none of them repaired anything.
-            #expect(!daemon.logText().contains(repairedLine), "passes that had nothing to do logged a repair:\n\(daemon.logText())")
+            let relative = chrome.all.map { String($0.dropFirst(chrome.directory.count + 1)) }.sorted()
+            pause(0.5)
+            #expect(chrome.all.allSatisfy { isRight($0, list: []) }, "a fresh daemon writes the three filter keys at once: \(chrome.all.map { String(describing: readPlist($0)) })")
+            #expect(regularFiles(under: chrome.directory) == relative, "found \(regularFiles(under: chrome.directory))")
+            // The first pass wrote the files (and logged that as a repair). About three more passes ran and found everything right, so none of them logs again.
+            let repairsAfterStart = daemon.logCount(of: repairedLine)
+            pause(0.6)
+            #expect(daemon.logCount(of: repairedLine) == repairsAfterStart, "passes that had nothing to do logged a repair:\n\(daemon.logText())")
 
             try daemon.prepare(blocking: "reddit.com")
             try daemon.requireTwoSecondDelay()
             #expect(chrome.all.allSatisfy { listed($0) == chromeList(["reddit.com"]) })
             try daemon.send(.unblock, domain: "reddit.com", password: Self.password).requireOK()
-            let gone = waitUntil(timeout: 5.0, interval: 0.02) { chrome.all.allSatisfy { !exists($0) } }
-            #expect(gone != nil, "the policy files still exist after the unblock finished: \(chrome.all.map { String(describing: listed($0)) })")
+            let gone = waitUntil(timeout: 5.0, interval: 0.02) { chrome.all.allSatisfy { isRight($0, list: []) } }
+            #expect(gone != nil, "the files still hold the list after the unblock finished: \(chrome.all.map { String(describing: listed($0)) })")
             pause(0.6)
-            #expect(chrome.all.allSatisfy { !exists($0) }, "a policy file came back after the last site was unblocked")
-            #expect(regularFiles(under: chrome.directory) == [], "found \(regularFiles(under: chrome.directory))")
-            #expect(daemon.hosts().beginCount == 0, "the hosts section is gone too")
+            #expect(chrome.all.allSatisfy { isRight($0, list: []) }, "a file changed after the last site was unblocked")
+            #expect(regularFiles(under: chrome.directory) == relative, "found \(regularFiles(under: chrome.directory))")
+            #expect(daemon.hosts().beginCount == 1, "the hosts section stays: it still holds the Private Relay names")
         }
     }
 
@@ -537,27 +615,27 @@ struct ChromePolicyTests {
 
     // MARK: write failure
 
-    // 03 § ChromePolicyEnforcer: when a write fails the enforcer returns false and logs; 03 § DaemonRuntime: the hosts file is enforced regardless. The ManagedPreferences folder is made read-only (0555) before the first add, so no temp file can be created in it. The add still succeeds, the hosts file is written, nothing about Chrome appears on disk, the failure is logged, and the daemon keeps running. When the folder is writable again the next pass writes both files within one second without any command. The permissions are restored in a defer so a failed expectation cannot leave an undeletable folder behind.
+    // 03 § ChromePolicyEnforcer: when a write fails the enforcer returns false and logs; 03 § DaemonRuntime: the hosts file is enforced regardless. Both ManagedPreferences folders (the machine-wide one and the console user's) are made read-only (0555) before the first add, so no temp file can be created in either. The add still succeeds, the hosts file is written, no URLBlocklist appears on disk (the files from the startup pass keep only the three filter keys), the failure is logged, and the daemon keeps running. When the folders are writable again the next pass writes the list into both files within one second without any command. The permissions are restored in a defer so a failed expectation cannot leave an undeletable folder behind.
     @Test(.enabled(if: geteuid() != 0))
     func aChromeWriteFailureIsLoggedAndLeavesTheHostsFileEnforcedAndTheFilesComeBackOnceWritingWorks() throws {
         try withDaemon { daemon in
             let chrome = try daemon.chromePaths()
             try daemon.setUp()
-            try FileManager.default.createDirectory(atPath: chrome.directory, withIntermediateDirectories: false)
-            defer { try? chmodPath(chrome.directory, 0o755) }
-            try chmodPath(chrome.directory, 0o555)
+            let folders = [chrome.directory] + (chrome.userDirectory.map { [$0] } ?? [])
+            defer { for folder in folders.reversed() { try? chmodPath(folder, 0o755) } }
+            for folder in folders { try chmodPath(folder, 0o555) }
             try daemon.send(.add, domain: "youtube.com").requireOK()
             let hosts = ExpectedHosts.text(blocking: ExpectedHosts.expand("youtube.com"))
             #expect(daemon.hostsText() == hosts, "a Chrome write failure must not stop the hosts file from being enforced")
             #expect(daemon.logContains("Chrome", within: 1.5), "the failed write was not logged:\n\(daemon.logText())")
-            #expect(regularFiles(under: chrome.directory) == [], "found \(regularFiles(under: chrome.directory))")
+            #expect(chrome.all.allSatisfy { isRight($0, list: []) }, "the files must be untouched, found \(chrome.all.map { String(describing: readPlist($0)) })")
             pause(0.5)
             #expect(daemon.isRunning)
             #expect(try daemon.status().blocked.map(\.domain) == ["youtube.com"])
 
-            try chmodPath(chrome.directory, 0o755)
+            for folder in folders { try chmodPath(folder, 0o755) }
             let back = waitUntil(timeout: 1.5, interval: 0.01) { chrome.all.allSatisfy { isRight($0, list: Self.youtube) } }
-            #expect(back != nil, "the files were not written once the folder became writable; found \(regularFiles(under: chrome.directory))")
+            #expect(back != nil, "the files were not written once the folders became writable; found \(regularFiles(under: chrome.directory))")
         }
     }
 
@@ -571,20 +649,21 @@ struct ChromePolicyTests {
             let chrome = try daemon.chromePaths()
             daemon.stop(stop)
             #expect(chrome.all.allSatisfy { listed($0) == Self.youtube }, "stopping the daemon (\(stop.testDescription)) must not clear the block")
-            #expect(!daemon.logText().contains(repairedLine))
+            // The first start logged a repair for writing the files in the first place; only a repair logged by the second start counts here.
+            let repairsBefore = daemon.logCount(of: repairedLine)
             for path in chrome.all { try FileManager.default.removeItem(atPath: path) }
             try daemon.start(serve: false)
             let back = waitUntil(timeout: 1.5, interval: 0.01) { chrome.all.allSatisfy { isRight($0, list: Self.youtube) } }
             #expect(back != nil, "the files were not written again by the startup pass (\(stop.testDescription))")
-            #expect(daemon.logContains(repairedLine), "the startup repair was not logged:\n\(daemon.logText())")
+            #expect(repairLogged(daemon, after: repairsBefore), "the startup repair was not logged:\n\(daemon.logText())")
         }
     }
 
     // MARK: uninstall
 
-    // 03 § Uninstaller and § ChromePolicyEnforcer "Uninstall": the uninstall removes URLBlocklist from both files in the same step that removes the hosts section. When the files hold nothing else they are deleted; when an administrator's keys are there, those stay and only URLBlocklist goes. The checks run once the daemon has exited with code 0, so a late pass cannot be hiding a leftover.
+    // 03 § Uninstaller and § ChromePolicyEnforcer "Uninstall": the uninstall removes every SiteBlock key (URLBlocklist and the three adult-filter keys, which only the uninstaller removes) from both files in the same step that removes the hosts section. When the files hold nothing else they are deleted; when an administrator's keys are there, those stay and only SiteBlock's keys go. The checks run once the daemon has exited with code 0, so a late pass cannot be hiding a leftover.
     @Test(arguments: [false, true])
-    func theSandboxUninstallRemovesUrlBlocklistFromBothFiles(otherKeysPresent: Bool) throws {
+    func theSandboxUninstallRemovesEverySiteBlockKeyFromBothFiles(otherKeysPresent: Bool) throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "youtube.com")
             try daemon.requireTwoSecondDelay()
