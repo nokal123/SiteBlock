@@ -126,7 +126,7 @@ A real uninstall does not rely on the watchdog standing down: the daemon unloads
 **Steps, in order:**
 1. Save the state with `uninstalling = true`. If this save fails (for example, the disk is full), stop the uninstall and exit with a non-zero code. launchd restarts the daemon, which retries the uninstall from the saved finished countdown, so the uninstall never runs half-way with an old state file on disk.
 2. Unload the watchdog with `launchctl bootout system/com.nokal.siteblock.watchdog` and wait for it to finish (at most 10 seconds), so the watchdog cannot restore any file deleted in the steps below.
-3. Remove the managed section from the hosts file (enforce with an empty block list), clear Chrome's `URLBlocklist` (see § ChromePolicyEnforcer), and flush the name cache.
+3. Remove the managed section from the hosts file (enforce with an empty block list), clear SiteBlock's keys from the Chrome policy files (see § ChromePolicyEnforcer), restore the saved DNS servers (see § DNSEnforcer), and flush the name cache.
 4. Stop the menu bar app for the user at the screen. The console user's ID is the owner of `/dev/console`. When that ID is not 0, run `launchctl bootout gui/<uid>/com.nokal.siteblock.app` and `pkill -x SiteBlock`, ignoring failures.
 5. Delete the backup program, the state backup, `/usr/local/bin/siteblock`, the app LaunchAgent plist, both LaunchDaemon plists, `/etc/newsyslog.d/siteblock.conf`, and the socket file.
 6. Start a detached `/bin/sh` that waits 1 second, then runs `launchctl bootout system/com.nokal.siteblock.daemon`, then deletes `/Library/Application Support/SiteBlock` and `/Applications/SiteBlock.app`. The daemon is stopped by that `bootout`, so the shell must be detached (started with `setsid` through `posix_spawn` with `POSIX_SPAWN_SETSID`) to outlive it.
@@ -205,9 +205,13 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 **Key Methods:**
 - `func enforce(blockedSites: [BlockedSite], causedByCommand: Bool = false) -> Bool` — called on every enforcement pass right after the hosts file. It builds the wanted list with `ChromePolicy.urlBlocklist(for:)`, reads each file, and rewrites a file when its `URLBlocklist` differs, when its mode is not `0644` or (in production) its owner is not `root:wheel`, or when the path is not a regular file, because a `chmod 600` or a symlink would otherwise stop Chrome from reading a correct list. Returns `false` (and logs) when a write fails.
 
+**Adult-filter keys:** while `engine.adultFilterActive` is true, both files also carry `SafeSitesFilterBehavior` = 1 (integer), `ForceGoogleSafeSearch` = true and `DnsOverHttpsMode` = "off". When the filter is off these three keys are removed (other keys are kept). A file is rewritten when any SiteBlock-managed key differs.
+
 **Content rules (`Sources/SiteBlockCore/ChromePolicy.swift`, pure and unit-tested):**
 - `static func urlBlocklist(for sites: [BlockedSite]) -> [String]` — the shortest list that covers every host of every blocked site: hosts lowercased, duplicates removed, and any host left out when a parent domain of it (whole labels only) is also in the list, because a Chrome `URLBlocklist` entry such as `youtube.com` already blocks every subdomain. Sorted. Chrome reads at most 1,000 entries of this policy and ignores the rest, and the shortened list keeps even 500 blocked sites well below that. Sites with a pending unblock are included, because they stay blocked until the countdown ends.
-- `static func merged(existing: [String: Any]?, blocklist: [String]) -> [String: Any]?` — keeps every other key already in the file (so a real company policy is never lost) and sets `URLBlocklist` to the list. With an empty list it removes the `URLBlocklist` key, and when nothing else is left it returns `nil`, meaning the file is deleted.
+- `static func managedValues(blocklist: [String], adultFilter: Bool) -> [String: Any]` — the keys SiteBlock owns and their wanted values: `URLBlocklist` (only when the list is not empty) and, when `adultFilter` is true, the three adult-filter keys.
+- `static let managedKeys` — `URLBlocklist`, `SafeSitesFilterBehavior`, `ForceGoogleSafeSearch`, `DnsOverHttpsMode`.
+- `static func merged(existing: [String: Any]?, managed: [String: Any]) -> [String: Any]?` — keeps every key of `existing` that is not one of `managedKeys` (so a real company policy is never lost), removes every managed key, then adds the `managed` values. When nothing is left it returns `nil`, meaning the file is deleted.
 
 **Writing:** encode as an XML property list, write to a random temp file in the same folder (`O_CREAT|O_EXCL|O_NOFOLLOW`), `fchmod 0644`, `fchown 0:0` (production), `rename` over the target. A target that is a symlink is replaced, never followed. A file that is not a valid property list is treated as empty and replaced.
 
@@ -229,4 +233,31 @@ Both folders are `root:wheel` mode `0755` and both files `root:wheel` mode `0644
 **Paths:** the backup is `/usr/local/libexec/siteblock/SiteBlock.app` (sandbox: `root/libexec/siteblock/SiteBlock.app`); the app is `Paths.appBundle`.
 
 **Uninstall:** the guard timer is cancelled when an uninstall starts (as for the watchdog check), and the uninstaller deletes the backup bundle along with the other files, so nothing is restored after a real uninstall.
+
+---
+
+### 11. DNSEnforcer (`Sources/siteblockd/DNSEnforcer.swift`)
+
+**Purpose:** While the adult filter is on, keeps every network service's DNS servers set to Cloudflare for Families, and puts the original servers back when the filter turns off. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Adult content filter).
+
+**Backend:** the reading and writing of network settings goes through a small protocol, `DNSSettingsBackend`, with two implementations:
+- `SystemConfigurationDNSBackend` (production) uses the SystemConfiguration framework in-process: `SCPreferencesCreate`, `SCNetworkServiceCopyAll`, `SCNetworkServiceGetEnabled`, `SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeDNS)`, the protocol's configuration dictionary key `ServerAddresses`, then `SCPreferencesCommitChanges` and `SCPreferencesApplyChanges`. It never runs `networksetup`, so a check costs no new process. Services whose interface type is a VPN (`kSCNetworkInterfaceTypePPP`, `IPSec`, `VPN`) or that are disabled are skipped.
+- `FileDNSBackend` (sandbox) reads and writes `root/network-services.json`, a dictionary from service ID to `{"name": String, "servers": [String]}`, so tests can create services and tamper with them.
+
+**Pass (`enforce(adultFilterActive:state:)`, called on every enforcement pass and whenever macOS reports a network-settings change):**
+1. When the filter is active: for each service whose servers are not exactly the family list, first record its current servers in `state.savedDNS[serviceID]` if no entry exists yet (a service SiteBlock already overrode keeps its first saved value), then set the family list. A service that appears later (a new adapter) is handled the same way.
+2. When the filter is not active and `savedDNS` is not empty: for each saved service that still exists, set its servers back to the saved list (an empty list removes `ServerAddresses`, so the service uses the network's own DNS again), then clear `savedDNS`.
+3. After any change, flush the name cache (production) and report that the state changed (so `savedDNS` is saved). Log "DNS settings repaired" when a pass that was not caused by a command or a finished countdown had to override a service.
+
+**Change notifications (production):** a `SCDynamicStore` watching `Setup:/Network/Service/.*/DNS` and `State:/Network/Global/DNS` runs a pass on the engine queue within about a second of any change, so a hand edit in System Settings or joining a new network is undone at once. The ordinary 2-second tick does not touch DNS; a fallback pass runs every 30 seconds.
+
+**Uninstall:** the uninstaller runs a pass with the filter inactive (restoring the saved servers) in the same step that clears the hosts section and the Chrome policy.
+
+---
+
+### 12. Adult filter in the app and CLI
+
+**App (Settings):** an "Adult content filter" section. When off: a sentence explaining what it blocks and a "Turn on" button (no password). When on: "On" with a "Turn off…" button that asks for the password and explains the filter stays on for the unblock delay first. While a switch-off is pending, a banner at the top of the panel shows "Adult filter turns off in 59:12" with a "Keep on" button (`cancelAdultFilterOff`, no password).
+
+**CLI:** `siteblock adult` (show), `siteblock adult on`, `siteblock adult off` (asks for the password), `siteblock adult --cancel`. `siteblock status` prints "Adult content filter: on", "on (turns off in 59:12)" or "off".
 
