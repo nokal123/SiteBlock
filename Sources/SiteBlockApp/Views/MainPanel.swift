@@ -116,6 +116,11 @@ private struct HomeView: View {
     /// The text field and the Block button, with the daemon's answer underneath. While the first-block password form is open, the field and button are switched off so the site that will be blocked cannot change, and the form sits underneath.
     private var addSection: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // One line above the field, so people know a part of a site can be typed as well as a whole site.
+            Text("Block a whole site (youtube.com) or just part of one (youtube.com/shorts).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 TextField("Site", text: $newSite, prompt: Text("Add a site (e.g. reddit.com)"))
                     .labelsHidden()

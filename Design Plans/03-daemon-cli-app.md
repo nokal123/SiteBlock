@@ -181,6 +181,7 @@ siteblock version
 2. **Normal:** shown whether or not a password exists yet. The password is chosen at the first block, not at install or first launch.
    - **First block:** when no password is set and the user presses "Block", the panel does not send `add` yet. It shows "Choose a SiteBlock password" with two password fields (new and confirm), the minimum length rule, a warning that the password cannot be shown again and is needed to unblock, and "Set password and block" and "Cancel" buttons. On submit it sends `setup` and then, only if that succeeds, `add` for the site that was typed. A mismatch or a weak password is shown inline and nothing is sent.
    - When no password is set and sites are already blocked (after a finished recovery), the blocked list shows without "Unblock…" buttons and a banner offers "Choose a new password" with the same two fields.
+   - One gray caption line above the field: "Block a whole site (youtube.com) or just part of one (youtube.com/shorts)."
    - A text field "Add a site (e.g. reddit.com)" and a "Block" button. Enter also submits. Errors appear in red under the field.
    - The blocked list. Each row shows the domain, a disclosure arrow that lists the expanded host names, and either an "Unblock…" button or, when pending, a live countdown such as "Unblocks in 29:41" with a "Keep blocked" button that cancels.
    - Pressing "Unblock…" replaces the row's button with a password field and "Start countdown" and "Cancel" buttons.
