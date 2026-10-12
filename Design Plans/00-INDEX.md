@@ -60,6 +60,7 @@
 24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script
 25. `scripts/install.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 25a. `scripts/package.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac
+25b. `.github/workflows/package.yml` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds
 26. `scripts/verify-install.sh` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Installed-System Verification
 27. `Install SiteBlock.command` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 28. `Tests/SiteBlockCoreTests/*` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests

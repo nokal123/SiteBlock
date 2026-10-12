@@ -1,0 +1,76 @@
+# Rebuilds the installable SiteBlock package whenever app code is pushed to master, and publishes it
+# as the GitHub Release "latest", so the newest version is always at one fixed download link:
+#   https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock-1.0.0.zip
+# Steps: build on a fresh Apple Silicon Mac, run every test (a failing test stops the run, so a
+# broken package is never published), run scripts/package.sh, then replace the "latest" release.
+name: Build and publish package
+
+on:
+  push:
+    branches: [master]
+    # Only app changes rebuild the package; edits to docs or design plans alone do not.
+    paths:
+      - "Sources/**"
+      - "Resources/**"
+      - "scripts/**"
+      - "Package.swift"
+      - "Install SiteBlock.command"
+      - ".github/workflows/package.yml"
+  # Also allows a manual run from the repository's Actions tab.
+  workflow_dispatch:
+
+# Replacing the release needs permission to write to the repository's releases.
+permissions:
+  contents: write
+
+# A newer push cancels a run still in progress, so the newest code always wins.
+concurrency:
+  group: package
+  cancel-in-progress: true
+
+jobs:
+  package:
+    # macos-15 runs on Apple Silicon (arm64), which is what SiteBlock is built for.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Show the build tools
+        run: |
+          sw_vers
+          swift --version
+          uname -m
+
+      # Runs the unit and integration tests. The integration tests start the real daemon in sandbox
+      # mode (a temporary folder in place of /etc/hosts and the system folders), so they need no root.
+      - name: Run the tests
+        run: scripts/test.sh
+
+      # Builds the release programs, signs them ad hoc and writes dist/SiteBlock-<version>.zip.
+      - name: Build the package
+        run: scripts/package.sh
+
+      - name: Keep the zip as a run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiteBlock-package
+          path: dist/*.zip
+          retention-days: 30
+
+      # Deletes the previous "latest" release and its tag, then creates it again at this commit with the
+      # new zip, so the fixed download link always serves the newest build.
+      - name: Publish as the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="$(ls dist/*.zip)"
+          VERSION="$(basename "$ZIP" .zip | sed 's/^SiteBlock-//')"
+          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          gh release create latest "$ZIP" \
+            --target "${{ github.sha }}" \
+            --title "SiteBlock $VERSION (latest build)" \
+            --notes "Built automatically from commit ${{ github.sha }}.
+
+          To install on an Apple Silicon Mac with macOS 14 or newer: download $(basename "$ZIP"), unzip it, and follow INSTALL.txt inside (right-click \"Install SiteBlock.command\" and choose Open)."

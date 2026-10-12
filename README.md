@@ -36,7 +36,9 @@ Installing asks only for your Mac password. You choose your SiteBlock password t
 
 ## Installing on another Mac
 
-Run `scripts/package.sh`. It builds SiteBlock and writes `dist/SiteBlock-1.0.0.zip` (under 1 MB). Send that zip to the other Mac, which needs an Apple chip (M1 or newer) and macOS 14 or newer; it needs no developer tools. The `INSTALL.txt` inside tells the person there what to do: unzip, right-click "Install SiteBlock.command" and choose Open (macOS warns because SiteBlock is not signed with an Apple developer certificate), and enter that Mac's administrator password. They choose their own SiteBlock password at their first block; nothing from your Mac is copied. Only install it on a Mac whose user wants it, because it is deliberately hard to remove.
+The newest package is always at **https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock-1.0.0.zip**. A GitHub Actions workflow rebuilds it on every push to `master` that changes the app: it builds on a fresh Apple Silicon Mac, runs every test, runs `scripts/package.sh`, and replaces the "latest" release. A failing test stops it, so a broken package is never published.
+
+To build one yourself instead, run `scripts/package.sh`. It builds SiteBlock and writes `dist/SiteBlock-1.0.0.zip` (under 1 MB). Send that zip to the other Mac, which needs an Apple chip (M1 or newer) and macOS 14 or newer; it needs no developer tools. The `INSTALL.txt` inside tells the person there what to do: unzip, right-click "Install SiteBlock.command" and choose Open (macOS warns because SiteBlock is not signed with an Apple developer certificate), and enter that Mac's administrator password. They choose their own SiteBlock password at their first block; nothing from your Mac is copied. Only install it on a Mac whose user wants it, because it is deliberately hard to remove.
 
 ## Everyday use
 

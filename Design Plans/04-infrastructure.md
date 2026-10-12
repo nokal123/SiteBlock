@@ -13,6 +13,7 @@
 8. [Upgrade Behavior](#upgrade-behavior)
 9. [Repairing an Install](#repairing-an-install)
 10. [Packaging for Another Mac](#packaging-for-another-mac)
+11. [Automatic Package Builds](#automatic-package-builds)
 
 ---
 
@@ -177,4 +178,18 @@ SiteBlock/
 The packaged `Install SiteBlock.command` differs from the repository's: it does not build. It removes the `com.apple.quarantine` extended attribute (the mark macOS puts on files that arrive from another computer) from its own folder, runs `sudo scripts/install.sh` and then `scripts/verify-install.sh`, and waits for Return. The programs carry only an ad-hoc signature, so the first opening needs right-click > Open (or System Settings > Privacy & Security > Open Anyway); `INSTALL.txt` explains this and gives the two-line Terminal fallback.
 
 Before zipping, the script checks every copied program with `codesign --verify --strict` and that each binary contains `arm64` code. The zip is made with `ditto -c -k --keepParent`, which keeps the app bundle's signature and the scripts' run permissions. `dist/` is ignored by git. The target Mac needs an Apple chip and macOS 14 or newer; nothing in the package is tied to the Mac that built it, and no blocked sites or password are carried over.
+
+---
+
+## Automatic Package Builds
+
+`.github/workflows/package.yml` is a GitHub Actions workflow (a script GitHub runs on its own machines) that runs on every push to `master` that touches `Sources/`, `Resources/`, `scripts/`, `Package.swift`, `Install SiteBlock.command` or the workflow itself, and can also be started by hand from the repository's Actions tab. It runs on a `macos-15` runner (Apple Silicon), in this order:
+
+1. Check out the code and print the macOS and Swift versions.
+2. Run `scripts/test.sh` (with Xcode present it runs plain `swift test`). A failing test stops the run, so a broken package is never published.
+3. Run `scripts/package.sh`.
+4. Keep the zip as a run artifact for 30 days.
+5. Delete the release tagged `latest` (and its tag) and create it again at the pushed commit with the new zip, using the `gh` command line and the run's own `GITHUB_TOKEN` (the workflow has `contents: write`).
+
+The fixed download link is `https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock-<version>.zip`, where the version comes from `siteblockd --version`. A newer push cancels a run still in progress (`concurrency: package`).
 
