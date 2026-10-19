@@ -16,24 +16,22 @@ private func decodeRequest(_ text: String) throws -> Request {
 }
 
 @Suite struct ProtocolTests {
-    // Design change: 01-overview-and-data.md § Commands now lists 15 commands, not 12. The three additions are `addPath`, `unblockPath` and
-    // `cancelUnblockPath` (path rules, which block part of a site). The expected set is typed from the design's current list.
-    @Test func theCommandNamesOnTheWireAreExactlyTheDesignsFifteen() {
-        let expected: Set<String> = ["status", "setup", "add", "unblock", "cancelUnblock", "addPath", "unblockPath", "cancelUnblockPath", "setDelay", "cancelDelayChange", "changePassword", "uninstall", "cancelUninstall", "recoveryStart", "recoveryCancel"]
+    // Design change: 01-overview-and-data.md § Wire Protocol (Commands) now lists 17 commands, not 15. The two additions are `temporaryUnblock` and
+    // `temporaryUnblockPath` (open a site or a path rule for a chosen window). The expected set is typed from the design's current list.
+    @Test func theCommandNamesOnTheWireAreExactlyTheDesignsSeventeen() {
+        let expected: Set<String> = ["status", "setup", "add", "unblock", "cancelUnblock", "addPath", "unblockPath", "cancelUnblockPath", "temporaryUnblock", "temporaryUnblockPath", "setDelay", "cancelDelayChange", "changePassword", "uninstall", "cancelUninstall", "recoveryStart", "recoveryCancel"]
         #expect(Set(Command.allCases.map(\.rawValue)) == expected)
-        #expect(Command.allCases.count == 15)
+        #expect(Command.allCases.count == 17)
     }
 
-    // Design change: 01-overview-and-data.md § Response now lists 15 error codes, not 13. The two additions are `notAllowed` (setup
-    // refused for a caller who is neither root nor the console user) and `tooManySites` (an add beyond the site cap). The earlier
-    // version of this test pinned the 13-code list, so against the current design it would have reported the two new, correct
-    // codes as a defect. The expected set below is typed from the design's current list, not read from the enum.
-    // Design change: 01-overview-and-data.md § Response now lists 16 error codes. The addition is `invalidPath` (the path part of a path rule
-    // cannot be used, or the text has no path at all).
-    @Test func theErrorCodesOnTheWireAreExactlyTheDesignsSixteen() {
-        let expected: Set<String> = ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "invalidPath", "internal"]
+    // Design change: 01-overview-and-data.md § Wire Protocol (Response) now lists 18 error codes, not 16. The two additions are `invalidDuration` (the window or
+    // the start wait of a temporary unblock is outside its range) and `alreadyPending` (the site or rule already has an unblock of either kind). The earlier
+    // versions of this test pinned the 13 and then the 16 code lists, so against the current design they would have reported correct codes as a defect.
+    // The expected set below is typed from the design's current list, not read from the enum.
+    @Test func theErrorCodesOnTheWireAreExactlyTheDesignsEighteen() {
+        let expected: Set<String> = ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "invalidPath", "invalidDuration", "alreadyPending", "internal"]
         #expect(Set(ErrorCode.allCases.map(\.rawValue)) == expected)
-        #expect(ErrorCode.allCases.count == 16)
+        #expect(ErrorCode.allCases.count == 18)
     }
 
     @Test func aRequestEncodesToOneLineOfSortedKeyJSONAndSkipsUnusedFields() throws {
@@ -211,8 +209,8 @@ private func decodeRequest(_ text: String) throws -> Request {
         #expect(try json(decoded) == text)
     }
 
-    // Every one of the design's 16 code strings, typed out here, must decode and re-encode to the same string.
-    @Test(arguments: ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "invalidPath", "internal"])
+    // Every one of the design's 18 code strings (01-overview-and-data.md § Wire Protocol, Response; the last two additions are `invalidDuration` and `alreadyPending`), typed out here, must decode and re-encode to the same string.
+    @Test(arguments: ["badRequest", "invalidDomain", "notSetUp", "alreadySetUp", "wrongPassword", "lockedOut", "weakPassword", "notBlocked", "alreadyBlocked", "nothingPending", "invalidDelay", "notRoot", "notAllowed", "tooManySites", "invalidPath", "invalidDuration", "alreadyPending", "internal"])
     func everyErrorCodeStringFromTheDesignDecodesAndEncodesBackToItself(wire: String) throws {
         let text = #"{"errorCode":"\#(wire)","ok":false}"#
         let decoded = try JSONCoding.decoder.decode(Response.self, from: Data(text.utf8))

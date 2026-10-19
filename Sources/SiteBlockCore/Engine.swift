@@ -20,9 +20,15 @@ public struct Policy: Sendable, Equatable {
     public var maxSites: Int
     /// The shortest an uninstall ever waits. The real wait is this or the unblock delay, whichever is longer, so uninstalling is never a faster way to unblock everything than unblocking.
     public var minUninstallSeconds: Int
+    /// The shortest time a temporary unblock may stay open.
+    public var minTemporarySeconds: Int
+    /// The longest time a temporary unblock may stay open.
+    public var maxTemporarySeconds: Int
+    /// The longest wait before a temporary unblock opens.
+    public var maxTemporaryStartSeconds: Int
 
-    /// Creates a policy from every value. `maxSites` and `minUninstallSeconds` default to the production values (500 sites and path rules together, 48 hours), so callers that predate them keep compiling.
-    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500, minUninstallSeconds: Int = 172_800) {
+    /// Creates a policy from every value. `maxSites`, `minUninstallSeconds` and the three temporary unblock limits default to the production values (500 sites and path rules together, 48 hours, 5 minutes to 4 hours open, up to 7 days before it opens), so callers that predate them keep compiling.
+    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500, minUninstallSeconds: Int = 172_800, minTemporarySeconds: Int = 300, maxTemporarySeconds: Int = 14_400, maxTemporaryStartSeconds: Int = 604_800) {
         self.defaultDelaySeconds = defaultDelaySeconds
         self.minDelaySeconds = minDelaySeconds
         self.maxDelaySeconds = maxDelaySeconds
@@ -32,13 +38,16 @@ public struct Policy: Sendable, Equatable {
         self.pbkdf2Iterations = pbkdf2Iterations
         self.maxSites = maxSites
         self.minUninstallSeconds = minUninstallSeconds
+        self.minTemporarySeconds = minTemporarySeconds
+        self.maxTemporarySeconds = maxTemporarySeconds
+        self.maxTemporaryStartSeconds = maxTemporaryStartSeconds
     }
 
-    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, at most 500 blocked sites and path rules together, and an uninstall wait of at least 48 hours.
-    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500, minUninstallSeconds: 172_800)
+    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, at most 500 blocked sites and path rules together, an uninstall wait of at least 48 hours, and a temporary unblock that stays open 5 minutes to 4 hours and opens within 7 days.
+    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500, minUninstallSeconds: 172_800, minTemporarySeconds: 300, maxTemporarySeconds: 14_400, maxTemporaryStartSeconds: 604_800)
 
-    /// Short waits and a low site cap (20) for sandbox runs and tests only, so tests can reach the cap quickly.
-    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20, minUninstallSeconds: 2)
+    /// Short waits and a low site cap (20) for sandbox runs and tests only, so tests can reach the cap quickly. A temporary unblock may stay open for as little as 1 second, so a test can open and close a window in seconds; its other limits are the production ones.
+    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20, minUninstallSeconds: 2, minTemporarySeconds: 1, maxTemporarySeconds: 14_400, maxTemporaryStartSeconds: 604_800)
 }
 
 /// The whole policy of SiteBlock in one class: it holds the state, applies commands, advances countdowns, and reports what the hosts file should contain. It does no file or socket work, so tests can drive it with fake time.
@@ -54,6 +63,8 @@ public final class Engine {
     public let policy: Policy
     /// Called once when the uninstall countdown finishes.
     public var onUninstall: (() -> Void)?
+    /// Called with one plain sentence whenever a temporary unblock is approved, opens, ends on its own, or is cancelled or ended early. The daemon writes each sentence to its log. The sentences never name the site or rule, because the log file stays on disk and would become a dated list of which sites were opened.
+    public var onTemporaryUnblockEvent: ((String) -> Void)?
     /// Returns the user ID of the person logged in at the screen, or nil when it is not known. The daemon sets it in production to read the owner of /dev/console. While it returns nil (the default, used by sandbox runs and tests), any caller may run setup. When it returns an ID, only root or that user may.
     public var consoleUID: () -> uid_t? = { nil }
     // The result of the last hosts file enforcement pass, reported in every status. It starts true because the runtime enforces once at startup and then sets it.
@@ -65,9 +76,12 @@ public final class Engine {
         self.policy = policy
     }
 
-    /// Every host of every blocked site, sorted, without duplicates. Sites with a pending unblock are included, because they stay blocked until the countdown ends.
+    /// The sites that are blocked right now: every site except the ones a temporary unblock has open. Sites with a pending unblock are included, because they stay blocked until the countdown ends, and so are sites whose temporary unblock is still waiting to open.
+    private var enforcedSites: [BlockedSite] { state.blocked.filter { !$0.isTemporarilyOpen } }
+
+    /// Every host of every blocked site, sorted, without duplicates. Sites with a pending unblock are included, because they stay blocked until the countdown ends. A site whose temporary unblock is open is left out, but a host that another site (one that is not open) also needs stays in the list.
     public var blockedHosts: [String] {
-        Array(Set(state.blocked.flatMap { $0.hosts })).sorted()
+        Array(Set(enforcedSites.flatMap { $0.hosts })).sorted()
     }
 
     /// The host names iCloud Private Relay needs. Apple documents blocking these as the way a network turns Private Relay off, and Private Relay would otherwise send Safari's lookups to Apple's servers past the hosts file.
@@ -88,10 +102,11 @@ public final class Engine {
     /// The path rules, or an empty list when there are none.
     private var pathRules: [BlockedPath] { state.blockedPaths ?? [] }
 
-    /// What the browsers' block lists must hold, with whole-site and path entries kept apart (so the enforcer can cut a too-long list with the whole-site entries kept first). The whole-site part is the shortest list that covers every host of every blocked site; a path rule is left out when a whole-site block already covers its domain, because the whole site is blocked anyway. Sites and rules with a pending unblock are included, because they stay blocked until the countdown ends.
+    /// What the browsers' block lists must hold, with whole-site and path entries kept apart (so the enforcer can cut a too-long list with the whole-site entries kept first). The whole-site part is the shortest list that covers every host of every blocked site; a path rule is left out when a whole-site block already covers its domain, because the whole site is blocked anyway. Sites and rules with a pending unblock are included, because they stay blocked until the countdown ends. A site or rule whose temporary unblock is open is left out. A path rule whose whole site is open is kept, because the whole-site entry is gone and the rule is what still blocks that part.
     public var browserBlockLists: BrowserBlockLists {
-        let sites = ChromePolicy.urlBlocklist(for: state.blocked)
-        let rules = pathRules.filter { !ChromePolicy.covers(sites, host: $0.domain) }
+        let sites = ChromePolicy.urlBlocklist(for: enforcedSites)
+        // The covering check runs against the sites that are still blocked, so a rule is dropped as redundant only when a site that is not open covers it.
+        let rules = pathRules.filter { !$0.isTemporarilyOpen && !ChromePolicy.covers(sites, host: $0.domain) }
         return BrowserBlockLists(
             chromeSites: sites,
             chromePaths: Array(Set(rules.map { PathRuleParser.chromeEntry(domain: $0.domain, path: $0.path) })).sorted(),
@@ -121,7 +136,7 @@ public final class Engine {
         StatusSnapshot(
             version: siteBlockVersion,
             passwordSet: state.passwordHash != nil,
-            blocked: state.blocked.map { BlockedSiteStatus(domain: $0.domain, hosts: $0.hosts, unblockSecondsRemaining: $0.pendingUnblock?.displaySeconds) },
+            blocked: state.blocked.map { BlockedSiteStatus(domain: $0.domain, hosts: $0.hosts, unblockSecondsRemaining: $0.pendingUnblock?.displaySeconds, temporaryUnblock: $0.temporaryUnblock.map(temporaryStatus)) },
             delaySeconds: state.delaySeconds,
             pendingDelay: state.pendingDelayChange.map { PendingDelayStatus(newDelaySeconds: $0.newDelaySeconds, secondsRemaining: $0.countdown.displaySeconds) },
             uninstallSecondsRemaining: state.pendingUninstall?.displaySeconds,
@@ -130,8 +145,13 @@ public final class Engine {
             hostsFileHealthy: hostsFileHealthy,
             // The filter cannot be switched off, so a daemon that has it always says so. (A daemon from before the filter existed sends no such key, which clients read as false.)
             adultFilterEnabled: true,
-            blockedPaths: pathRules.map { BlockedPathStatus(domain: $0.domain, path: $0.path, rule: PathRuleParser.display(domain: $0.domain, path: $0.path), unblockSecondsRemaining: $0.pendingUnblock?.displaySeconds) }
+            blockedPaths: pathRules.map { BlockedPathStatus(domain: $0.domain, path: $0.path, rule: PathRuleParser.display(domain: $0.domain, path: $0.path), unblockSecondsRemaining: $0.pendingUnblock?.displaySeconds, temporaryUnblock: $0.temporaryUnblock.map(temporaryStatus)) }
         )
+    }
+
+    /// Describes a temporary unblock for clients. While it waits, `opensInSeconds` counts down and `secondsRemaining` is the whole window; once it is open, `opensInSeconds` is nil and `secondsRemaining` counts down the window. Both are rounded up, so a running countdown never shows 0. The window has not started counting while the site waits, so its remaining time is the whole window in both states.
+    private func temporaryStatus(_ unblock: TemporaryUnblock) -> TemporaryUnblockStatus {
+        TemporaryUnblockStatus(opensInSeconds: unblock.startsIn.isFinished ? nil : unblock.startsIn.displaySeconds, secondsRemaining: unblock.window.displaySeconds, windowSeconds: unblock.windowSeconds, isOpen: unblock.isOpen)
     }
 
     // MARK: - Commands
@@ -148,6 +168,8 @@ public final class Engine {
             case .addPath: return try addPath(request)
             case .unblockPath: return try unblockPath(request)
             case .cancelUnblockPath: return try cancelUnblockPath(request)
+            case .temporaryUnblock: return try scheduleTemporaryUnblock(request, forRule: false)
+            case .temporaryUnblockPath: return try scheduleTemporaryUnblock(request, forRule: true)
             case .setDelay: return try setDelay(request)
             case .cancelDelayChange: return try cancelDelayChange()
             case .changePassword: return try changePassword(request)
@@ -249,15 +271,19 @@ public final class Engine {
         }
     }
 
-    /// Blocks a site at once. If the site is already blocked with an unblock pending, it cancels that unblock instead.
+    /// Blocks a site at once. If the site is already blocked with an unblock pending, or with a temporary unblock (waiting or open), it cancels that unblock instead.
     private func add(_ request: Request) throws -> Response {
         let raw = try require(request.domain, "domain")
         let domain = try normalized(raw)
         if let index = state.blocked.firstIndex(where: { $0.domain == domain }) {
-            // Re-adding a site that is waiting to unblock is a way to say "keep it blocked".
-            guard state.blocked[index].pendingUnblock != nil else { throw reject(.alreadyBlocked, "\(domain) is already blocked.") }
-            state.blocked[index].pendingUnblock = nil
-            return success("Unblock cancelled; \(domain) stays blocked.")
+            // Re-adding a site that is waiting to unblock, or that has a temporary unblock, is a way to say "keep it blocked". Neither needs a password, because it only makes things stricter.
+            let target = Target(isRule: false, index: index, name: domain)
+            if pendingUnblock(of: target) != nil {
+                clearPendingUnblock(of: target)
+                return success("Unblock cancelled; \(domain) stays blocked.")
+            }
+            if let message = cancelTemporaryUnblock(of: target) { return success(message) }
+            throw reject(.alreadyBlocked, "\(domain) is already blocked.")
         }
         // Every block must be undoable later, so blocking needs a password to exist. The check comes after the existing-site case so cancelling a pending unblock never needs one.
         guard state.passwordHash != nil else { throw reject(.notSetUp, "Set a password before blocking sites, so every block can be undone later.") }
@@ -278,6 +304,8 @@ public final class Engine {
         let password = try require(request.password, "password")
         let domain = try normalized(raw)
         guard let index = state.blocked.firstIndex(where: { $0.domain == domain }) else { throw reject(.notBlocked, "\(domain) is not blocked.") }
+        // A permanent unblock cannot start while a temporary one exists. This check comes before the password check, so a request that is refused anyway never costs a password attempt.
+        if state.blocked[index].temporaryUnblock != nil { throw reject(.alreadyPending, "\(domain) has a temporary unblock. Keep it blocked first if you want to unblock it for good.") }
         if let denied = checkPassword(password) { return denied }
         if let existing = state.blocked[index].pendingUnblock {
             return success("\(domain) is already waiting to unblock, in \(Formatting.duration(existing.displaySeconds)). You can cancel any time before then.")
@@ -286,14 +314,22 @@ public final class Engine {
         return success("\(domain) will unblock in \(Formatting.duration(state.delaySeconds)). You can cancel any time before then.")
     }
 
-    /// Stops a pending unblock; needs no password because it makes the Mac stricter.
+    /// Stops a pending unblock, or ends a temporary unblock (waiting or open); needs no password because it makes the Mac stricter.
     private func cancelUnblock(_ request: Request) throws -> Response {
         let raw = try require(request.domain, "domain")
         let domain = try normalized(raw)
         guard let index = state.blocked.firstIndex(where: { $0.domain == domain }) else { throw reject(.notBlocked, "\(domain) is not blocked.") }
-        guard state.blocked[index].pendingUnblock != nil else { throw reject(.nothingPending, "\(domain) has no unblock waiting.") }
-        state.blocked[index].pendingUnblock = nil
-        return success("Unblock cancelled; \(domain) stays blocked.")
+        return try cancelAnyUnblock(of: Target(isRule: false, index: index, name: domain))
+    }
+
+    /// The shared body of cancelUnblock and cancelUnblockPath. A pending unblock is cleared first, as it always was. Otherwise a temporary unblock is ended, and when there is neither the request fails with nothingPending.
+    private func cancelAnyUnblock(of target: Target) throws -> Response {
+        if pendingUnblock(of: target) != nil {
+            clearPendingUnblock(of: target)
+            return success("Unblock cancelled; \(target.name) stays blocked.")
+        }
+        if let message = cancelTemporaryUnblock(of: target) { return success(message) }
+        throw reject(.nothingPending, "\(target.name) has no unblock waiting.")
     }
 
     /// Reads rule text such as `youtube.com/shorts` or a pasted link into a domain and a path. A problem with the site name rejects with invalidDomain; a problem with the path, or no path at all, rejects with invalidPath. Both carry the parser's own sentence.
@@ -319,9 +355,14 @@ public final class Engine {
         let text = PathRuleParser.display(domain: rule.domain, path: rule.path)
         if state.blocked.contains(where: { $0.domain == rule.domain }) { throw reject(.alreadyBlocked, "\(rule.domain) is already fully blocked.") }
         if let index = pathRuleIndex(rule) {
-            guard state.blockedPaths?[index].pendingUnblock != nil else { throw reject(.alreadyBlocked, "\(text) is already blocked.") }
-            state.blockedPaths?[index].pendingUnblock = nil
-            return success("Unblock cancelled; \(text) stays blocked.")
+            // Like `add`: re-adding a rule that is waiting to unblock, or that has a temporary unblock, keeps it blocked, with no password.
+            let target = Target(isRule: true, index: index, name: text)
+            if pendingUnblock(of: target) != nil {
+                clearPendingUnblock(of: target)
+                return success("Unblock cancelled; \(text) stays blocked.")
+            }
+            if let message = cancelTemporaryUnblock(of: target) { return success(message) }
+            throw reject(.alreadyBlocked, "\(text) is already blocked.")
         }
         // The same two checks as `add`: every block must be undoable later, and the cap counts sites and rules together.
         guard state.passwordHash != nil else { throw reject(.notSetUp, "Set a password before blocking sites, so every block can be undone later.") }
@@ -337,6 +378,8 @@ public final class Engine {
         let rule = try parsedRule(raw)
         let text = PathRuleParser.display(domain: rule.domain, path: rule.path)
         guard let index = pathRuleIndex(rule) else { throw reject(.notBlocked, "\(text) is not blocked.") }
+        // Same as `unblock`: a temporary unblock must be cancelled first, and this is checked before the password.
+        if state.blockedPaths?[index].temporaryUnblock != nil { throw reject(.alreadyPending, "\(text) has a temporary unblock. Keep it blocked first if you want to unblock it for good.") }
         if let denied = checkPassword(password) { return denied }
         if let existing = state.blockedPaths?[index].pendingUnblock {
             return success("\(text) is already waiting to unblock, in \(Formatting.duration(existing.displaySeconds)). You can cancel any time before then.")
@@ -347,15 +390,107 @@ public final class Engine {
         return success("\(text) will unblock in \(Formatting.duration(state.delaySeconds)). You can cancel any time before then.")
     }
 
-    /// Stops a pending path-rule unblock; needs no password because it makes the Mac stricter.
+    /// Stops a pending path-rule unblock, or ends a temporary unblock of the rule (waiting or open); needs no password because it makes the Mac stricter.
     private func cancelUnblockPath(_ request: Request) throws -> Response {
         let raw = try require(request.domain, "domain")
         let rule = try parsedRule(raw)
         let text = PathRuleParser.display(domain: rule.domain, path: rule.path)
         guard let index = pathRuleIndex(rule) else { throw reject(.notBlocked, "\(text) is not blocked.") }
-        guard state.blockedPaths?[index].pendingUnblock != nil else { throw reject(.nothingPending, "\(text) has no unblock waiting.") }
-        state.blockedPaths?[index].pendingUnblock = nil
-        return success("Unblock cancelled; \(text) stays blocked.")
+        return try cancelAnyUnblock(of: Target(isRule: true, index: index, name: text))
+    }
+
+    // MARK: - Temporary unblocks
+
+    /// A blocked site or path rule found by name: which list it sits in, its position there, and the text people read for it (the domain, or a rule such as youtube.com/shorts). The temporary unblock commands and the cancel commands work on both kinds through this.
+    private struct Target {
+        /// True for a path rule, false for a whole site.
+        let isRule: Bool
+        /// The position in `state.blocked` (a site) or `state.blockedPaths` (a rule).
+        let index: Int
+        /// The domain, or the rule text.
+        let name: String
+    }
+
+    /// The unblock countdown the target is waiting on, or nil when it has none.
+    private func pendingUnblock(of target: Target) -> Countdown? {
+        target.isRule ? pathRules[target.index].pendingUnblock : state.blocked[target.index].pendingUnblock
+    }
+
+    /// Removes the target's pending unblock countdown, so the site or rule stays blocked.
+    private func clearPendingUnblock(of target: Target) {
+        if target.isRule {
+            state.blockedPaths?[target.index].pendingUnblock = nil
+        } else {
+            state.blocked[target.index].pendingUnblock = nil
+        }
+    }
+
+    /// The target's temporary unblock, or nil when it has none.
+    private func temporaryUnblock(of target: Target) -> TemporaryUnblock? {
+        target.isRule ? pathRules[target.index].temporaryUnblock : state.blocked[target.index].temporaryUnblock
+    }
+
+    /// Stores (or, with nil, removes) the target's temporary unblock. The value is passed in whole, so no part of `state` is read while it is being written.
+    private func setTemporaryUnblock(_ unblock: TemporaryUnblock?, of target: Target) {
+        if target.isRule {
+            state.blockedPaths?[target.index].temporaryUnblock = unblock
+        } else {
+            state.blocked[target.index].temporaryUnblock = unblock
+        }
+    }
+
+    /// Ends the target's temporary unblock, if it has one, and returns the sentence to tell the client: one for an unblock that was still waiting (the site never opened) and one for an unblock that was open (the site is blocked again now). Returns nil when the target has no temporary unblock. Both cases are sent to `onTemporaryUnblockEvent`.
+    private func cancelTemporaryUnblock(of target: Target) -> String? {
+        guard let unblock = temporaryUnblock(of: target) else { return nil }
+        setTemporaryUnblock(nil, of: target)
+        if unblock.isOpen {
+            onTemporaryUnblockEvent?("temporary unblock ended early")
+            return "\(target.name) is blocked again."
+        }
+        onTemporaryUnblockEvent?("temporary unblock cancelled")
+        return "The temporary unblock is cancelled; \(target.name) stays blocked."
+    }
+
+    /// Schedules a temporary unblock of a site (or of a path rule when `forRule` is true). The checks run in a fixed order, and the password is checked last, so a malformed or refused request never costs a password attempt: missing arguments, the site or rule text, whether it is blocked, whether it already has an unblock, the window length, the start wait, and then the password.
+    private func scheduleTemporaryUnblock(_ request: Request, forRule: Bool) throws -> Response {
+        // 1. Every required argument must be present. Only `startSeconds` may be left out.
+        let raw = try require(request.domain, "domain")
+        let password = try require(request.password, "password")
+        let windowSeconds = try require(request.seconds, "seconds")
+        // 2 and 3. The site name or rule text must be valid, and the site or rule must be on the block list.
+        let target = try forRule ? ruleTarget(raw) : siteTarget(raw)
+        // 4. A site or rule can have only one unblock of either kind at a time.
+        if pendingUnblock(of: target) != nil { throw reject(.alreadyPending, "\(target.name) is already waiting to unblock. Keep it blocked first if you want a temporary unblock instead.") }
+        if temporaryUnblock(of: target) != nil { throw reject(.alreadyPending, "\(target.name) already has a temporary unblock.") }
+        // 5. How long it stays open.
+        guard windowSeconds >= policy.minTemporarySeconds else { throw reject(.invalidDuration, "It must stay open for at least \(Formatting.duration(policy.minTemporarySeconds)).") }
+        guard windowSeconds <= policy.maxTemporarySeconds else { throw reject(.invalidDuration, "It can't stay open for more than \(Formatting.duration(policy.maxTemporarySeconds)).") }
+        // 6. When it opens: never sooner than the unblock delay (a temporary unblock must not be a way around the wait), and not later than the longest start wait. Left out, it opens after the delay.
+        let startSeconds = request.startSeconds ?? state.delaySeconds
+        guard startSeconds >= state.delaySeconds else { throw reject(.invalidDuration, "It can't open sooner than your unblock delay of \(Formatting.duration(state.delaySeconds)).") }
+        guard startSeconds <= policy.maxTemporaryStartSeconds else { throw reject(.invalidDuration, "It can't open later than \(Formatting.duration(policy.maxTemporaryStartSeconds)) from now.") }
+        // 7. The password rule: lockout, no password set, wrong password.
+        if let denied = checkPassword(password) { return denied }
+        // 8. Everything is valid, so the site starts waiting. The countdowns are built first so `state` is only written, not read, in the assignment.
+        let unblock = TemporaryUnblock(startsIn: Countdown(seconds: Double(startSeconds)), window: Countdown(seconds: Double(windowSeconds)))
+        setTemporaryUnblock(unblock, of: target)
+        onTemporaryUnblockEvent?("temporary unblock approved: opens in \(Formatting.duration(startSeconds)) for \(Formatting.duration(windowSeconds))")
+        return success("\(target.name) opens in \(Formatting.duration(startSeconds)), for \(Formatting.duration(windowSeconds)), then blocks again.")
+    }
+
+    /// Finds the site named in a request, rejecting with invalidDomain when the name is not valid and notBlocked when the site is not on the list.
+    private func siteTarget(_ raw: String) throws -> Target {
+        let domain = try normalized(raw)
+        guard let index = state.blocked.firstIndex(where: { $0.domain == domain }) else { throw reject(.notBlocked, "\(domain) is not blocked.") }
+        return Target(isRule: false, index: index, name: domain)
+    }
+
+    /// Finds the path rule named in a request, rejecting with invalidDomain or invalidPath when the text is not a valid rule and notBlocked when the rule is not on the list.
+    private func ruleTarget(_ raw: String) throws -> Target {
+        let rule = try parsedRule(raw)
+        let text = PathRuleParser.display(domain: rule.domain, path: rule.path)
+        guard let index = pathRuleIndex(rule) else { throw reject(.notBlocked, "\(text) is not blocked.") }
+        return Target(isRule: true, index: index, name: text)
     }
 
     /// Changes the unblock delay. A longer (or equal) delay applies at once; a shorter one has to wait out the current delay first.
@@ -430,7 +565,43 @@ public final class Engine {
 
     // MARK: - Time
 
-    /// Advances every countdown by the elapsed seconds and applies the ones that finished. Returns true when something finished, meaning the state must be saved now. Negative, NaN or infinite input changes nothing.
+    /// Moves every temporary unblock forward by the elapsed seconds, on sites and on path rules. Returns true when at least one opened (its start wait ran out) or ended (its window ran out). An ended one is removed and the site or rule stays on the block list.
+    private func advanceTemporaryUnblocks(by elapsed: Double) -> Bool {
+        var changed = false
+        for index in state.blocked.indices {
+            // The result is computed before the write, because reading `state` while writing to it in one statement is an overlapping access that Swift stops with a crash.
+            let result = advanced(state.blocked[index].temporaryUnblock, by: elapsed)
+            if result.changed { changed = true }
+            state.blocked[index].temporaryUnblock = result.unblock
+        }
+        if var rules = state.blockedPaths {
+            for index in rules.indices {
+                let result = advanced(rules[index].temporaryUnblock, by: elapsed)
+                if result.changed { changed = true }
+                rules[index].temporaryUnblock = result.unblock
+            }
+            state.blockedPaths = rules
+        }
+        return changed
+    }
+
+    /// Moves one temporary unblock forward and reports what happened. If the start wait ran out and the window did not, the unblock has opened and is kept. If the window ran out too, the unblock has ended and nil comes back. A gap long enough to cover both the opening and the end (for example a Mac that slept) therefore just ends it, with no "opened" message. Each outcome is sent to `onTemporaryUnblockEvent`. Does nothing for a site with no temporary unblock.
+    private func advanced(_ unblock: TemporaryUnblock?, by elapsed: Double) -> (unblock: TemporaryUnblock?, changed: Bool) {
+        guard var current = unblock else { return (nil, false) }
+        let wasOpen = current.isOpen
+        current.advance(by: elapsed)
+        if current.isFinished {
+            onTemporaryUnblockEvent?("temporary unblock ended; the site is blocked again")
+            return (nil, true)
+        }
+        if current.isOpen, !wasOpen {
+            onTemporaryUnblockEvent?("temporary unblock opened")
+            return (current, true)
+        }
+        return (current, false)
+    }
+
+    /// Advances every countdown by the elapsed seconds and applies the ones that finished. Returns true when something finished or a temporary unblock opened, meaning the state must be saved now. Negative, NaN or infinite input changes nothing.
     public func tick(elapsed: Double) -> Bool {
         guard elapsed.isFinite, elapsed > 0 else { return false }
         for index in state.blocked.indices { state.blocked[index].pendingUnblock?.advance(by: elapsed) }
@@ -444,7 +615,8 @@ public final class Engine {
         state.lockout?.advance(by: elapsed)
 
         // The order below matters only in that every finished countdown is applied; sites and path rules go first so the hosts file and the browsers' lists lose them on the next pass.
-        var changed = false
+        // A temporary unblock that opens or ends changes what must be blocked, so it counts as a change to save.
+        var changed = advanceTemporaryUnblocks(by: elapsed)
         let siteCount = state.blocked.count
         state.blocked.removeAll { $0.pendingUnblock?.isFinished == true }
         if state.blocked.count != siteCount { changed = true }

@@ -22,7 +22,11 @@ usage:
   siteblock add youtube.com/shorts     a path after the name blocks only that part of the site
   siteblock add --whole-site <link>    block the whole site even though the text has a path
   siteblock unblock <site>             asks for the password; a path unblocks that part of a site
-  siteblock cancel <site>              cancel a pending unblock; a path cancels that part's unblock
+  siteblock unblock <site> --for <duration> [--in <duration>]
+                                       unblock for a limited time, for example --for 30m
+                                       it opens after the unblock delay (or after --in, which can only be longer)
+                                       and is blocked again when --for runs out; asks for the password
+  siteblock cancel <site>              cancel a pending unblock, or end a temporary unblock (no password)
   siteblock delay                      show the current unblock delay
   siteblock delay <duration>           for example 45m or 2h; asks for the password
   siteblock delay --cancel
@@ -71,6 +75,12 @@ func send(_ request: Request, prefix: String = "") -> SendResult {
     }
 }
 
+/// The line `siteblock status` prints under a site or rule that has a temporary unblock: how long until it opens and how long it stays open while it waits, or how long until it is blocked again once it is open.
+func temporaryLine(_ temporary: TemporaryUnblockStatus) -> String {
+    if temporary.isOpen { return "    OPEN — blocks again in \(Formatting.compact(temporary.secondsRemaining))" }
+    return "    opens in \(Formatting.compact(temporary.opensInSeconds ?? 0)), for \(Formatting.compact(temporary.windowSeconds))"
+}
+
 /// Builds the text `siteblock status` prints from a snapshot: the delay, then each blocked site with its host count and any countdown, then each blocked part of a site, then the adult content filter line, then any pending delay change, uninstall, recovery or lockout.
 func formatStatus(_ status: StatusSnapshot) -> String {
     var lines = ["SiteBlock \(status.version) — unblock delay: \(Formatting.duration(status.delaySeconds))"]
@@ -85,6 +95,7 @@ func formatStatus(_ status: StatusSnapshot) -> String {
             var line = "  \(site.domain) (\(site.hosts.count) \(site.hosts.count == 1 ? "host" : "hosts"))"
             if let seconds = site.unblockSecondsRemaining { line += " — unblocks in \(Formatting.clock(seconds))" }
             lines.append(line)
+            if let temporary = site.temporaryUnblock { lines.append(temporaryLine(temporary)) }
         }
     }
     if !rules.isEmpty {
@@ -93,6 +104,7 @@ func formatStatus(_ status: StatusSnapshot) -> String {
             var line = "  \(rule.rule)"
             if let seconds = rule.unblockSecondsRemaining { line += " — unblocks in \(Formatting.clock(seconds))" }
             lines.append(line)
+            if let temporary = rule.temporaryUnblock { lines.append(temporaryLine(temporary)) }
         }
     }
     // The filter has no switch: a SiteBlock service that has it always reports it on. A service from before the filter existed sends nothing, which reads as false, and then the line says so instead of claiming protection that is not there.
@@ -272,14 +284,88 @@ private func singleSite(_ arguments: [String], command: String) -> String? {
     return arguments[0]
 }
 
-/// Starts the unblock countdown for one site, or for one blocked part of a site when the text has a path, after asking for the password.
-private func runUnblock(_ arguments: [String]) -> Int32 {
-    guard let site = singleSite(arguments, command: "unblock") else { return ExitCode.usage }
-    guard let password = readPassword() else { return ExitCode.usage }
-    return sendAndPrint(Request(command: hasPath(site) ? .unblockPath : .unblock, domain: site, password: password))
+/// What `siteblock unblock` was given: the site or rule, and the text of each option that was typed. Nothing is checked yet.
+private struct UnblockArguments {
+    /// The site or rule text.
+    var site: String
+    /// The text after `--for`, which is how long the site stays open; nil when the option was not given.
+    var forText: String?
+    /// The text after `--in`, which is how long to wait before it opens; nil when the option was not given.
+    var inText: String?
 }
 
-/// Cancels a pending unblock of a site, or of a blocked part of a site when the text has a path; no password is needed.
+/// Splits the arguments of `siteblock unblock` into the one site and the two options (`--for` and `--in`, each followed by its value and each allowed once). Returns nil after printing a usage error when anything else is there.
+private func parseUnblockArguments(_ arguments: [String]) -> UnblockArguments? {
+    var site: String?
+    var forText: String?
+    var inText: String?
+    var index = 0
+    while index < arguments.count {
+        let argument = arguments[index]
+        switch argument {
+        case "--for", "--in":
+            guard index + 1 < arguments.count else {
+                _ = usageFailure("\(argument) needs a value")
+                return nil
+            }
+            let value = arguments[index + 1]
+            let alreadyGiven = argument == "--for" ? forText != nil : inText != nil
+            guard !alreadyGiven else {
+                _ = usageFailure("\(argument) was given twice")
+                return nil
+            }
+            if argument == "--for" { forText = value } else { inText = value }
+            index += 2
+        default:
+            if argument.hasPrefix("-") {
+                _ = usageFailure("unknown option '\(argument)'")
+                return nil
+            }
+            guard site == nil else {
+                _ = usageFailure("unblock needs exactly one site")
+                return nil
+            }
+            site = argument
+            index += 1
+        }
+    }
+    guard let site else {
+        _ = usageFailure("unblock needs exactly one site")
+        return nil
+    }
+    return UnblockArguments(site: site, forText: forText, inText: inText)
+}
+
+/// Turns the text of a duration option into seconds, or prints a usage error that names the option and returns nil. The text goes through the same parser as `delay`.
+private func parseDurationOption(_ text: String, option: String) -> Int? {
+    guard let seconds = Formatting.parseDuration(text) else {
+        _ = usageFailure("'\(text)' is not a duration for \(option); try 30m, 2h, 1d or 1h30m")
+        return nil
+    }
+    return seconds
+}
+
+/// Starts the unblock countdown for one site, or for one blocked part of a site when the text has a path, after asking for the password. With `--for <duration>` the unblock is temporary instead: the site opens after the unblock delay (or after `--in <duration>`), stays open for `--for`, and is blocked again on its own. Every option is checked before the password is asked for, so a typo costs nothing and nothing reaches the daemon.
+private func runUnblock(_ arguments: [String]) -> Int32 {
+    guard let parsed = parseUnblockArguments(arguments) else { return ExitCode.usage }
+    let site = parsed.site
+    guard let forText = parsed.forText else {
+        // Without --for this is the permanent unblock. --in only makes sense for a temporary one.
+        if parsed.inText != nil { return usageFailure("--in goes with --for") }
+        guard let password = readPassword() else { return ExitCode.usage }
+        return sendAndPrint(Request(command: hasPath(site) ? .unblockPath : .unblock, domain: site, password: password))
+    }
+    guard let windowSeconds = parseDurationOption(forText, option: "--for") else { return ExitCode.usage }
+    var startSeconds: Int?
+    if let inText = parsed.inText {
+        guard let seconds = parseDurationOption(inText, option: "--in") else { return ExitCode.usage }
+        startSeconds = seconds
+    }
+    guard let password = readPassword() else { return ExitCode.usage }
+    return sendAndPrint(Request(command: hasPath(site) ? .temporaryUnblockPath : .temporaryUnblock, domain: site, password: password, seconds: windowSeconds, startSeconds: startSeconds))
+}
+
+/// Cancels a pending unblock of a site, or of a blocked part of a site when the text has a path, or ends a temporary unblock of either (waiting or open); no password is needed.
 private func runCancel(_ arguments: [String]) -> Int32 {
     guard let site = singleSite(arguments, command: "cancel") else { return ExitCode.usage }
     return sendAndPrint(Request(command: hasPath(site) ? .cancelUnblockPath : .cancelUnblock, domain: site))

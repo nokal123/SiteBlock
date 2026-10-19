@@ -144,6 +144,8 @@ final class DaemonRuntime {
         self.ignoredUninstallFlag = clearedFlag
         // In production only the person logged in at the screen (or root) may set the first password. Sandbox runs leave the rule off, because the test user is not tied to /dev/console.
         if !paths.isSandbox { engine.consoleUID = { DaemonRuntime.consoleOwner() } }
+        // Each temporary unblock that is approved, opens, ends or is cancelled gets one log line. The engine builds the sentence, and it never names the site or rule, because the log must not become a dated list of which sites were opened.
+        engine.onTemporaryUnblockEvent = { [log] message in log.log(message) }
         if loaded == nil { log.log("no saved state found; starting fresh") }
     }
 
@@ -258,11 +260,16 @@ final class DaemonRuntime {
 
     /// Called on a client thread. It first checks any site name or rule in the request on this thread and rejects an invalid one at once, then hops onto the engine queue and handles the request there. Rejecting here means a flood of bad names never queues behind, or in front of, real commands and ticks.
     private func handle(_ request: Request, peerUID: uid_t) -> Response {
-        // Only the commands that use a site name or rule are checked. An unblock that is also missing its password is left to the engine, which answers badRequest first, the same as for any other missing argument.
-        let usesDomain = request.command == .add || request.command == .unblock || request.command == .cancelUnblock
-        let usesRule = request.command == .addPath || request.command == .unblockPath || request.command == .cancelUnblockPath
-        let missingPassword = (request.command == .unblock || request.command == .unblockPath) && request.password == nil
-        if usesDomain, !missingPassword, let raw = request.domain {
+        // Only the commands that use a site name or rule are checked. A request that is also missing a required argument (the password for an unblock; the password or the window for a temporary unblock) is left to the engine, which answers badRequest first, the same as for any other missing argument.
+        let usesDomain = request.command == .add || request.command == .unblock || request.command == .cancelUnblock || request.command == .temporaryUnblock
+        let usesRule = request.command == .addPath || request.command == .unblockPath || request.command == .cancelUnblockPath || request.command == .temporaryUnblockPath
+        let missingArgument: Bool
+        switch request.command {
+        case .unblock, .unblockPath: missingArgument = request.password == nil
+        case .temporaryUnblock, .temporaryUnblockPath: missingArgument = request.password == nil || request.seconds == nil
+        default: missingArgument = false
+        }
+        if usesDomain, !missingArgument, let raw = request.domain {
             do {
                 _ = try DomainNormalizer.normalize(raw)
             } catch {
@@ -270,7 +277,7 @@ final class DaemonRuntime {
                 return .failure(.invalidDomain, error.localizedDescription)
             }
         }
-        if usesRule, !missingPassword, let raw = request.domain {
+        if usesRule, !missingArgument, let raw = request.domain {
             do {
                 _ = try PathRuleParser.parse(raw)
             } catch let error as PathRuleError {
@@ -286,7 +293,7 @@ final class DaemonRuntime {
     }
 
     /// The commands that compare a password against the stored one.
-    private static let passwordCommands: Set<Command> = [.unblock, .unblockPath, .setDelay, .changePassword, .uninstall]
+    private static let passwordCommands: Set<Command> = [.unblock, .unblockPath, .temporaryUnblock, .temporaryUnblockPath, .setDelay, .changePassword, .uninstall]
 
     /// True when the command really compared a password, whatever the outcome. A locked-out request, a missing password setup, or a bad argument fails before any comparison, so those are not password checks. A changePassword that fails only because the new password is too weak did compare the old one, and it was right.
     private func comparedPassword(_ command: Command, _ response: Response) -> Bool {
@@ -340,7 +347,7 @@ final class DaemonRuntime {
 
     // MARK: - Enforcement
 
-    /// Everything SiteBlock writes outside its own files: the hosts to block and the browsers' lists. Two readings compare equal when nothing the enforcers write would change, so the runtime can tell a block-list change it caused (a command, or a countdown that finished) from tampering.
+    /// Everything SiteBlock writes outside its own files: the hosts to block and the browsers' lists. Two readings compare equal when nothing the enforcers write would change, so the runtime can tell a block-list change it caused (a command, a countdown that finished, or a temporary unblock that opened or ended) from tampering.
     private func currentBlockLists() -> (hosts: [String], browsers: BrowserBlockLists) {
         (engine.hostsToWrite, engine.browserBlockLists)
     }
@@ -348,7 +355,7 @@ final class DaemonRuntime {
     /// Makes the hosts file and the browsers' policy files match the engine's block list and the adult content filter: the hosts file first, then the browsers. Both always run, so a failure in one never stops the other from being repaired. Returns true only when both ended correct, and the caller passes that to the engine as `hostsFileHealthy`. `causedByCommand` is true when the block list was just changed on purpose, so the rewrite is not logged as tampering.
     private func enforceBlocks(causedByCommand: Bool) -> Bool {
         let hostsHealthy = enforcer.enforce(blockedHosts: engine.hostsToWrite, causedByCommand: causedByCommand)
-        // Sites and rules with a pending unblock stay in the engine's lists until their countdown ends, so they stay in the browsers' lists too.
+        // Sites and rules with a pending unblock stay in the engine's lists until their countdown ends, so they stay in the browsers' lists too. A site or rule whose temporary unblock is open is not in the lists, and it is back in them the moment the window ends.
         let browsersHealthy = browserEnforcer.enforce(blockLists: engine.browserBlockLists, adultFilterActive: engine.adultFilterActive, causedByCommand: causedByCommand)
         return hostsHealthy && browsersHealthy
     }
@@ -395,7 +402,8 @@ final class DaemonRuntime {
     /// True when any countdown is running, which means the state must be saved regularly.
     private var anyCountdownRunning: Bool {
         let state = engine.state
-        return state.blocked.contains { $0.pendingUnblock != nil } || (state.blockedPaths ?? []).contains { $0.pendingUnblock != nil } || state.pendingDelayChange != nil || state.pendingUninstall != nil || state.recovery != nil || state.lockout != nil
+        // A temporary unblock counts while it waits and while it is open: its remaining times must survive a crash or restart.
+        return state.blocked.contains { $0.pendingUnblock != nil || $0.temporaryUnblock != nil } || (state.blockedPaths ?? []).contains { $0.pendingUnblock != nil || $0.temporaryUnblock != nil } || state.pendingDelayChange != nil || state.pendingUninstall != nil || state.recovery != nil || state.lockout != nil
     }
 
     /// Turns a Duration into seconds as a Double.
@@ -413,7 +421,7 @@ final class DaemonRuntime {
         return engine.tick(elapsed: elapsed)
     }
 
-    /// Runs at the start of every command, on the engine queue: advances every countdown by the time since the last tick or command, then applies whatever finished the way a timer tick would. It saves the state, and runs an enforcement pass when something finished, so a site whose wait just ended is already out of the hosts file when the command runs. It does nothing once an uninstall has begun.
+    /// Runs at the start of every command, on the engine queue: advances every countdown by the time since the last tick or command, then applies whatever finished the way a timer tick would. It saves the state, and runs an enforcement pass when something finished or a temporary unblock opened, so a site whose wait just ended is already out of the hosts file (and a site whose window just ended is already back in it) when the command runs. It does nothing once an uninstall has begun.
     private func catchUpCountdowns() {
         if uninstallStarted.isSet { return }
         let listsBefore = currentBlockLists()
@@ -421,7 +429,7 @@ final class DaemonRuntime {
         // A countdown that ended inside engine.tick may have started the uninstall; nothing else may happen then.
         if uninstallStarted.isSet || !changed { return }
         _ = saveState()
-        // A finished unblock changes the block list on purpose, so that rewrite is not reported as tampering.
+        // A finished unblock, or a temporary unblock that opened or ended, changes the block list on purpose, so that rewrite is not reported as tampering.
         let blockListChanged = currentBlockLists() != listsBefore
         let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)
@@ -436,7 +444,7 @@ final class DaemonRuntime {
         // When the uninstall countdown ended inside engine.tick, the uninstall has already run; nothing else may happen.
         if uninstallStarted.isSet { return }
 
-        // A countdown that finished (a site or rule whose wait is over) changes the block list on purpose, so that rewrite is not reported as tampering.
+        // A countdown that finished (a site or rule whose wait is over) or a temporary unblock that opened or ended changes the block list on purpose, so that rewrite is not reported as tampering. The enforcement pass below runs in this same tick, right after the engine moved the countdowns, so the hosts file and the browsers' policy files change at once and not on a later pass.
         let blockListChanged = currentBlockLists() != listsBefore
         let healthy = enforceBlocks(causedByCommand: blockListChanged)
         engine.setHostsHealthy(healthy)

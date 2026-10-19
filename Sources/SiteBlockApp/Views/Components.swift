@@ -11,6 +11,63 @@ extension View {
         return background(fill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(edge, lineWidth: 1))
     }
+
+    /// Draws the rounded box behind a site row. With a tone it is a faint wash of that color with a slightly stronger edge, both lighter in light mode than in dark mode so the box reads the same on either background; with no tone it is the same neutral gray box as every other card.
+    func cardBackground(tone: SiteTone?) -> some View {
+        background(tone?.fill ?? Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tone?.edge ?? Color.primary.opacity(0.08), lineWidth: 1))
+    }
+}
+
+/// The two colors a site row can wear while something is counting down: brick red while an unblock of either kind is waiting (the site is still blocked) and pine green while a temporary unblock has the site open. A plain blocked row has no tone and keeps the neutral gray box. Each has its own light-mode and dark-mode shade. Every full-strength shade has at least 4.5:1 contrast against the panel and against its own tinted box, so text and icons drawn in it stay readable.
+enum SiteTone {
+    /// The site is blocked and an unblock is counting down.
+    case blocked
+    /// A temporary unblock has the site open.
+    case open
+
+    /// The full-strength color, used for the lock icon and the countdown line under the name.
+    var accent: Color {
+        switch self {
+        case .blocked: return .adaptive(light: 0x9E3A2F, dark: 0xE08A78)
+        case .open: return .adaptive(light: 0x3D6B4A, dark: 0x8CC29B)
+        }
+    }
+
+    /// The wash behind the row: the light shade at 7% in light mode, the dark shade at 13% in dark mode, where a fainter wash would disappear.
+    var fill: Color {
+        switch self {
+        case .blocked: return .adaptive(light: 0x9E3A2F, dark: 0xE08A78, lightAlpha: 0.07, darkAlpha: 0.13)
+        case .open: return .adaptive(light: 0x3D6B4A, dark: 0x8CC29B, lightAlpha: 0.07, darkAlpha: 0.13)
+        }
+    }
+
+    /// The row's one-point edge, a little stronger than the wash so the box has a clear outline without a loud colored border.
+    var edge: Color {
+        switch self {
+        case .blocked: return .adaptive(light: 0x9E3A2F, dark: 0xE08A78, lightAlpha: 0.22, darkAlpha: 0.30)
+        case .open: return .adaptive(light: 0x3D6B4A, dark: 0x8CC29B, lightAlpha: 0.22, darkAlpha: 0.30)
+        }
+    }
+
+    /// The fill of a filled button in this tone. It is darker than `accent` in dark mode, because a filled button has white text and white on the light dark-mode accent would be hard to read.
+    var buttonFill: Color {
+        switch self {
+        case .blocked: return .adaptive(light: 0x9E3A2F, dark: 0xB04A3D)
+        case .open: return .adaptive(light: 0x3D6B4A, dark: 0x3F7A52)
+        }
+    }
+}
+
+extension Color {
+    /// A color that follows the panel's appearance: the `light` sRGB value (written as 0xRRGGBB) in light mode and the `dark` one in dark mode, each with its own opacity.
+    static func adaptive(light: UInt32, dark: UInt32, lightAlpha: CGFloat = 1, darkAlpha: CGFloat = 1) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let hex = isDark ? dark : light
+            return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: isDark ? darkAlpha : lightAlpha)
+        })
+    }
 }
 
 /// A label whose countdown number ticks down every second on its own, so it keeps moving smoothly between status polls and keeps moving even if the daemon stops answering.

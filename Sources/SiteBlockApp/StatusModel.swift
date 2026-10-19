@@ -214,7 +214,12 @@ final class StatusModel: ObservableObject {
         await run(Request(command: .unblock, domain: domain, password: password), scope: .site(domain))
     }
 
-    /// Cancels a pending unblock so the site stays blocked for good. Needs no password.
+    /// Schedules a temporary unblock of a site: it stays blocked for `startSeconds`, then opens for `windowSeconds`, and is blocked again on its own. Returns true when the daemon accepted it.
+    func temporaryUnblock(domain: String, choice: TemporaryUnblockChoice) async -> Bool {
+        await run(Request(command: .temporaryUnblock, domain: domain, password: choice.password, seconds: choice.windowSeconds, startSeconds: choice.startSeconds), scope: .site(domain))
+    }
+
+    /// Cancels a pending unblock or a temporary unblock (waiting or open) so the site stays blocked. Needs no password.
     func cancelUnblock(domain: String) async -> Bool {
         await run(Request(command: .cancelUnblock, domain: domain), scope: .site(domain))
     }
@@ -224,7 +229,12 @@ final class StatusModel: ObservableObject {
         await run(Request(command: .unblockPath, domain: rule, password: password), scope: .rule(rule))
     }
 
-    /// Cancels a pending unblock of a blocked part of a site so it stays blocked for good. Needs no password.
+    /// Schedules a temporary unblock of a blocked part of a site, named by its rule text; it works like `temporaryUnblock(domain:choice:)`. Returns true when the daemon accepted it.
+    func temporaryUnblockPath(rule: String, choice: TemporaryUnblockChoice) async -> Bool {
+        await run(Request(command: .temporaryUnblockPath, domain: rule, password: choice.password, seconds: choice.windowSeconds, startSeconds: choice.startSeconds), scope: .rule(rule))
+    }
+
+    /// Cancels a pending unblock or a temporary unblock (waiting or open) of a blocked part of a site so it stays blocked. Needs no password.
     func cancelUnblockPath(rule: String) async -> Bool {
         await run(Request(command: .cancelUnblockPath, domain: rule), scope: .rule(rule))
     }
@@ -332,9 +342,9 @@ final class StatusModel: ObservableObject {
         tabWatcher?.setRules(Self.watchedRules(in: status))
     }
 
-    /// The path rules of a status snapshot, in the form the tab watcher compares tab addresses with. An old daemon that reports no path rules gives an empty list.
+    /// The path rules of a status snapshot, in the form the tab watcher compares tab addresses with. A rule whose temporary unblock is open is left out, because it is allowed right now and the watcher must not reload tabs on it; it comes back in the list the moment the window ends. A rule that is still waiting to open stays in. An old daemon that reports no path rules gives an empty list.
     private static func watchedRules(in status: StatusSnapshot) -> [WatchedPathRule] {
-        (status.blockedPaths ?? []).map { WatchedPathRule(domain: $0.domain, path: $0.path) }
+        (status.blockedPaths ?? []).filter { $0.temporaryUnblock?.isOpen != true }.map { WatchedPathRule(domain: $0.domain, path: $0.path) }
     }
 
     /// Stores the browsers that refused permission, publishing only when the list actually changed so the panel does not redraw for nothing.

@@ -16,6 +16,20 @@ public enum Formatting {
         return parts.isEmpty ? "0 seconds" : parts.joined(separator: " ")
     }
 
+    /// Describes a length of time in the short form used on one line of text: "45s" under a minute, and from a minute up whole minutes rounded up with the larger units folded in, at most two units, such as "42m", "1h", "1h 30m" or "2d 3h". Rounding up keeps a running countdown from showing less time than is left.
+    public static func compact(_ seconds: Int) -> String {
+        let total = max(0, seconds)
+        if total < 60 { return "\(total)s" }
+        // Whole minutes, rounded up; days and hours are then split out of them.
+        let minutes = total / 60 + (total % 60 > 0 ? 1 : 0)
+        let days = minutes / 1_440
+        let hours = (minutes % 1_440) / 60
+        let rest = minutes % 60
+        if days > 0 { return hours > 0 ? "\(days)d \(hours)h" : "\(days)d" }
+        if hours > 0 { return rest > 0 ? "\(hours)h \(rest)m" : "\(hours)h" }
+        return "\(rest)m"
+    }
+
     /// Pads a number to at least two digits.
     private static func twoDigits(_ value: Int) -> String {
         value < 10 ? "0\(value)" : "\(value)"

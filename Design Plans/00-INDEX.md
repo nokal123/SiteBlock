@@ -3,18 +3,18 @@
 ## Quick Reference: File Overview
 
 ### [01-overview-and-data.md](01-overview-and-data.md)
-**Open for:** requirements, how blocking works, architecture, threat model, data model, wire protocol, policy values
+**Open for:** requirements, how blocking works, architecture, threat model, data model, wire protocol, policy values, temporary unblock fields and commands
 - What SiteBlock is and why it uses the hosts file instead of a browser extension or firewall
 - Architecture diagram of the daemon, watchdog, CLI, app and socket
 - What SiteBlock does and does not defend against
 - Every persisted field, every protocol field, every command and its password rule
 
 ### [02-core-components.md](02-core-components.md)
-**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, Engine command rules, state file, socket client, duration formatting
+**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting
 - Pure logic with no root access, all unit-testable
 
 ### [03-daemon-cli-app.md](03-daemon-cli-app.md)
-**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission
+**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, temporary unblock in the CLI and the panel, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission
 
 ### [04-infrastructure.md](04-infrastructure.md)
 **Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, automatic package builds
@@ -38,6 +38,7 @@
 10. `Sources/SiteBlockCore/StateStore.swift` — **Primary:** [02-core-components.md](02-core-components.md) § StateStore
 11. `Sources/SiteBlockCore/DaemonClient.swift` — **Primary:** [02-core-components.md](02-core-components.md) § DaemonClient
 12. `Sources/SiteBlockCore/Formatting.swift` — **Primary:** [02-core-components.md](02-core-components.md) § Formatting
+12a. `Sources/SiteBlockCore/TemporaryUnblockOptions.swift` — **Primary:** [02-core-components.md](02-core-components.md) § TemporaryUnblockOptions — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (the temporary unblock form)
 13a. `Sources/SiteBlockCore/ConnectionLimiter.swift` — **Primary:** [02-core-components.md](02-core-components.md) § ConnectionLimiter — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SocketServer
 13b. `Sources/SiteBlockCore/UninstallRule.swift` — **Primary:** [02-core-components.md](02-core-components.md) § UninstallRule — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § LaunchdGuard and Watchdog
 13. `Sources/SiteBlockCore/Paths.swift` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Installed Paths
@@ -58,9 +59,11 @@
 19j. `Sources/SiteBlockCore/TabReloadDecider.swift` — **Primary:** [02-core-components.md](02-core-components.md) § TabReloadDecider — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 20. `Sources/siteblockd/Uninstaller.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Uninstaller
 21. `Sources/siteblock/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
+21a. `Sources/siteblock/Commands.swift`, `Sources/siteblock/PasswordPrompt.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
 22. `Sources/SiteBlockApp/*` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App
 22a. `Sources/SiteBlockApp/TabWatcher.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel and the permission banner)
 22b. `Sources/SiteBlockApp/ChromiumTabs.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+22c. `Sources/SiteBlockApp/Views/TemporaryUnblockForm.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (the temporary unblock form) — **Also:** [02-core-components.md](02-core-components.md) § TemporaryUnblockOptions
 23. `Resources/Info.plist` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script (including the `NSAppleEventsUsageDescription` key)
 24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script
 25. `scripts/install.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
@@ -87,7 +90,24 @@
 ### Commands & Policy
 - Command list and password rules → [01-overview-and-data.md](01-overview-and-data.md) § Commands
 - Engine rules → [02-core-components.md](02-core-components.md) § Engine
-- Fixed numbers (delay, lockout, recovery) → [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values
+- Fixed numbers (delay, lockout, recovery, temporary unblock window and start wait) → [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values
+
+### Temporary Unblock
+- What is stored for a temporary unblock → [01-overview-and-data.md](01-overview-and-data.md) § Data Model (TemporaryUnblock)
+- Request fields, error codes and the status shape → [01-overview-and-data.md](01-overview-and-data.md) § Wire Protocol (Request, Response, TemporaryUnblockStatus)
+- The two commands, and what `add`, `unblock` and the cancel commands do with a temporary unblock → [01-overview-and-data.md](01-overview-and-data.md) § Wire Protocol (Commands)
+- Window and start wait limits → [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values
+- What the hosts file and browser lists leave out while one is open → [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Temporary unblock), [02-core-components.md](02-core-components.md) § Engine
+- Menu choices of the "For a while" form → [02-core-components.md](02-core-components.md) § TemporaryUnblockOptions
+- Order of the command checks → [02-core-components.md](02-core-components.md) § Engine (Temporary unblock commands)
+- How a tick opens and ends one → [02-core-components.md](02-core-components.md) § Engine (Temporary unblock tick rule)
+- Older state files without the field → [02-core-components.md](02-core-components.md) § Models and Protocol Types, § StateStore
+- Saving, re-enforcing at once and the log lines → [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime
+- `unblock --for`, `--in`, `cancel` and the `status` lines → [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
+- The "For a while" and "For good" choice, the form and the waiting and open rows → [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (Panel states)
+- Why the tab watcher skips a rule whose temporary unblock is open → [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- Tests → [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests, § Integration Tests
+- Implementation steps → [Tasks/TASKS-08-temporary-unblock.md](Tasks/TASKS-08-temporary-unblock.md)
 
 ### Path Rules and Tab Watching
 - Tab watcher (reloads a tab that moved to a blocked part of a site without loading a page) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
@@ -124,7 +144,7 @@ The user types a site into the app or CLI. The client sends an `add` request ove
 - **Hosts file:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § HostsEnforcer
 
 ### Unblocking a site end to end
-The client sends `unblock` with the password. The engine checks the password with lockout rules and starts a countdown equal to the delay. Every tick subtracts real elapsed time. When the countdown reaches zero the site is removed, the state is saved, and the next enforcement pass removes its lines from the hosts file.
+The client sends `unblock` with the password. The engine checks the password with lockout rules and starts a countdown equal to the delay. Every tick subtracts real elapsed time. When the countdown reaches zero the site is removed, the state is saved, and the next enforcement pass removes its lines from the hosts file. Opening a site for a chosen window and then blocking it again is a separate flow, described under "A temporary unblock from request to re-block".
 - **Password:** [02-core-components.md](02-core-components.md) § PasswordHasher, § Engine
 - **Timing:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime
 
@@ -134,7 +154,7 @@ The daemon and watchdog each check every 5 seconds that the other is loaded and 
 - [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs
 
 ### A tab switches to a blocked part of a site without loading
-Browsers check their block lists only when a page loads, and some sites change the address inside a page that is already open. The daemon's `status` reply lists every path rule, including rules that are waiting to unblock. The menu bar app's StatusModel hands that list to the TabWatcher every time it applies a snapshot. While a rule exists and Chrome, Edge or Brave is running, the TabWatcher asks ChromiumTabs every half second for the address of every open tab, using Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action). TabRuleMatcher and TabReloadDecider pick the tabs whose address falls under a rule and have not already been reloaded at that address. ChromiumTabs reloads each of them. A reload is a real page load, so the browser checks the `URLBlocklist` the daemon wrote and shows its block page. If the person refuses the Automation permission (the macOS setting that lets one app control another), ChromiumTabs reports the refusal, the TabWatcher publishes the browser's name, and the panel shows a banner.
+Browsers check their block lists only when a page loads, and some sites change the address inside a page that is already open. The daemon's `status` reply lists every path rule, including rules that are waiting to unblock. The menu bar app's StatusModel hands that list to the TabWatcher every time it applies a snapshot, leaving out a rule whose own temporary unblock is open, because the browsers' block lists do not hold an open rule. While a rule exists and Chrome, Edge or Brave is running, the TabWatcher asks ChromiumTabs every half second for the address of every open tab, using Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action). TabRuleMatcher and TabReloadDecider pick the tabs whose address falls under a rule and have not already been reloaded at that address. ChromiumTabs reloads each of them. A reload is a real page load, so the browser checks the `URLBlocklist` the daemon wrote and shows its block page. If the person refuses the Automation permission (the macOS setting that lets one app control another), ChromiumTabs reports the refusal, the TabWatcher publishes the browser's name, and the panel shows a banner.
 - **Rule list from the daemon:** [01-overview-and-data.md](01-overview-and-data.md) § Wire Protocol (StatusSnapshot), [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel)
 - **Address matching:** [02-core-components.md](02-core-components.md) § TabRuleMatcher
 - **Deciding what to reload:** [02-core-components.md](02-core-components.md) § TabReloadDecider
@@ -143,3 +163,14 @@ Browsers check their block lists only when a page loads, and some sites change t
 - **The block page the reload produces:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
 - **Permission text and prompt:** [04-infrastructure.md](04-infrastructure.md) § Build Script
 - **Limits:** [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits
+
+### A temporary unblock from request to re-block
+The person picks a window (how long the site stays open), a start wait (the time before it opens), and types the password, either in the menu bar app's "For a while" form or with `siteblock unblock <site> --for <duration>`. The client sends `temporaryUnblock` (or `temporaryUnblockPath` for a path rule). The engine runs its checks in a fixed order: missing fields, the site name or rule text, whether the site or rule is blocked, whether it already has an unblock, the window range and the start wait range. A request that fails any of these is refused before the password is checked, so it never costs a password attempt. When the password is right, the engine sets the temporary unblock, and the runtime saves the state and runs an enforcement pass. The hosts file does not change yet, because the site stays blocked during the start wait. Every tick subtracts real elapsed time from the start wait. When it reaches zero, the tick reports a change, the runtime saves the state at once, and the enforcement pass in that same tick rewrites the hosts file and the browsers' policy files without the site (a host that another blocked site still needs stays) and flushes the name cache. The daemon logs that the temporary unblock opened, and the menu bar app's StatusModel stops passing an open path rule to the TabWatcher. The rest of each tick's time counts down the window. When the window reaches zero, the tick removes the temporary unblock and saves the state, the same pass writes the site's lines and entries back, and the daemon logs that the site is blocked again. At any point the person can end it without a password with "Keep blocked", "Block now", `siteblock cancel`, or by adding the site again, and the site is blocked again before that response returns.
+- **Clients:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI, § SiteBlock.app Menu Bar App
+- **Fields, commands and status shape:** [01-overview-and-data.md](01-overview-and-data.md) § Data Model, § Wire Protocol
+- **Command checks and tick rule:** [02-core-components.md](02-core-components.md) § Engine
+- **Saving, re-enforcing and log lines:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime
+- **Hosts file:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § HostsEnforcer
+- **Browser policy files:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
+- **Tab watcher rule filter:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- **Limits and tests:** [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits, [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests, § Integration Tests

@@ -22,7 +22,7 @@ SiteBlock is a macOS website blocker that works below the browser, so it blocks 
 - `siteblock` is a Terminal command that talks to `siteblockd`.
 - `SiteBlock.app` is a menu bar app (an icon in the top-right menu bar of the screen) that talks to `siteblockd` and shows the blocked sites, the unblock countdowns and the settings.
 
-Blocking a site is always free and instant. Unblocking a site needs the SiteBlock password, and even with the right password the site stays blocked for a waiting period (30 minutes by default) before it opens. During that wait anyone can cancel the unblock without a password.
+Blocking a site is always free and instant. Unblocking a site needs the SiteBlock password, and even with the right password the site stays blocked for a waiting period (30 minutes by default) before it opens. During that wait anyone can cancel the unblock without a password. A site can also be unblocked for a chosen stretch of time, called a temporary unblock. It stays blocked while a start wait runs, which is never shorter than the unblock delay, then it opens for the chosen window, and then it is blocked again on its own.
 
 ---
 
@@ -35,6 +35,7 @@ Blocking a site is always free and instant. Unblocking a site needs the SiteBloc
 5. Be very hard to get around on impulse. That means the block repairs itself after hand edits, the service restarts itself after it is stopped, and the clock cannot be moved forward to skip a wait.
 6. Make unblocking take effect only after a waiting period, so that even a successful bypass of the password costs time.
 7. Never lock the user out permanently. A forgotten password can be reset with the Mac admin password plus a 48-hour wait.
+8. Let a person open a blocked site, or a blocked part of a site, for a chosen window of time. It needs the password, it never opens sooner than the unblock delay, and it blocks itself again when the window ends.
 
 ---
 
@@ -51,6 +52,8 @@ Some Chrome windows never ask the Mac to look a name up at all. A Chrome started
 **Blocking part of a site (path rules).** Typing a site name alone (`youtube.com`) always blocks the whole site, exactly as before. A path rule exists only when a person asks to block part of a site: they type a path after the name, or paste a link and choose "Only this part". A path rule such as `youtube.com/shorts` blocks every address on that site (and its subdomains) whose path starts with `/shorts`, and leaves the rest of the site open. The hosts file can only block whole names, so path rules are enforced only through the browsers' own block lists: Chrome, Edge, Brave and Firefox. **Limits:** Safari cannot block part of a site (it has no block list SiteBlock can set without device management).
 
 Browsers check their block lists when a page loads, but a site can switch to a new address inside a page that is already open, without loading a new page. YouTube does this when you tap a Short from the home page, using the browser's `history.pushState` feature (a way for a page to change the address bar without a page load). In Chrome, Edge and Brave the menu bar app catches such a switch within about half a second, once the person allows it to control the browser. While a path rule exists and one of those browsers is running, the app reads the address of every open tab twice a second using Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action). It reloads any tab whose address falls under a path rule, and because a reload is a real page load, the browser's block list then shows its block page. macOS asks for the permission the first time, and it appears under System Settings → Privacy & Security → Automation. Firefox gives SiteBlock no way to read its tabs, so in Firefox a switch inside an open page is caught only on the next reload or when the address is opened directly. Safari has no path rules at all. See [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher.
+
+**Temporary unblock.** A site or a path rule can be opened for a chosen window of time and then blocked again without any further action. The site or rule stays on the block list the whole time; only what the daemon writes out changes. While the start wait runs (the time before the window opens), the site is blocked as usual. While the window is open, the daemon leaves that site's host names out of the hosts file, except for a name that another blocked site still needs, and leaves that site out of the browsers' block lists. A path rule whose own temporary unblock is open is left out of those lists too, but a path rule on a site whose whole site is open stays in them, because that rule is what keeps that part of the site blocked. When the window ends, the next enforcement pass writes everything back. A temporary unblock never changes the adult content filter, because it applies only to sites and path rules on the person's own block list. The rules are in [02-core-components.md](02-core-components.md) § Engine.
 
 **Adult content filter.** SiteBlock always blocks adult websites, including ones that are not on the block list. This is part of its core blocking, not a setting: there is no command, password or wait that turns it off, and only uninstalling SiteBlock removes it. It works in two layers. First, the Chrome policy file also gets `SafeSitesFilterBehavior` = 1 (Chrome checks each top-level page against Google's adult-content classification and refuses flagged ones), `ForceGoogleSafeSearch` = true (Google Search always uses SafeSearch), and `DnsOverHttpsMode` = "off" (Chrome uses the Mac's own name lookups, so the second layer reaches it). Second, every network service's DNS servers (the servers that turn site names into addresses) are set to Cloudflare for Families, which refuses to look up adult sites: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003`. VPN services are left alone, because a VPN supplies its own DNS servers; that is a known limit. Because of this layer the Private Relay names are always blocked, even with no sites on the block list, since Private Relay would otherwise send Safari's lookups to Apple instead of the family servers.
 
@@ -115,6 +118,7 @@ SiteBlock defends against the owner of the Mac acting on impulse. It does not de
 - Moving the system clock forward. Countdowns are measured with a monotonic clock (a counter that only moves forward with real elapsed time and ignores the wall clock).
 - Guessing the password with a script. Five wrong passwords lock password checks for 15 minutes.
 - Shortening the waiting period on impulse. Making the wait longer applies at once. Making it shorter has to sit through the current wait first.
+- Opening a site early through a temporary unblock. Its start wait is never shorter than the unblock delay, it needs the password, and the site stays fully blocked until the start wait ends.
 
 **What SiteBlock cannot stop:**
 
@@ -152,12 +156,14 @@ All persistent data lives in one JSON file, `state.json`, owned by root with mod
 - `domain: String` — the normalized base name the user asked for, for example `reddit.com`.
 - `hosts: [String]` — the full expanded list of host names written to the hosts file, sorted and without duplicates.
 - `pendingUnblock: Countdown?` — set when an unblock has been approved and is waiting. When it reaches zero the site is removed from `blocked`.
+- `temporaryUnblock: TemporaryUnblock?` — set while a temporary unblock of the site is waiting or open. **Optional in the file:** a `state.json` without the key decodes as `nil`, and a missing key must never make the file count as corrupt, because that would discard the block list. When the temporary unblock finishes it is removed and the site stays in `blocked`.
 
 ### BlockedPath
 
 - `domain: String` — the normalized base domain, for example `youtube.com`.
 - `path: String` — the path prefix, starting with `/`, for example `/shorts`. Case is kept, because paths are case-sensitive.
 - `pendingUnblock: Countdown?` — set while an approved unblock waits; when it reaches zero the rule is removed.
+- `temporaryUnblock: TemporaryUnblock?` — the same as on `BlockedSite`, for this rule. Optional in the file, and the rule stays in `blockedPaths` when the temporary unblock finishes.
 
 ### Countdown
 
@@ -165,6 +171,17 @@ All persistent data lives in one JSON file, `state.json`, owned by root with mod
 - `totalSeconds: Double` — the length the countdown started with, for progress display.
 
 A countdown stores time remaining rather than a finish time, because a finish time would be compared against the wall clock, which the user can change.
+
+### TemporaryUnblock
+
+A temporary unblock holds the time left before the site opens and how long the site stays open. It is stored as two countdowns that hold time remaining, because a finish time would be compared against the wall clock, which the user can change.
+
+- `startsIn: Countdown` — time left before the site opens. It starts at the chosen start wait.
+- `window: Countdown` — how long the site stays open. It starts counting down only after `startsIn` reaches `0`, and its `totalSeconds` is the chosen window length.
+- `isOpen: Bool` (computed, not stored) — `true` when `startsIn.remainingSeconds <= 0` and `window.remainingSeconds > 0`.
+- `isFinished: Bool` (computed, not stored) — `true` when both `startsIn.remainingSeconds <= 0` and `window.remainingSeconds <= 0`.
+
+A temporary unblock is waiting while `startsIn` is above `0`, open while `isOpen` is `true`, and removed from its site or rule as soon as it is finished. A site or path rule has at most one unblock of either kind at a time: the commands never set `temporaryUnblock` on an entry that has a `pendingUnblock`, and never set `pendingUnblock` on an entry that has a `temporaryUnblock`.
 
 ### PasswordHash
 
@@ -192,13 +209,14 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 - `domain: String?`
 - `password: String?`
 - `newPassword: String?`
-- `seconds: Int?`
+- `seconds: Int?` — the new delay for `setDelay`, and the window length (how long the site stays open) for `temporaryUnblock` and `temporaryUnblockPath`.
+- `startSeconds: Int?` — the start wait (the time before the site opens) for a temporary unblock. When it is missing, the start wait is the unblock delay.
 
 ### Response
 
 - `ok: Bool` — `true` when the command succeeded.
 - `error: String?` — a sentence a person can read, present when `ok` is `false`.
-- `errorCode: String?` — a stable machine-readable code, present when `ok` is `false`. Codes: `badRequest`, `invalidDomain`, `notSetUp`, `alreadySetUp`, `wrongPassword`, `lockedOut`, `weakPassword`, `notBlocked`, `alreadyBlocked`, `nothingPending`, `invalidDelay`, `notRoot`, `notAllowed`, `tooManySites`, `invalidPath`, `internal`.
+- `errorCode: String?` — a stable machine-readable code, present when `ok` is `false`. Codes: `badRequest`, `invalidDomain`, `notSetUp`, `alreadySetUp`, `wrongPassword`, `lockedOut`, `weakPassword`, `notBlocked`, `alreadyBlocked`, `nothingPending`, `invalidDelay`, `notRoot`, `notAllowed`, `tooManySites`, `invalidPath`, `invalidDuration`, `alreadyPending`, `internal`. `invalidDuration` means the window or the start wait of a temporary unblock is outside its allowed range. `alreadyPending` means the site or rule already has an unblock of either kind.
 - `status: StatusSnapshot?` — present on every successful response, so clients can redraw after any command.
 - `message: String?` — a short confirmation sentence, for example "reddit.com will unblock in 30 minutes."
 
@@ -206,15 +224,24 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 
 - `version: String` — the daemon's version string.
 - `passwordSet: Bool`
-- `blocked: [BlockedSiteStatus]` — each with `domain`, `hosts`, and `unblockSecondsRemaining: Int?`.
+- `blocked: [BlockedSiteStatus]` — each with `domain`, `hosts`, `unblockSecondsRemaining: Int?` and `temporaryUnblock: TemporaryUnblockStatus?`.
 - `delaySeconds: Int`
 - `pendingDelay: PendingDelayStatus?` — with `newDelaySeconds` and `secondsRemaining`.
 - `uninstallSecondsRemaining: Int?`
 - `recoverySecondsRemaining: Int?`
 - `lockoutSecondsRemaining: Int?`
 - `hostsFileHealthy: Bool` — `true` when the last enforcement pass found or left the hosts file in the right state.
-- `blockedPaths: [BlockedPathStatus]?` — each with `domain`, `path`, `rule` (the two joined, as shown to people, for example `youtube.com/shorts`) and `unblockSecondsRemaining: Int?`. Decoded as empty when missing.
+- `blockedPaths: [BlockedPathStatus]?` — each with `domain`, `path`, `rule` (the two joined, as shown to people, for example `youtube.com/shorts`), `unblockSecondsRemaining: Int?` and `temporaryUnblock: TemporaryUnblockStatus?`. Decoded as empty when missing.
 - `adultFilterEnabled: Bool?` — always `true` from a daemon that has the adult filter (decoded as `false` when missing, for an older daemon).
+
+### TemporaryUnblockStatus
+
+`BlockedSiteStatus.temporaryUnblock` and `BlockedPathStatus.temporaryUnblock` are `nil` when the site or rule has no temporary unblock, and they decode as `nil` when the key is missing, for an older daemon. Otherwise they hold:
+
+- `opensInSeconds: Int?` — seconds until the site opens, rounded up; `nil` once it is open.
+- `secondsRemaining: Int` — while waiting, the full window length; while open, the seconds left in the window, rounded up.
+- `windowSeconds: Int` — the chosen window length.
+- `isOpen: Bool` — `true` while the site is open.
 
 ### Commands
 
@@ -222,12 +249,14 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 
 - `status` — returns the snapshot. No password.
 - `setup` (`password`) — sets the first password. Fails with `alreadySetUp` if one exists. Only root or the user logged in at the screen (the owner of `/dev/console`) may send it; anyone else gets `notAllowed`. This stops another account on the Mac from claiming the password first, either before the owner sets it or right after a recovery clears it.
-- `add` (`domain`) — blocks a site at once. If the site is already blocked with an unblock pending, this cancels the unblock. Needs a password to be set up first (`notSetUp`), so that every block can later be undone.
-- `unblock` (`domain`, `password`) — starts the unblock countdown for the site.
-- `addPath` (`domain` holds the whole rule text, for example `youtube.com/shorts` or `https://www.youtube.com/shorts/abc`) — adds a path rule at once. No password. Fails `invalidDomain` or `invalidPath` when the text cannot be parsed, `alreadyBlocked` when the same rule exists or the whole site is already blocked, `notSetUp` when no password exists, and `tooManySites` when sites plus path rules would exceed the cap. Re-adding a rule that is waiting to unblock cancels the unblock, like `add`.
-- `unblockPath` (`domain` = rule text, `password`) — starts the unblock countdown for that rule, with the same password and delay rules as `unblock`; `notBlocked` when no such rule exists.
-- `cancelUnblockPath` (`domain` = rule text) — stops a pending path-rule unblock. No password.
-- `cancelUnblock` (`domain`) — stops a pending unblock. No password.
+- `add` (`domain`) — blocks a site at once. If the site is already blocked with an unblock pending, this cancels the unblock. If the site has a temporary unblock, waiting or open, `add` clears it in the same way and the site is blocked again at once. Needs a password to be set up first (`notSetUp`), so that every block can later be undone.
+- `unblock` (`domain`, `password`) — starts the unblock countdown for the site. Fails with `alreadyPending` when the site has a temporary unblock, and that check comes before the password check.
+- `addPath` (`domain` holds the whole rule text, for example `youtube.com/shorts` or `https://www.youtube.com/shorts/abc`) — adds a path rule at once. No password. Fails `invalidDomain` or `invalidPath` when the text cannot be parsed, `alreadyBlocked` when the same rule exists or the whole site is already blocked, `notSetUp` when no password exists, and `tooManySites` when sites plus path rules would exceed the cap. Re-adding a rule that is waiting to unblock cancels the unblock, and re-adding a rule that has a temporary unblock clears it, like `add`.
+- `unblockPath` (`domain` = rule text, `password`) — starts the unblock countdown for that rule, with the same password and delay rules as `unblock`; `notBlocked` when no such rule exists, and `alreadyPending` when the rule has a temporary unblock.
+- `temporaryUnblock` (`domain`, `password`, `seconds`, optional `startSeconds`) — schedules a temporary unblock of a blocked site. `seconds` is the window and `startSeconds` is the start wait. The site stays fully blocked during the start wait, is open for exactly the window, and is blocked again when the window ends. It fails with `badRequest` when `domain`, `password` or `seconds` is missing; `invalidDomain`; `notBlocked`; `alreadyPending` when the site already has an unblock of either kind; and `invalidDuration` when the window or the start wait is out of range. All of those checks come before the password check, so a request that fails one of them never counts as a wrong password. [02-core-components.md](02-core-components.md) § Engine gives the order of the checks.
+- `temporaryUnblockPath` (`domain` = rule text, `password`, `seconds`, optional `startSeconds`) — the same as `temporaryUnblock`, for a path rule. It fails `invalidDomain` or `invalidPath` when the rule text cannot be parsed, and `notBlocked` when no such rule exists.
+- `cancelUnblockPath` (`domain` = rule text) — stops a pending path-rule unblock. When there is no pending unblock, it clears the rule's temporary unblock: a waiting one is cancelled and an open one ends at once. No password.
+- `cancelUnblock` (`domain`) — stops a pending unblock. When there is no pending unblock, it clears the site's temporary unblock in the same way. No password.
 - `setDelay` (`seconds`, `password`) — longer applies at once and drops any pending change. Shorter starts a `PendingDelayChange`.
 - `cancelDelayChange` — drops a pending shorter delay. No password.
 - `changePassword` (`password`, `newPassword`) — replaces the password at once.
@@ -244,6 +273,8 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Allowed delay range: 60 seconds to 604800 seconds (7 days).
 - Recovery wait: 172800 seconds (48 hours).
 - Uninstall wait: 172800 seconds (48 hours), or the unblock delay when that is longer.
+- Temporary unblock window (how long the site stays open): 300 seconds (5 minutes) to 14400 seconds (4 hours).
+- Temporary unblock start wait (the time before the site opens): at least the current unblock delay and at most 604800 seconds (7 days). It is the unblock delay when none is given.
 - Minimum password length: 6 characters.
 - Wrong-password limit: 5, then a lockout of 900 seconds (15 minutes).
 - Adult-filter DNS servers: `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003` (Cloudflare for Families).
@@ -252,6 +283,6 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Watchdog check: every 5 seconds.
 - Tab watcher check: every 0.5 seconds, and only while a path rule exists and Chrome, Edge or Brave is running.
 - Recheck of a refused Automation permission: at most every 10 seconds per browser.
-- State is saved to disk after every command and at least every 15 seconds while any countdown is running.
+- State is saved to disk after every command and at least every 15 seconds while any countdown is running. A temporary unblock counts as a running countdown from the moment it is scheduled until it ends, and the state is also saved at once when it opens and when it ends.
 
-Sandbox mode (used by tests, see [04-infrastructure.md](04-infrastructure.md) § Sandbox Mode) can lower the delay floor, the recovery wait, the lockout length and the tick interval.
+Sandbox mode (used by tests, see [04-infrastructure.md](04-infrastructure.md) § Sandbox Mode) can lower the delay floor, the recovery wait, the lockout length, the shortest temporary unblock window and the tick interval.

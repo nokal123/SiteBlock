@@ -62,7 +62,43 @@ public struct PasswordHash: Codable, Equatable, Sendable {
     }
 }
 
-/// One blocked site: the name the user asked for, every host name written to the hosts file for it, and an optional unblock that is waiting out its delay.
+/// An unblock for a limited time that the person asked for on a site or path rule. The site stays blocked while `startsIn` runs down, stays open for exactly `window`, and is then blocked again on its own; the site or rule itself never leaves the block list.
+public struct TemporaryUnblock: Codable, Equatable, Sendable {
+    /// Time left before the site opens. It starts at the start wait the person chose.
+    public var startsIn: Countdown
+    /// How long the site stays open. It starts counting down only after `startsIn` has reached 0.
+    public var window: Countdown
+
+    /// Creates a temporary unblock from its two countdowns.
+    public init(startsIn: Countdown, window: Countdown) {
+        self.startsIn = startsIn
+        self.window = window
+    }
+
+    /// True while the site is open: the start wait is over and the window still has time left.
+    public var isOpen: Bool { startsIn.remainingSeconds <= 0 && window.remainingSeconds > 0 }
+
+    /// True once both the start wait and the window have run out, which means the site is blocked again and this record can be removed.
+    public var isFinished: Bool { startsIn.remainingSeconds <= 0 && window.remainingSeconds <= 0 }
+
+    /// The length of the window the person chose, in whole seconds. It does not change as time passes.
+    public var windowSeconds: Int {
+        guard window.totalSeconds.isFinite, window.totalSeconds > 0 else { return 0 }
+        // The upper bound keeps the Int conversion safe for absurd stored values.
+        return Int(min(window.totalSeconds, 1e12).rounded(.up))
+    }
+
+    /// Subtracts real elapsed time. The start wait uses it first; whatever the start wait did not need (because it reached 0 during this step) comes off the window, and once the start wait is over all of it comes off the window. Neither countdown goes below 0. Negative or non-finite input changes nothing.
+    public mutating func advance(by elapsed: Double) {
+        guard elapsed.isFinite, elapsed > 0 else { return }
+        // How much of this step the start wait can still take; a stored negative or odd value counts as nothing left.
+        let usedByStart = min(elapsed, max(0, startsIn.remainingSeconds))
+        startsIn.advance(by: elapsed)
+        window.advance(by: elapsed - usedByStart)
+    }
+}
+
+/// One blocked site: the name the user asked for, every host name written to the hosts file for it, and an optional unblock that is waiting out its delay or a temporary unblock the person scheduled. The two never exist on the same site at once.
 public struct BlockedSite: Codable, Equatable, Sendable {
     /// The normalized base name, for example reddit.com.
     public var domain: String
@@ -70,13 +106,19 @@ public struct BlockedSite: Codable, Equatable, Sendable {
     public var hosts: [String]
     /// Set when an unblock was approved; when it reaches zero the site is removed.
     public var pendingUnblock: Countdown?
+    /// Set when a temporary unblock was approved; the site opens after its start wait and is blocked again when its window ends. A state file written before temporary unblocks existed has no such key, and the synthesized decoder reads a missing optional key as nil, so such a file still loads.
+    public var temporaryUnblock: TemporaryUnblock?
 
     /// Creates a blocked site record.
-    public init(domain: String, hosts: [String], pendingUnblock: Countdown? = nil) {
+    public init(domain: String, hosts: [String], pendingUnblock: Countdown? = nil, temporaryUnblock: TemporaryUnblock? = nil) {
         self.domain = domain
         self.hosts = hosts
         self.pendingUnblock = pendingUnblock
+        self.temporaryUnblock = temporaryUnblock
     }
+
+    /// True while a temporary unblock has this site open, which means its hosts are left out of the hosts file and the browsers' lists.
+    public var isTemporarilyOpen: Bool { temporaryUnblock?.isOpen == true }
 }
 
 /// One path rule: the start of a path on a site that stays blocked while the rest of the site stays open, for example `/shorts` on youtube.com. Only the browsers' own block lists can enforce it; the hosts file can only block whole names.
@@ -87,13 +129,19 @@ public struct BlockedPath: Codable, Equatable, Sendable {
     public var path: String
     /// Set when an unblock was approved; when it reaches zero the rule is removed.
     public var pendingUnblock: Countdown?
+    /// Set when a temporary unblock was approved; the rule stops blocking after its start wait and blocks again when its window ends. A missing key reads as nil, as for a site.
+    public var temporaryUnblock: TemporaryUnblock?
 
     /// Creates a path rule record.
-    public init(domain: String, path: String, pendingUnblock: Countdown? = nil) {
+    public init(domain: String, path: String, pendingUnblock: Countdown? = nil, temporaryUnblock: TemporaryUnblock? = nil) {
         self.domain = domain
         self.path = path
         self.pendingUnblock = pendingUnblock
+        self.temporaryUnblock = temporaryUnblock
     }
+
+    /// True while a temporary unblock has this rule open, which means the browsers' lists leave it out.
+    public var isTemporarilyOpen: Bool { temporaryUnblock?.isOpen == true }
 }
 
 /// A requested shorter unblock delay that has not taken effect yet.

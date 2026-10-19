@@ -19,6 +19,7 @@
 14. [Formatting](#10-formatting-sourcessiteblockcoreformattingswift)
 15. [ConnectionLimiter](#11-connectionlimiter-sourcessiteblockcoreconnectionlimiterswift)
 16. [UninstallRule](#12-uninstallrule-sourcessiteblockcoreuninstallruleswift)
+17. [TemporaryUnblockOptions](#13-temporaryunblockoptions-sourcessiteblockcoretemporaryunblockoptionsswift)
 
 ---
 
@@ -219,7 +220,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 
 **Files:** `Sources/SiteBlockCore/Models.swift`, `Sources/SiteBlockCore/Protocol.swift`
 
-`Models.swift` holds the persisted types from [01-overview-and-data.md](01-overview-and-data.md) § Data Model: `PersistedState`, `BlockedSite`, `Countdown`, `PasswordHash`, `PendingDelayChange`. All are `Codable` and `Equatable` structs.
+`Models.swift` holds the persisted types from [01-overview-and-data.md](01-overview-and-data.md) § Data Model: `PersistedState`, `BlockedSite`, `Countdown`, `PasswordHash`, `PendingDelayChange`, `TemporaryUnblock`. All are `Codable` and `Equatable` structs.
 
 `Countdown` has:
 - `init(seconds: Double)` — sets both `remainingSeconds` and `totalSeconds`.
@@ -227,7 +228,9 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `var isFinished: Bool` — `remainingSeconds <= 0`.
 - `var displaySeconds: Int` — `remainingSeconds` rounded up, so a countdown never shows `0` while it is still running.
 
-`Protocol.swift` holds `Request`, `Response`, `StatusSnapshot`, `BlockedSiteStatus`, `PendingDelayStatus`, the `Command` enum (raw `String` values matching the command names in [01-overview-and-data.md](01-overview-and-data.md) § Commands) and the `ErrorCode` enum. JSON uses the default `JSONEncoder` with `.sortedKeys`, field names exactly as written in the design.
+`TemporaryUnblock` has `startsIn` and `window` (two `Countdown` values) and the computed `isOpen` and `isFinished`, all described in [01-overview-and-data.md](01-overview-and-data.md) § Data Model. `BlockedSite.temporaryUnblock` and `BlockedPath.temporaryUnblock` are optional in the file: a missing key decodes as `nil`, so a `state.json` written without them is not corrupt.
+
+`Protocol.swift` holds `Request`, `Response`, `StatusSnapshot`, `BlockedSiteStatus`, `PendingDelayStatus`, `TemporaryUnblockStatus`, the `Command` enum (raw `String` values matching the command names in [01-overview-and-data.md](01-overview-and-data.md) § Commands) and the `ErrorCode` enum. `Request` carries the optional `startSeconds`. The `Command` enum has `temporaryUnblock` and `temporaryUnblockPath`, and the `ErrorCode` enum has `invalidDuration` and `alreadyPending`. `BlockedSiteStatus` and `BlockedPathStatus` carry an optional `temporaryUnblock` of type `TemporaryUnblockStatus`, which decodes as `nil` when the key is missing. JSON uses the default `JSONEncoder` with `.sortedKeys`, field names exactly as written in the design.
 
 ---
 
@@ -237,18 +240,19 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 
 **Properties:**
 - `private(set) var state: PersistedState`
-- `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`, `minUninstallSeconds`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000, 500 and 172800 (the uninstall minimum). `Policy.fastForTests.minUninstallSeconds` is 2.
-- `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends.
+- `let policy: Policy` — the fixed values from [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values, as a struct so sandbox mode and tests can shrink them. Fields: `defaultDelaySeconds`, `minDelaySeconds`, `maxDelaySeconds`, `recoverySeconds`, `lockoutSeconds`, `maxFailedAttempts`, `pbkdf2Iterations`, `maxSites`, `minUninstallSeconds`, `minTemporarySeconds`, `maxTemporarySeconds`, `maxTemporaryStartSeconds`. `Policy.production` must hold exactly 1800, 60, 604800, 172800, 900, 5, 210000, 500, 172800 (the uninstall minimum), 300, 14400 and 604800 (the last three are the temporary unblock limits: shortest window, longest window, longest start wait). `Policy.fastForTests.minUninstallSeconds` is 2. `Policy.fastForTests.minTemporarySeconds` is 1, so integration tests can open and close a window within seconds; its other two temporary unblock values equal the production values.
+- `var blockedHosts: [String]` — every host of every blocked site, sorted, no duplicates. Sites with a pending unblock are still included, because they stay blocked until the countdown ends, and so are sites whose temporary unblock is waiting. Sites whose temporary unblock is open are left out. A host that another blocked site, one that is not open, also lists stays in.
 - `static let privateRelayHosts` — `["mask-h2.icloud.com", "mask.icloud.com"]`.
 - `var adultFilterActive: Bool` — always `true`, except once `uninstalling` is `true` (the uninstaller then restores everything).
 - `static let dohBypassHosts` — `["doh.xfinity.com", "firefox.dns.nextdns.io", "mozilla.cloudflare-dns.com", "private.canadianshield.cira.ca"]`, the hostnames browsers use for DNS-over-HTTPS by default.
 - `var hostsToWrite: [String]` — what the runtime writes into the hosts file: `blockedHosts` plus `privateRelayHosts` and `dohBypassHosts` whenever `adultFilterActive` is true (so, in practice, always), sorted and without duplicates. See [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works for why.
 - `var onUninstall: (() -> Void)?` — called once when the uninstall countdown finishes.
+- `var onTemporaryUnblockEvent: ((String) -> Void)?` — called with one sentence each time a temporary unblock is approved, opens, ends, is cancelled while it waits, or is ended early while it is open. The engine builds the sentence, naming the site (or the rule text). The runtime sets it to write the sentence to the log; the sentences are listed in [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime.
 
 **Key Methods:**
 - `init(state: PersistedState, policy: Policy)`
 - `func handle(_ request: Request, peerUID: uid_t) -> Response` — runs one command and always returns a response; it never throws. Every successful response carries `status`.
-- `func tick(elapsed: Double) -> Bool` — advances every countdown by `elapsed` seconds and applies the ones that finished. Returns `true` when the state changed in a way that must be saved now (a countdown finished).
+- `func tick(elapsed: Double) -> Bool` — advances every countdown by `elapsed` seconds and applies the ones that finished. Returns `true` when the state changed in a way that must be saved now (a countdown finished, or a temporary unblock opened).
 - `func snapshot(hostsFileHealthy: Bool) -> StatusSnapshot`
 
 **Password check rule** (shared by every command that takes a password):
@@ -262,23 +266,33 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 **Site cap:** adding a new site when `policy.maxSites` sites are already blocked fails with `tooManySites`. Re-adding an existing site (to cancel its unblock) is not affected. `Policy.production.maxSites` is 500; `Policy.fastForTests.maxSites` is 20, so tests can reach the cap quickly.
 
 **Path rules:**
-- `addPath`: parse the rule text with `PathRuleParser.parse` (`invalidDomain` for host errors, `invalidPath` for path errors and for text with no path). If the whole domain is already in `blocked`, fail `alreadyBlocked` ("youtube.com is already fully blocked"). If the same domain and path exist with a pending unblock, clear the unblock; if they exist without one, fail `alreadyBlocked`. Otherwise, like `add`: `notSetUp` without a password, `tooManySites` when `blocked.count + blockedPaths.count` would exceed `maxSites`, then append.
-- `unblockPath` and `cancelUnblockPath` follow `unblock` and `cancelUnblock` exactly, keyed by domain and path.
-- Tick: remove path rules whose unblock finished (a change that must be saved).
+- `addPath`: parse the rule text with `PathRuleParser.parse` (`invalidDomain` for host errors, `invalidPath` for path errors and for text with no path). If the whole domain is already in `blocked`, fail `alreadyBlocked` ("youtube.com is already fully blocked"). If the same domain and path exist with a pending unblock or a temporary unblock, clear it (the same way `add` does); if they exist with neither, fail `alreadyBlocked`. Otherwise, like `add`: `notSetUp` without a password, `tooManySites` when `blocked.count + blockedPaths.count` would exceed `maxSites`, then append.
+- `unblockPath` and `cancelUnblockPath` follow `unblock` and `cancelUnblock` exactly, keyed by domain and path. `temporaryUnblockPath` follows `temporaryUnblock` (see Temporary unblock commands below).
+- Tick: remove path rules whose unblock finished (a change that must be saved). A path rule's temporary unblock follows the temporary unblock tick rule below.
 - Adding the whole domain later keeps its path rules (they become redundant while the whole site is blocked, and matter again if the whole site is unblocked).
 
-**Browser block list:** `var browserBlockEntries: (chrome: [String], firefox: [String])` builds both browsers' lists. Chrome: `ChromePolicy.urlBlocklist(for: blocked)` (the covering host list) plus `chromeEntry` for every path rule whose domain is not covered by a whole-site block, sorted. Firefox: `*://*.<host>/*` for every covering host plus `firefoxPattern` for the same path rules, sorted.
+**Browser block list:** `var browserBlockEntries: (chrome: [String], firefox: [String])` builds both browsers' lists from the sites and path rules that are not open. Chrome: `ChromePolicy.urlBlocklist(for:)` applied to the sites whose temporary unblock is not open (the covering host list) plus `chromeEntry` for every path rule whose own temporary unblock is not open and whose domain is not covered by one of those whole-site blocks, sorted. Firefox: `*://*.<host>/*` for every covering host plus `firefoxPattern` for the same path rules, sorted. A site whose temporary unblock is waiting stays in the lists. A path rule on a site whose whole site is open is included, because with the whole site open that rule is what still blocks that part of it. A path rule whose own temporary unblock is open is left out.
 
 **Argument rule:** a missing required argument fails with `badRequest` before any lockout or password check, so a malformed request never costs a password attempt. `setDelay` also checks the range (`invalidDelay`) before the password.
 
 **Command rules:**
-- `add`: normalize (fail `invalidDomain` with the normalizer's sentence). If already blocked with a pending unblock, clear the pending unblock and say "Unblock cancelled; reddit.com stays blocked." This works even when no password is set, because after a finished recovery `add` is the only way to stop an unblock that was already counting down. If already blocked without one, fail `alreadyBlocked`. Only a new site needs a password to exist (`notSetUp`). Otherwise append a `BlockedSite` with its expanded hosts.
-- `unblock`: normalize, find the site (fail `notBlocked`), check the password, then set `pendingUnblock = Countdown(seconds: delaySeconds)`. If one is already pending, keep the existing countdown (do not restart it) and report its remaining time.
+- `add`: normalize (fail `invalidDomain` with the normalizer's sentence). If already blocked with a pending unblock, clear the pending unblock and say "Unblock cancelled; reddit.com stays blocked." This works even when no password is set, because after a finished recovery `add` is the only way to stop an unblock that was already counting down. If already blocked with a temporary unblock, waiting or open, clear it and answer with the same sentence the cancel commands give for that case (see below); this also works without a password. If already blocked without one, fail `alreadyBlocked`. Only a new site needs a password to exist (`notSetUp`). Otherwise append a `BlockedSite` with its expanded hosts.
+- `unblock`: normalize, find the site (fail `notBlocked`), fail `alreadyPending` when the site has a `temporaryUnblock` ("reddit.com has a temporary unblock. Keep it blocked first if you want to unblock it for good."), check the password, then set `pendingUnblock = Countdown(seconds: delaySeconds)`. The `alreadyPending` check comes before the password check, so it never counts a wrong password. If one is already pending, keep the existing countdown (do not restart it) and report its remaining time.
 - `setDelay`: validate the range (fail `invalidDelay`), check the password. A value greater than or equal to the current delay applies at once and clears `pendingDelayChange`. A smaller value replaces any existing `pendingDelayChange` with a new one whose countdown starts again at the current delay.
 - `changePassword`: check the old password, validate the new one (`weakPassword`), store a new hash.
 - `uninstall`: check the password, start `pendingUninstall` at `uninstallWaitSeconds` (the larger of `policy.minUninstallSeconds` and `delaySeconds`) unless one is already running.
 - `recoveryStart`: fail `notRoot` unless `peerUID == 0`. Fail `notSetUp` if no password is set. Start `recovery` at `recoverySeconds` unless already running.
-- Cancel commands clear their countdown, or fail `nothingPending` when there is none. `cancelUninstall` also fails `nothingPending` once the uninstall countdown has finished and `uninstalling` is `true`, because removal has already begun.
+- Cancel commands clear their countdown, or fail `nothingPending` when there is none. `cancelUnblock` and `cancelUnblockPath` clear a `pendingUnblock` first. When there is none, they clear a `temporaryUnblock`: a waiting one says "The temporary unblock is cancelled; reddit.com stays blocked." and an open one says "reddit.com is blocked again." They fail `nothingPending` only when neither exists. Neither needs a password. `cancelUninstall` also fails `nothingPending` once the uninstall countdown has finished and `uninstalling` is `true`, because removal has already begun.
+
+**Temporary unblock commands:** `temporaryUnblock` takes `domain`, `password`, `seconds` (the window, how long the site stays open) and an optional `startSeconds` (the start wait, the time before it opens). `temporaryUnblockPath` takes the same fields, with `domain` holding the rule text. Both run these checks in this order, which follows the argument rule: a request that is malformed or out of range is refused before any lockout or password check, so it never counts as a wrong password.
+1. Fail `badRequest` when `domain`, `password` or `seconds` is missing.
+2. Normalize the domain (fail `invalidDomain`), or parse the rule text with `PathRuleParser.parse` (fail `invalidDomain` for host errors and `invalidPath` for path errors).
+3. Find the site or rule, or fail `notBlocked`.
+4. Fail `alreadyPending` when it has a `pendingUnblock` ("reddit.com is already waiting to unblock. Keep it blocked first if you want a temporary unblock instead.") or a `temporaryUnblock` ("reddit.com already has a temporary unblock.").
+5. Fail `invalidDuration` when `seconds` is outside `policy.minTemporarySeconds` to `policy.maxTemporarySeconds`, both included. The sentence names the shortest and the longest window (5 minutes and 4 hours under the production policy).
+6. The start wait is `startSeconds`, or `delaySeconds` when `startSeconds` is missing. Fail `invalidDuration` when it is less than `delaySeconds` ("It can't open sooner than your unblock delay of 1 hour." for a delay of 1 hour) or more than `policy.maxTemporaryStartSeconds`.
+7. Run the password check rule (lockout, no password set, wrong password).
+8. Set `temporaryUnblock` on the site or rule to a `TemporaryUnblock` with `startsIn = Countdown(seconds: start wait)` and `window = Countdown(seconds: seconds)`. The message reads like "reddit.com opens in 1 hour, for 30 minutes, then blocks again."
 
 **Lockout wording:** the lockout message gives the remaining time in whole minutes rounded up, so 59.5 seconds left reads "1 minute" and the message never says "0 minutes". Under one minute left it may use seconds instead. The wrong-password message says "1 try left" in the singular.
 
@@ -287,6 +301,10 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 **Hosts health:** `setHostsHealthy(_ healthy: Bool)` records the result of the runtime's last enforcement pass, and every snapshot built by `handle` reports it as `hostsFileHealthy`. It starts as `true`.
 
 **Tick rule:** advance every countdown by `elapsed`. Then in this order: remove sites whose unblock finished; apply a finished delay change; clear a finished lockout; for a finished recovery, set `passwordHash = nil`, `failedAttempts = 0`, `lockout = nil` and clear `recovery`; for a finished uninstall, set `uninstalling = true` and call `onUninstall`.
+
+**Temporary unblock tick rule:** the same `elapsed` also advances the `temporaryUnblock` of every site and path rule. `startsIn` is advanced first. The part of `elapsed` that `startsIn` did not use, because it reached `0` during this tick, is taken off `window`. When `startsIn` was already `0`, all of `elapsed` is taken off `window`. Neither countdown goes below `0`. `tick` returns `true`, so the runtime saves the state now, in two cases: a temporary unblock opened (its `startsIn` reached `0` during this tick), and a temporary unblock finished (its `window` reached `0`). A finished one is removed by setting `temporaryUnblock` to `nil`, and the site or rule stays on the block list. When one long gap, such as the Mac asleep, covers both the opening and the end, the temporary unblock simply finishes in that tick. Each opening and each ending is reported once to `onTemporaryUnblockEvent`; a gap that covers both reports only the ending.
+
+**Status of a temporary unblock:** `snapshot` fills `temporaryUnblock` on the status of each site and path rule that has one. `opensInSeconds` is `startsIn.displaySeconds` (rounded up) while waiting and `nil` once open. `secondsRemaining` is the full window length while waiting and `window.displaySeconds` (rounded up) while open. `windowSeconds` is the window's `totalSeconds`, and `isOpen` is the stored `isOpen`.
 
 ---
 
@@ -300,7 +318,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `func save(_ state: PersistedState) throws` — encodes with sorted keys and writes the primary and then the backup. Each write goes to a temp file in the same folder with mode `0600` and is then renamed over the target. The rename is atomic (the file is either the old version or the new version, never half-written).
 - `func matchesLastSave() -> Bool` — `false` when either file is missing or its bytes differ from what this store last wrote or loaded. A store that has neither saved nor loaded returns `true`. The daemon uses it to undo hand edits.
 
-**Failure and naming details:** `save` throws when either the primary or the backup write fails, so the daemon knows to retry. When a corrupt file is renamed and `state.json.corrupt-<unix time>` already exists (two corrupt loads in the same second), a counter suffix keeps both files, as in `state.json.corrupt-<unix time>-1`. The `version` field is decoded but not checked. A file that is valid JSON but lacks any required field (for example `{}` or `{"version":1}`) does not decode, so it is treated as corrupt.
+**Failure and naming details:** `save` throws when either the primary or the backup write fails, so the daemon knows to retry. When a corrupt file is renamed and `state.json.corrupt-<unix time>` already exists (two corrupt loads in the same second), a counter suffix keeps both files, as in `state.json.corrupt-<unix time>-1`. The `version` field is decoded but not checked. A file that is valid JSON but lacks any required field (for example `{}` or `{"version":1}`) does not decode, so it is treated as corrupt. The `temporaryUnblock` key on a site or path rule is not required: a file without it decodes with `nil`, so a missing key never makes the file count as corrupt.
 
 ---
 
@@ -322,6 +340,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 **Key Methods:**
 - `static func duration(_ seconds: Int) -> String` — `45 seconds`, `1 minute`, `30 minutes`, `1 hour 5 minutes`, `2 days 3 hours`. It shows at most the two largest non-zero units.
 - `static func clock(_ seconds: Int) -> String` — `29:41` under one hour, `1:05:09` under one day, `2d 03:04:05` otherwise.
+- `static func compact(_ seconds: Int) -> String` — the short one-line form that `siteblock status` uses: `45s` under a minute. From a minute up it counts whole minutes, rounded up, and writes at most two units: `42m`, `1h`, `1h 30m`, `2d 3h`. When days are present the leftover minutes are dropped. A negative value reads as `0s`.
 - `static func parseDuration(_ text: String) -> Int?` — accepts `90`, `90s`, `15m`, `2h`, `1d`, and combinations such as `1h30m`. Plain numbers are seconds. Surrounding whitespace is trimmed and units are case-insensitive (`15M` works). Units may appear in any order, but each at most once. A number without a unit after a unit (`1h30`), signs, decimals and non-ASCII digits return `nil`.
 
 `clock` pads every unit after the first to two digits and leaves the first unpadded: `5:03`, `29:41`, `1:05:09`, `2d 03:04:05`.
@@ -349,3 +368,13 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 - `PersistedState.hasFinishedUninstall: Bool` (in `Models.swift`) — `true` only when `uninstalling` is `true` and `pendingUninstall` exists and is finished.
 - `static func watchdogShouldStandDown(stateFileData: Data?) -> Bool` — decodes the bytes of `state.json` and returns `hasFinishedUninstall`; returns `false` for missing or undecodable data, so damage to the state file keeps the watchdog guarding.
 
+---
+
+### 13. TemporaryUnblockOptions (`Sources/SiteBlockCore/TemporaryUnblockOptions.swift`)
+
+**Purpose:** The fixed choices and wording behind the menu bar app's "For a while" form. They live in the library so they can be tested without a window. Nothing here talks to the daemon, and the daemon applies its own limits again when the request arrives.
+
+**Key Methods:**
+- `static let windowChoices: [Int]` — the windows the form offers, in seconds: 900, 1800, 3600, 7200 and 14400 (15 minutes, 30 minutes, and 1, 2 and 4 hours). All of them lie inside the daemon's range of 5 minutes to 4 hours.
+- `static func startChoices(delaySeconds: Int) -> [Int]` — the start waits the form offers, shortest first: `delaySeconds` itself (the soonest the daemon allows), then each of 2, 3, 4, 6, 8, 12 and 24 hours, in seconds, that is longer than `delaySeconds`. With a delay of 24 hours or more, only the delay is offered.
+- `static func label(forSeconds seconds: Int) -> String` — names a length of time for the pickers and the row. A whole number of hours from 1 to 24 is written in hours ("1 hour", "24 hours"); any other length is written by `Formatting.duration`.

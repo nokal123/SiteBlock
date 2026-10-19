@@ -23,6 +23,8 @@ public enum Command: String, Codable, CaseIterable, Sendable {
     case addPath
     case unblockPath
     case cancelUnblockPath
+    case temporaryUnblock
+    case temporaryUnblockPath
     case setDelay
     case cancelDelayChange
     case changePassword
@@ -49,6 +51,8 @@ public enum ErrorCode: String, Codable, CaseIterable, Sendable {
     case notAllowed
     case tooManySites
     case invalidPath
+    case invalidDuration
+    case alreadyPending
     case `internal`
 }
 
@@ -56,22 +60,45 @@ public enum ErrorCode: String, Codable, CaseIterable, Sendable {
 public struct Request: Codable, Equatable, Sendable {
     /// Which command to run.
     public var command: Command
-    /// The site for add, unblock and cancelUnblock. For addPath, unblockPath and cancelUnblockPath it holds the whole rule text, for example youtube.com/shorts or a pasted link.
+    /// The site for add, unblock, cancelUnblock and temporaryUnblock. For addPath, unblockPath, cancelUnblockPath and temporaryUnblockPath it holds the whole rule text, for example youtube.com/shorts or a pasted link.
     public var domain: String?
     /// The current password, for commands that loosen anything.
     public var password: String?
     /// The new password, for changePassword.
     public var newPassword: String?
-    /// The delay in seconds, for setDelay.
+    /// The delay in seconds, for setDelay. For temporaryUnblock and temporaryUnblockPath it is how long the site stays open (the window).
     public var seconds: Int?
+    /// How long to wait before the site opens, in seconds, for temporaryUnblock and temporaryUnblockPath. Left out, it means the current unblock delay.
+    public var startSeconds: Int?
 
     /// Creates a request; arguments the command does not use stay nil.
-    public init(command: Command, domain: String? = nil, password: String? = nil, newPassword: String? = nil, seconds: Int? = nil) {
+    public init(command: Command, domain: String? = nil, password: String? = nil, newPassword: String? = nil, seconds: Int? = nil, startSeconds: Int? = nil) {
         self.command = command
         self.domain = domain
         self.password = password
         self.newPassword = newPassword
         self.seconds = seconds
+        self.startSeconds = startSeconds
+    }
+}
+
+/// A temporary unblock as shown to clients.
+public struct TemporaryUnblockStatus: Codable, Equatable, Sendable {
+    /// Seconds until the site opens, rounded up; nil once it is open.
+    public let opensInSeconds: Int?
+    /// While waiting, the full length of the window; while open, the seconds left in the window, rounded up.
+    public let secondsRemaining: Int
+    /// The length of the window the person chose, in seconds.
+    public let windowSeconds: Int
+    /// True while the site is open.
+    public let isOpen: Bool
+
+    /// Creates a temporary unblock status.
+    public init(opensInSeconds: Int?, secondsRemaining: Int, windowSeconds: Int, isOpen: Bool) {
+        self.opensInSeconds = opensInSeconds
+        self.secondsRemaining = secondsRemaining
+        self.windowSeconds = windowSeconds
+        self.isOpen = isOpen
     }
 }
 
@@ -83,12 +110,15 @@ public struct BlockedSiteStatus: Codable, Equatable, Sendable {
     public let hosts: [String]
     /// Seconds until the site unblocks, or nil when no unblock is pending.
     public let unblockSecondsRemaining: Int?
+    /// The site's temporary unblock, or nil when it has none. A reply from an older daemon has no such key, and then this reads as nil.
+    public let temporaryUnblock: TemporaryUnblockStatus?
 
-    /// Creates a site status.
-    public init(domain: String, hosts: [String], unblockSecondsRemaining: Int?) {
+    /// Creates a site status; the temporary unblock defaults to none, the value a reader gets when the key is missing.
+    public init(domain: String, hosts: [String], unblockSecondsRemaining: Int?, temporaryUnblock: TemporaryUnblockStatus? = nil) {
         self.domain = domain
         self.hosts = hosts
         self.unblockSecondsRemaining = unblockSecondsRemaining
+        self.temporaryUnblock = temporaryUnblock
     }
 }
 
@@ -102,13 +132,16 @@ public struct BlockedPathStatus: Codable, Equatable, Sendable {
     public let rule: String
     /// Seconds until the rule is removed, or nil when no unblock is pending.
     public let unblockSecondsRemaining: Int?
+    /// The rule's temporary unblock, or nil when it has none. A reply from an older daemon has no such key, and then this reads as nil.
+    public let temporaryUnblock: TemporaryUnblockStatus?
 
-    /// Creates a path rule status.
-    public init(domain: String, path: String, rule: String, unblockSecondsRemaining: Int?) {
+    /// Creates a path rule status; the temporary unblock defaults to none, the value a reader gets when the key is missing.
+    public init(domain: String, path: String, rule: String, unblockSecondsRemaining: Int?, temporaryUnblock: TemporaryUnblockStatus? = nil) {
         self.domain = domain
         self.path = path
         self.rule = rule
         self.unblockSecondsRemaining = unblockSecondsRemaining
+        self.temporaryUnblock = temporaryUnblock
     }
 }
 
