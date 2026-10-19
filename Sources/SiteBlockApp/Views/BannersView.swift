@@ -61,8 +61,8 @@ struct BannersView: View {
     private static let automationSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
 
     /// True when at least one banner or banner message would show. Parents use it to leave this view out entirely, because an empty stack would still add a gap.
-    static func hasContent(snapshot: StatusSnapshot, feedback: Feedback?, deniedBrowserNames: [String]) -> Bool {
-        !snapshot.hostsFileHealthy || snapshot.lockoutSecondsRemaining != nil || snapshot.pendingDelay != nil || snapshot.uninstallSecondsRemaining != nil || snapshot.recoverySecondsRemaining != nil || feedback?.scope == .banner || needsBrowserPermission(snapshot: snapshot, deniedBrowserNames: deniedBrowserNames)
+    static func hasContent(snapshot: StatusSnapshot, feedback: Feedback?, deniedBrowserNames: [String], updateVisible: Bool) -> Bool {
+        updateVisible || !snapshot.hostsFileHealthy || snapshot.lockoutSecondsRemaining != nil || snapshot.pendingDelay != nil || snapshot.uninstallSecondsRemaining != nil || snapshot.recoverySecondsRemaining != nil || feedback?.scope == .banner || needsBrowserPermission(snapshot: snapshot, deniedBrowserNames: deniedBrowserNames)
     }
 
     /// True when the permission banner should show: at least one path rule exists (otherwise the tab watcher has nothing to do and the permission does not matter) and at least one running browser has refused control.
@@ -78,7 +78,46 @@ struct BannersView: View {
             if let seconds = snapshot.uninstallSecondsRemaining { uninstall(seconds) }
             if let seconds = snapshot.recoverySecondsRemaining { recovery(seconds) }
             if Self.needsBrowserPermission(snapshot: snapshot, deniedBrowserNames: model.deniedBrowserNames) { browserPermission(model.deniedBrowserNames) }
+            if model.updater.showsBanner, let info = model.updater.available { updateBanner(info) }
             FeedbackLine(model: model, scope: .banner)
+        }
+    }
+
+    /// Says a newer version is available, with "Update" and "Not now". While an update runs, the current step replaces the buttons; after a failure or a cancelled password prompt, the sentence shows above the buttons again.
+    private func updateBanner(_ info: UpdateInfo) -> some View {
+        let updater = model.updater
+        return BannerCard(icon: "arrow.down.circle.fill", tint: .blue) {
+            Text("SiteBlock \(info.version) is available.")
+            if let step = Self.stepText(updater.phase) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(step).foregroundStyle(.secondary)
+                }
+            } else {
+                if case .failed(let text) = updater.phase { MessageLine(text: text, isError: true) }
+                if let notice = updater.notice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    Button("Update") { updater.install() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Not now") { updater.dismiss() }
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    /// The words for each step of a running update, or nil when no update step is running.
+    private static func stepText(_ phase: Updater.Phase) -> String? {
+        switch phase {
+        case .downloading: return "Downloading…"
+        case .verifying: return "Checking the download…"
+        case .waitingForPassword: return "Waiting for your password…"
+        case .installing: return "Installing…"
+        case .idle, .checking, .failed, .upToDate: return nil
         }
     }
 

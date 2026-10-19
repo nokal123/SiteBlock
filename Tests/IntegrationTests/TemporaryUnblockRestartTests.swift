@@ -104,19 +104,20 @@ struct TemporaryUnblockRestartTests {
         }
     }
 
-    // 01 § Fixed Policy Values and 03 § Daemon Runtime: the state is saved after every command that CHANGES it, and at least every 15 seconds while a countdown runs, "so a crash loses at most 15 seconds of countdown
-    // progress"; a command that changes nothing (`status`, a refused request) does not write the file. An earlier version of this test expected the progress to be saved by such a command; the design was corrected,
-    // because the 15-second timer save already bounds the loss and a write per status poll buys nothing. So the bound is checked end to end: a start wait of 60 s, 19 s of it gone, then commands that change nothing,
-    // then SIGKILL. The restarted daemon must hold at least the true remaining time (it never loses time it did not save) and at most 15 s more than it (the timer save at about 15 s must have happened; without it the
-    // restarted daemon would hold the full 60 s, about 19 s more than the true remaining time). The 15-second save tests in TemporaryUnblockTests prove the file is written; this proves what a crash then costs.
-    @Test func aCrashAfterCommandsThatChangeNothingLosesAtMostFifteenSecondsOfProgress() throws {
+    // 01 § Fixed Policy Values and 03 § Daemon Runtime: the state is saved after every command that CHANGES it, and at least every `saveIntervalSeconds` while a countdown runs (15 in production, 2 under --policy-fast, which this
+    // daemon runs with), "so a crash loses at most 15 seconds of countdown progress"; a command that changes nothing (`status`, a refused request) does not write the file. An earlier version of this test expected the progress
+    // to be saved by such a command; the design was corrected, because the timer save already bounds the loss and a write per status poll buys nothing. So the bound is checked end to end: a start wait of 60 s, 5.5 s of it
+    // gone, then commands that change nothing, then SIGKILL. The restarted daemon must hold at least the true remaining time (it never loses time it did not save) and at most one save interval (2 s, plus one 0.2 s tick
+    // and a second of slack) more than it: the timer saves at about 2 s and 4 s must have happened, because without them the restarted daemon would hold the full 60 s, 5.5 s more than the true remaining time
+    // (and a daemon that kept the production 15 s would show exactly that). The save tests in TemporaryUnblockTests prove the file is written; this proves what a crash then costs.
+    @Test func aCrashAfterCommandsThatChangeNothingLosesAtMostOneSaveIntervalOfProgress() throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             try daemon.requireTwoSecondDelay()
             let watch = Stopwatch()
             try daemon.sendTemporary(domain: "reddit.com", seconds: 600, startSeconds: 60).requireOK()
             let approvedAt = watch.elapsed
-            pause(18.5 - watch.elapsed)
+            pause(5.5 - watch.elapsed)
             // Commands that change nothing: a read-only one and three refusals.
             _ = try daemon.status()
             try daemon.send(.cancelDelayChange).requireNotOK(.nothingPending)
@@ -131,9 +132,9 @@ struct TemporaryUnblockRestartTests {
             let restartSpan = restart.elapsed
             // The true time left when the daemon died is between 60 - stoppedAt and 60 - (before - approvedAt); the restarted daemon's own clock has run for at most `restartSpan` since.
             let lowest = Int((60 - stoppedAt - restartSpan).rounded(.up))
-            let highest = Int((60 - (before - approvedAt) + 15).rounded(.up))
+            let highest = Int((60 - (before - approvedAt) + 3).rounded(.up))
             #expect(opensIn >= lowest, "restarted with \(opensIn) s left, less than the true remaining time (at least \(lowest) s)")
-            #expect(opensIn <= highest, "restarted with \(opensIn) s left; a crash may lose at most 15 s of progress, so at most \(highest) s was expected")
+            #expect(opensIn <= highest, "restarted with \(opensIn) s left; a crash may lose at most one save interval (2 s) of progress, so at most \(highest) s was expected")
             #expect(opensIn < 60, "the start wait must not start over")
         }
     }
@@ -167,8 +168,9 @@ struct TemporaryUnblockRestartTests {
     }
 
     // 03 § Daemon Runtime, Signals: "`SIGTERM` ... saves state and exits with code 0". The two-leg tests above force a save with a command right before they stop the daemon, so their SIGTERM leg proves no more than their
-    // SIGKILL leg. Here nothing is sent after the approval: a start wait of 40 s is 6 s old when SIGTERM arrives, well before the 15-second timer save, so only the SIGTERM handler can have written the progress. The restarted
-    // daemon must hold about 34 s (a two-sided bound from the stopwatch, with one 0.2 s tick of slack for the last tick before the signal), not the 40 s of the approval-time save.
+    // SIGKILL leg. Here nothing is sent after the approval: a start wait of 40 s is 1.4 s old when SIGTERM arrives, before the first timer save (the fast policy saves every 2 s, at the earliest 2 s after the approval's
+    // own save; the production interval is 15 s), so only the SIGTERM handler can have written the progress. The restarted daemon must hold about 38.6 s (a two-sided bound from the stopwatch, with one 0.2 s tick of
+    // slack for the last tick before the signal), not the 40 s of the approval-time save. At the earlier 6 s mark a timer save had already happened, so this test would have passed without the handler.
     @Test func aSigtermSavesTheCountdownProgressWithoutAnyCommand() throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
@@ -176,7 +178,7 @@ struct TemporaryUnblockRestartTests {
             let watch = Stopwatch()
             try daemon.sendTemporary(domain: "reddit.com", seconds: 600, startSeconds: 40).requireOK()
             let approvedAt = watch.elapsed
-            pause(6.0 - watch.elapsed)
+            pause(1.4 - watch.elapsed)
             let before = watch.elapsed
             let exit = daemon.terminate()
             let stoppedAt = watch.elapsed
@@ -188,7 +190,7 @@ struct TemporaryUnblockRestartTests {
             let opensIn = try #require(waiting.opensInSeconds)
             let lowest = Int((40 - stoppedAt - restartSpan).rounded(.up))
             let highest = Int((40 - (before - approvedAt) + 0.5).rounded(.up))
-            #expect(opensIn >= lowest && opensIn <= highest, "restarted with \(opensIn) s left; about 34 was expected, between \(lowest) and \(highest)")
+            #expect(opensIn >= lowest && opensIn <= highest, "restarted with \(opensIn) s left; about 39 was expected, between \(lowest) and \(highest)")
             #expect(opensIn < 40 && waiting.isOpen == false && waiting.windowSeconds == 600)
         }
     }

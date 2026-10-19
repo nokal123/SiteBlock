@@ -92,7 +92,7 @@
 - 5c. `enum JSONCoding` with a shared encoder (`.sortedKeys`) and decoder.
 - 5d. `enum Formatting` with `duration`, `clock`, `parseDuration`.
 - 5e. `struct Paths` with every path listed in the design as a `String` property, `static let production`, `static func sandbox(root:)`, and `let isSandbox: Bool`. Include `appBundle`, `cliPath`, `backupDaemon`, `daemonProgram`, `stateFile`, `stateDir`, `socket`, `hosts`, `logDir`, `daemonPlist`, `watchdogPlist`, `appAgentPlist`.
-- 5f. `let siteBlockVersion = "1.0.0"`.
+- 5f. `let siteBlockVersion = "1.0.\(siteBlockBuildNumber)"` in `Models.swift`. `siteBlockBuildNumber` is declared in the generated `BuildNumber.swift` (see [TASKS-09-update-check.md](TASKS-09-update-check.md) Step 1).
 
 **Acceptance Criteria:**
 - [ ] `Formatting.duration(3900) == "1 hour 5 minutes"`, `Formatting.clock(1781) == "29:41"`, `parseDuration("1h30m") == 5400`, `parseDuration("abc") == nil`.

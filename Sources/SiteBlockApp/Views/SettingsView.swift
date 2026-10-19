@@ -44,16 +44,19 @@ struct SettingsView: View {
             Divider()
             ScrollView {
                 VStack(spacing: 12) {
-                    if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback, deniedBrowserNames: model.deniedBrowserNames) { BannersView(model: model, snapshot: snapshot) }
+                    if BannersView.hasContent(snapshot: snapshot, feedback: model.feedback, deniedBrowserNames: model.deniedBrowserNames, updateVisible: model.updater.showsBanner) { BannersView(model: model, snapshot: snapshot) }
                     delaySection
                     passwordSection
                     if snapshot.adultFilterEnabled == true { adultFilterSection }
+                    updatesSection
                     uninstallSection
                 }
                 .padding(16)
             }
             .frame(maxHeight: Self.maxFormHeight)
             .scrollBounceBehavior(.basedOnSize)
+            // The result line of a manual update check is dropped when the person leaves this screen, so it is not stale on the next visit.
+            .onDisappear { model.updater.clearCheckResult() }
             Divider()
             Text("SiteBlock service \(snapshot.version)")
                 .font(.caption)
@@ -187,6 +190,22 @@ struct SettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Updates
+
+    /// The installed version on one line, a "Check for updates" button, and the result of the last manual check under it. A newer version that is found shows as the update banner at the top of the screen.
+    private var updatesSection: some View {
+        SectionCard(title: "Updates") {
+            HStack {
+                Text("Version \(siteBlockVersion)")
+                Spacer()
+                if model.updater.phase == .checking { ProgressView().controlSize(.small) }
+                Button("Check for updates") { Task { await model.updater.checkNow() } }
+                    .disabled(model.updater.isWorking)
+            }
+            if let result = model.updater.checkResult { MessageLine(text: result.text, isError: result.isError) }
         }
     }
 

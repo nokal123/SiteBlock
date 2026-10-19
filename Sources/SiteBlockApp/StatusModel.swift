@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SiteBlockCore
 import SwiftUI
@@ -113,6 +114,10 @@ final class StatusModel: ObservableObject {
     private var feedbackClearTask: Task<Void, Never>?
     /// Watches browser tabs and reloads one that moved onto a blocked part of a site without loading a new page. It gets the path rules of every status snapshot that is applied, and reports the browsers that refused permission. It is created in `init` because its callback needs `self`.
     private var tabWatcher: TabWatcher?
+    /// Looks for a newer SiteBlock once a day and installs it when the person asks. The banner and Settings read its state through the model.
+    let updater = Updater()
+    /// Passes the updater's change notices on, so views that watch only this model redraw when the update state changes.
+    private var updaterObservation: AnyCancellable?
 
     /// Creates the model, starts the tab watcher, and starts polling the daemon right away, so the menu bar icon is correct even before the panel is opened.
     init() {
@@ -120,6 +125,7 @@ final class StatusModel: ObservableObject {
         tabWatcher = TabWatcher { [weak self] names in
             Task { @MainActor in self?.updateDeniedBrowserNames(names) }
         }
+        updaterObservation = updater.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         restartPolling()
     }
 

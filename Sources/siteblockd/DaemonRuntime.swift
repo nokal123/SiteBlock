@@ -69,8 +69,6 @@ final class RejectedRequestCounter: @unchecked Sendable {
 final class DaemonRuntime {
     // The longest stretch of time one tick may count. The clock used cannot be set by the user and keeps running while the Mac sleeps, so a long sleep must count; the cap is 7 days only to stop an absurd reading from finishing every countdown at once.
     private static let maxElapsedPerTick = 604_800.0
-    // The state is saved at least this often while any countdown is running, so a crash loses at most this much progress.
-    private static let saveInterval = Duration.seconds(15)
     // How often the guard timer runs: the watchdog check (production) and the app guard (production and sandbox).
     private static let guardIntervalSeconds = 5.0
     // How often the fallback DNS pass and the family-DNS reachability check run in the installed service. Sandbox runs have no change notifications, so there both run every tick instead.
@@ -460,7 +458,8 @@ final class DaemonRuntime {
             } else {
                 lastFailedRepair = now
             }
-        } else if changed || (anyCountdownRunning && now - lastSave >= DaemonRuntime.saveInterval) {
+        } else if changed || (anyCountdownRunning && now - lastSave >= .seconds(policy.saveIntervalSeconds)) {
+            // While any countdown runs the state is also saved every `policy.saveIntervalSeconds` (15 in production), so a crash loses at most that much progress.
             _ = saveState()
         }
     }

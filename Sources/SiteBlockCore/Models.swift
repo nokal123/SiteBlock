@@ -1,7 +1,7 @@
 import Foundation
 
-/// The version string the daemon reports and the CLI prints.
-public let siteBlockVersion = "1.0.0"
+/// The version string the daemon, the CLI and the app show: 1.0 followed by the build number (the count of commits it was built from).
+public let siteBlockVersion = "1.0.\(siteBlockBuildNumber)"
 
 /// A timer that stores the time left rather than a finish time. A finish time would be compared with the wall clock, which the user can change.
 public struct Countdown: Codable, Equatable, Sendable {

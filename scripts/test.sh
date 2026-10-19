@@ -5,6 +5,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# The library needs the generated build number file before it can compile.
+scripts/write-build-number.sh
+
 DEVELOPER_DIR_PATH="$(xcode-select -p)"
 if [[ "$DEVELOPER_DIR_PATH" == *CommandLineTools* ]]; then
     F=/Library/Developer/CommandLineTools/Library/Developer/Frameworks

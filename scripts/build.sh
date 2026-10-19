@@ -16,6 +16,9 @@ if ! command -v swift >/dev/null 2>&1; then
     exit 1
 fi
 
+# Write the generated build number file (the commit count) before compiling, so every program shows the same version.
+scripts/write-build-number.sh
+
 # Compile each program. Building one product at a time keeps the error output readable.
 for product in siteblockd siteblock SiteBlockApp; do
     echo "==> Building $product (release)"
@@ -31,24 +34,26 @@ for product in siteblockd siteblock SiteBlockApp; do
     fi
 done
 
-# The version comes from the built daemon, so the code has the only copy of the version number.
+# The version comes from the built daemon, so the code has the only copy of the version number. It is 1.0.<build>,
+# where <build> is the commit count, and the app's Info.plist gets the same two values.
 VERSION="$("$BIN_DIR/siteblockd" --version | awk '{print $2}')"
-if [[ -z "$VERSION" ]]; then
-    echo "error: could not read the version from siteblockd --version" >&2
+if [[ ! "$VERSION" =~ ^1\.0\.[0-9]+$ ]]; then
+    echo "error: could not read the version (1.0.<build>) from siteblockd --version; got: '$VERSION'" >&2
     exit 1
 fi
+BUILD="${VERSION##*.}"
 
 # Start from a clean output folder, so nothing stale from an earlier build is left behind.
 rm -rf "$OUT"
 mkdir -p "$OUT/SiteBlock.app/Contents/MacOS"
 
-# Assemble the app bundle: the program, and the Info.plist template with the version filled in.
+# Assemble the app bundle: the program, and the Info.plist template with the version (1.0.<build>) and the build number filled in.
 # The template already holds the bundle identifier (com.nokal.siteblock.app), the name and executable name (SiteBlock),
 # LSUIElement true (no Dock icon) and LSMinimumSystemVersion 14.0.
 cp "$BIN_DIR/SiteBlockApp" "$OUT/SiteBlock.app/Contents/MacOS/SiteBlock"
 cp "Resources/Info.plist" "$OUT/SiteBlock.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$OUT/SiteBlock.app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$OUT/SiteBlock.app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$OUT/SiteBlock.app/Contents/Info.plist"
 plutil -lint "$OUT/SiteBlock.app/Contents/Info.plist" >/dev/null
 
 # Copy the command-line programs next to the app.

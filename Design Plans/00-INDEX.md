@@ -10,17 +10,17 @@
 - Every persisted field, every protocol field, every command and its password rule
 
 ### [02-core-components.md](02-core-components.md)
-**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting
+**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting, version constants, the update check rules (version file, newer build, checksum)
 - Pure logic with no root access, all unit-testable
 
 ### [03-daemon-cli-app.md](03-daemon-cli-app.md)
-**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, temporary unblock in the CLI and the panel, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission
+**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, temporary unblock in the CLI and the panel, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission, the Updater (daily check, banner, download, checks, install with the Mac password)
 
 ### [04-infrastructure.md](04-infrastructure.md)
-**Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, automatic package builds
+**Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, version numbers, `SiteBlock.zip` and `version.json`, automatic package builds
 
 ### [05-testing-and-operations.md](05-testing-and-operations.md)
-**Open for:** unit and integration test lists, installed-system verification, live tab-watcher test, security notes, logs, success criteria
+**Open for:** unit and integration test lists, installed-system verification, live tab-watcher test, live update test, update check and script tests, security notes, logs, success criteria
 
 ---
 
@@ -60,15 +60,19 @@
 20. `Sources/siteblockd/Uninstaller.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Uninstaller
 21. `Sources/siteblock/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
 21a. `Sources/siteblock/Commands.swift`, `Sources/siteblock/PasswordPrompt.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
+21b. `Sources/SiteBlockCore/UpdateCheck.swift` — **Primary:** [02-core-components.md](02-core-components.md) § UpdateCheck — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater, [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac (the `version.json` it reads)
+21c. `Sources/SiteBlockCore/BuildNumber.swift` (generated, ignored by git) — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Version Numbers — **Also:** [02-core-components.md](02-core-components.md) § Models and Protocol Types (Version constants)
 22. `Sources/SiteBlockApp/*` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App
+22d. `Sources/SiteBlockApp/Updater.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (the update banner and the Settings version line), [02-core-components.md](02-core-components.md) § UpdateCheck
 22a. `Sources/SiteBlockApp/TabWatcher.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel and the permission banner)
 22b. `Sources/SiteBlockApp/ChromiumTabs.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 22c. `Sources/SiteBlockApp/Views/TemporaryUnblockForm.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (the temporary unblock form) — **Also:** [02-core-components.md](02-core-components.md) § TemporaryUnblockOptions
 23. `Resources/Info.plist` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script (including the `NSAppleEventsUsageDescription` key)
-24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script
+24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script — **Also:** [04-infrastructure.md](04-infrastructure.md) § Version Numbers
 25. `scripts/install.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
-25a. `scripts/package.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac
+25a. `scripts/package.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac (including `SiteBlock.zip` and `version.json`)
 25b. `.github/workflows/package.yml` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds
+25c. `scripts/write-build-number.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Version Numbers — **Also:** [05-testing-and-operations.md](05-testing-and-operations.md) § Integration Tests (Script tests)
 26. `scripts/verify-install.sh` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Installed-System Verification
 27. `Install SiteBlock.command` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 28. `Tests/SiteBlockCoreTests/*` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests
@@ -109,6 +113,21 @@
 - Tests → [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests, § Integration Tests
 - Implementation steps → [Tasks/TASKS-08-temporary-unblock.md](Tasks/TASKS-08-temporary-unblock.md)
 
+### Versions and Updates
+- The version `1.0.<build>` and how the build number is made → [04-infrastructure.md](04-infrastructure.md) § Version Numbers
+- The generated `BuildNumber.swift` and `siteBlockVersion` → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, [02-core-components.md](02-core-components.md) § Models and Protocol Types (Version constants)
+- What GitHub publishes (`SiteBlock.zip`, `version.json`, the fixed download links) → [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac, § Automatic Package Builds
+- Why the workflow checks out the full history → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, § Automatic Package Builds
+- What `version.json` must contain, the newer-build rule and the checksum check → [02-core-components.md](02-core-components.md) § UpdateCheck
+- The daily check, the banner, "Update" and "Not now", the phases and the install steps → [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater
+- The Settings version line and "Check for updates" button → [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (Panel states)
+- Why the password prompt comes from the app and why the installer must outlive it → [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater
+- What an update keeps (blocks, password, delay, countdowns) → [01-overview-and-data.md](01-overview-and-data.md) § Architecture (Updates), [04-infrastructure.md](04-infrastructure.md) § Upgrade Behavior
+- Limits (checksum proves integrity not authorship, no notarization, one manual update for older installs) → [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits (Limits of updates)
+- Update interval and timeouts, state save interval → [01-overview-and-data.md](01-overview-and-data.md) § Fixed Policy Values
+- Tests → [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests (UpdateCheckTests), § Integration Tests (Script tests), § Installed-System Verification (Live update test)
+- Implementation steps → [Tasks/TASKS-09-update-check.md](Tasks/TASKS-09-update-check.md)
+
 ### Path Rules and Tab Watching
 - Tab watcher (reloads a tab that moved to a blocked part of a site without loading a page) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 - In-page address changes (`pushState`) and what catches them → [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Blocking part of a site), [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
@@ -130,6 +149,7 @@
 - Paths → [04-infrastructure.md](04-infrastructure.md) § Installed Paths
 - Install and upgrade → [04-infrastructure.md](04-infrastructure.md) § Install Script
 - Running tests without Xcode → [04-infrastructure.md](04-infrastructure.md) § Package.swift
+- Version numbers, `SiteBlock.zip` and `version.json` → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, § Packaging for Another Mac
 - Failed test names on the public GitHub run page → [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds
 
 ---
@@ -174,3 +194,12 @@ The person picks a window (how long the site stays open), a start wait (the time
 - **Browser policy files:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
 - **Tab watcher rule filter:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 - **Limits and tests:** [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits, [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests, § Integration Tests
+
+### An update from publish to install
+A push to `master` that changes app code starts the GitHub workflow. It checks out the full history, so the commit count (the build number) is correct, runs the tests, and runs `scripts/package.sh`, which builds the programs with `scripts/write-build-number.sh` and writes `SiteBlock.zip` and `version.json` (the version, build number, commit, file name and the zip's SHA-256 checksum). The workflow replaces the "latest" release with both files, so the two download links never change. On each Mac, the menu bar app's `Updater` fetches `version.json` 60 seconds after the app starts, then every 24 hours, and when the person presses "Check for updates". `UpdateCheck.parse` accepts the file only when every field is well formed, and `UpdateCheck.isNewer` compares its build with the installed `siteBlockBuildNumber`. When the published build is newer and the person has not pressed "Not now" for it, the panel shows the banner. "Update" downloads the zip to a temporary folder, checks its checksum, unzips it, confirms that the expected files are present and that the three programs pass `codesign --verify --strict`, and copies the package to a staging folder. It then runs `scripts/install.sh` through an AppleScript `do shell script ... with administrator privileges` command, so macOS asks for the Mac password. The installer replaces the programs and restarts the jobs without touching `state.json`, the LaunchAgent starts the new app, and the new build number makes the banner disappear. A failed check shows a sentence in the banner and installs nothing.
+- **Version and build number:** [04-infrastructure.md](04-infrastructure.md) § Version Numbers, [02-core-components.md](02-core-components.md) § Models and Protocol Types (Version constants)
+- **Publishing the files:** [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac, § Automatic Package Builds
+- **Judging the files:** [02-core-components.md](02-core-components.md) § UpdateCheck
+- **Checking, banner, download, checks and install:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater, § SiteBlock.app Menu Bar App
+- **The installer that runs:** [04-infrastructure.md](04-infrastructure.md) § Install Script, § Upgrade Behavior
+- **Limits and tests:** [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits, [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests, § Integration Tests, § Installed-System Verification

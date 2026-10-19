@@ -90,7 +90,7 @@
 
 **Sub-steps:**
 - 6a. Every subcommand in the usage block, the exit codes, `readpassphrase` when stdin is a TTY (`isatty(0)`), else read a line from stdin. `setup` and `passwd` ask for the new password twice when interactive; when not interactive they read one line for each prompt in order.
-- 6b. `status` output format: first line `SiteBlock 1.0.0 — unblock delay: 30 minutes`, then `Blocked sites (N):` with lines `  reddit.com (24 hosts)` or `  reddit.com (24 hosts) — unblocks in 29:41`, then any banners. `No sites blocked.` when empty. `Password not set — run 'siteblock setup'.` when not set up.
+- 6b. `status` output format: first line `SiteBlock 1.0.<build> — unblock delay: 30 minutes`, then `Blocked sites (N):` with lines `  reddit.com (24 hosts)` or `  reddit.com (24 hosts) — unblocks in 29:41`, then any banners. `No sites blocked.` when empty. `Password not set — run 'siteblock setup'.` when not set up.
 - 6c. Durations parsed with `Formatting.parseDuration`.
 
 ---

@@ -1,6 +1,9 @@
 #!/bin/bash
-# Builds SiteBlock and packs everything another Apple Silicon Mac needs into one zip file:
-# dist/SiteBlock-<version>.zip. The other Mac needs no developer tools; it only runs the installer.
+# Builds SiteBlock and packs everything another Apple Silicon Mac needs into two files in dist/:
+#   SiteBlock.zip   the package, always under this one name so the download link never changes
+#   version.json    describes the package (version, build number, commit, file name and SHA-256 checksum),
+#                   so the app can tell whether a newer build exists and check its download
+# The other Mac needs no developer tools; it only runs the installer.
 #
 #   scripts/package.sh
 #
@@ -15,17 +18,27 @@ set -euo pipefail
 # Work from the repository root, wherever the script is started from.
 cd "$(dirname "$0")/.."
 
+# Write the build number (the commit count) first; build.sh runs the same script again and finds nothing to change.
+scripts/write-build-number.sh
+
 # Build fresh release programs, so the package never ships stale ones.
 scripts/build.sh
 
-# The version comes from the daemon itself, so the zip name always matches what is inside.
+# The version comes from the daemon itself, so version.json and INSTALL.txt always match what is inside. The build
+# number is the last part of 1.0.<build>.
 VERSION="$(build/siteblockd --version | awk '{print $NF}')"
+if [[ ! "$VERSION" =~ ^1\.0\.[0-9]+$ ]]; then
+    echo "error: could not read the version (1.0.<build>) from build/siteblockd --version; got: '$VERSION'" >&2
+    exit 1
+fi
+BUILD="${VERSION##*.}"
 DIST="dist"
 STAGE="$DIST/SiteBlock"
-ZIP="$DIST/SiteBlock-$VERSION.zip"
+ZIP="$DIST/SiteBlock.zip"
+VERSION_JSON="$DIST/version.json"
 
-# Start from an empty staging folder each time.
-rm -rf "$STAGE" "$ZIP"
+# Start from an empty staging folder each time. Any older zip (including ones named after a version) is removed too.
+rm -rf "$STAGE" "$DIST"/SiteBlock*.zip "$VERSION_JSON"
 mkdir -p "$STAGE/scripts"
 
 # ditto copies the app bundle with its code signature and permissions intact (a plain cp can break the signature).
@@ -90,7 +103,7 @@ Requirements: a Mac with an Apple chip (M1 or newer), macOS 14 (Sonoma) or newer
 administrator password.
 
 Install:
-1. Unzip SiteBlock-$VERSION.zip. Keep the SiteBlock folder together; the installer needs everything in it.
+1. Unzip SiteBlock.zip. Keep the SiteBlock folder together; the installer needs everything in it.
 2. Open the SiteBlock folder, right-click "Install SiteBlock.command" and choose Open.
    macOS warns that it is from an unidentified developer, because SiteBlock is not signed with an
    Apple developer certificate. Click Open. (If there is no Open button, go to System Settings >
@@ -125,6 +138,17 @@ done
 ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$ZIP"
 rm -rf "$STAGE"
 
+# Describe the package. The commit is the full 40-character hash of the checked-out commit. Without git (the build
+# number is then 0) it is all zeros, and the app ignores a version.json whose build is 0, so a package made without git
+# is never offered as an update. The checksum is written in lowercase hexadecimal, as the app expects.
+COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    COMMIT="0000000000000000000000000000000000000000"
+fi
+SHA256="$(shasum -a 256 "$ZIP" | awk '{print tolower($1)}')"
+printf '{\n  "version": "%s",\n  "build": %s,\n  "commit": "%s",\n  "asset": "SiteBlock.zip",\n  "sha256": "%s"\n}\n' "$VERSION" "$BUILD" "$COMMIT" "$SHA256" > "$VERSION_JSON"
+
 echo
 echo "Package ready: $(pwd)/$ZIP ($(du -h "$ZIP" | cut -f1 | tr -d ' '))"
-echo "Send it to the other Mac and follow INSTALL.txt inside it."
+echo "Version file: $(pwd)/$VERSION_JSON (version $VERSION, sha256 $SHA256)"
+echo "Send the zip to the other Mac and follow INSTALL.txt inside it."

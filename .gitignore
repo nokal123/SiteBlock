@@ -6,5 +6,8 @@ build/
 .build-*/
 dist/
 
+# Written by scripts/write-build-number.sh before every build
+Sources/SiteBlockCore/BuildNumber.swift
+
 # Personal Claude instructions (not shared)
 CLAUDE.local.md

@@ -477,10 +477,12 @@ struct TemporaryUnblockTests {
 
     // MARK: saving while it runs
 
-    // 01 § Fixed Policy Values: "A temporary unblock counts as a running countdown from the moment it is scheduled until it ends", so the state is saved at least every 15 seconds while one waits
-    // or is open, with no other countdown running. The saved remaining time must therefore fall without any command being sent.
+    // 01 § Fixed Policy Values: "A temporary unblock counts as a running countdown from the moment it is scheduled until it ends", so the state is saved at least every `saveIntervalSeconds` (15 in production,
+    // 2 under --policy-fast, which this daemon runs with) while one waits or is open, with no other countdown running. The saved remaining time must therefore fall without any command being sent. Seven seconds
+    // in, the last save is at most about 2.2 s old (the 2 s interval plus one 0.2 s tick), so it was written at least 4.6 s after the approval: a waiting one holds at most about 3595.4, and an open one (whose window
+    // opened at about 2.0-2.4 s) at most about 3597.6. The ceilings below add slack for a slow machine. A daemon that kept the production 15 s would still show the approval-time value (about 3600) here.
     @Test(arguments: ["waiting", "open"], [false, true])
-    func theStateIsSavedEveryFifteenSecondsWhileATemporaryUnblockWaitsOrIsOpen(phase: String, rule: Bool) throws {
+    func theStateIsSavedEverySaveIntervalWhileATemporaryUnblockWaitsOrIsOpen(phase: String, rule: Bool) throws {
         try withDaemon { daemon in
             if rule {
                 try daemon.setUp()
@@ -497,9 +499,12 @@ struct TemporaryUnblockTests {
             pause(3.0 - watch.elapsed)
             let early = try #require(daemon.stateNumber(path), "the saved state has no temporary unblock yet")
             #expect(early > 3590, "a few seconds in, the saved file still holds (almost) the full time: \(early)")
-            pause(19.5 - watch.elapsed)
+            pause(7.0 - watch.elapsed)
             let later = try #require(daemon.stateNumber(path))
-            #expect(later < 3590 && later > 3550, "with nothing else running, the 15-second save must have written the lower remaining time; saved \(later)")
+            // Waiting: the countdown started at the approval, so a save made at or after the 4.6 s mark holds at most 3595.4; the ceiling 3597 allows about 1.6 s of scheduling delay.
+            // Open: the window opened at about 2.0-2.4 s, so the same save holds at most 3597.6; the ceiling 3599 allows the same kind of delay.
+            let ceiling = phase == "waiting" ? 3597.0 : 3599.0
+            #expect(later <= ceiling && later > 3592, "with nothing else running, the periodic save must have written the lower remaining time (at most \(ceiling), above 3592); saved \(later), 3 s in it was \(early)")
             if phase == "open" {
                 let status = rule ? try daemon.temporaryStatus(ofRule: "youtube.com/shorts") : try daemon.temporaryStatus(ofSite: "reddit.com")
                 #expect(status?.isOpen == true)

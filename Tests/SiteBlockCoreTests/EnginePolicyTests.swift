@@ -23,6 +23,13 @@ import SiteBlockCore
         #expect(production.minUninstallSeconds == 172_800, "an uninstall waits at least 48 hours")
     }
 
+    // 02-core-components.md § Engine: "Policy.production must hold exactly ... and 15 (`saveIntervalSeconds` ...)" and "`Policy.fastForTests.saveIntervalSeconds` is 2, so a test sees the periodic save within seconds."
+    // 01-overview-and-data.md § Fixed Policy Values: "15 seconds in `Policy.production`, 2 seconds in `Policy.fastForTests`".
+    @Test func theStateSaveIntervalIs15SecondsInProductionAndTwoInTheFastTestPolicy() {
+        #expect(Policy.production.saveIntervalSeconds == 15)
+        #expect(Policy.fastForTests.saveIntervalSeconds == 2)
+    }
+
     // Design change: 02-core-components.md § Engine: "Policy.production must hold exactly ... 172800 (the uninstall minimum). Policy.fastForTests
     // .minUninstallSeconds is 2." (01-overview-and-data.md § Fixed Policy Values: "Uninstall wait: 172800 seconds (48 hours), or the unblock delay
     // when that is longer.") The sandbox and the installed service differ only in these numbers, so both are pinned on their own.

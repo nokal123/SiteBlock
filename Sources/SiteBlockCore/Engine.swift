@@ -26,9 +26,11 @@ public struct Policy: Sendable, Equatable {
     public var maxTemporarySeconds: Int
     /// The longest wait before a temporary unblock opens.
     public var maxTemporaryStartSeconds: Int
+    /// How often the daemon saves the state while any countdown is running, so a crash loses at most this much progress.
+    public var saveIntervalSeconds: Int
 
-    /// Creates a policy from every value. `maxSites`, `minUninstallSeconds` and the three temporary unblock limits default to the production values (500 sites and path rules together, 48 hours, 5 minutes to 4 hours open, up to 7 days before it opens), so callers that predate them keep compiling.
-    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500, minUninstallSeconds: Int = 172_800, minTemporarySeconds: Int = 300, maxTemporarySeconds: Int = 14_400, maxTemporaryStartSeconds: Int = 604_800) {
+    /// Creates a policy from every value. `maxSites`, `minUninstallSeconds`, the three temporary unblock limits and `saveIntervalSeconds` default to the production values (500 sites and path rules together, 48 hours, 5 minutes to 4 hours open, up to 7 days before it opens, a save every 15 seconds), so callers that predate them keep compiling.
+    public init(defaultDelaySeconds: Int, minDelaySeconds: Int, maxDelaySeconds: Int, recoverySeconds: Int, lockoutSeconds: Int, maxFailedAttempts: Int, pbkdf2Iterations: Int, maxSites: Int = 500, minUninstallSeconds: Int = 172_800, minTemporarySeconds: Int = 300, maxTemporarySeconds: Int = 14_400, maxTemporaryStartSeconds: Int = 604_800, saveIntervalSeconds: Int = 15) {
         self.defaultDelaySeconds = defaultDelaySeconds
         self.minDelaySeconds = minDelaySeconds
         self.maxDelaySeconds = maxDelaySeconds
@@ -41,13 +43,14 @@ public struct Policy: Sendable, Equatable {
         self.minTemporarySeconds = minTemporarySeconds
         self.maxTemporarySeconds = maxTemporarySeconds
         self.maxTemporaryStartSeconds = maxTemporaryStartSeconds
+        self.saveIntervalSeconds = saveIntervalSeconds
     }
 
-    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, at most 500 blocked sites and path rules together, an uninstall wait of at least 48 hours, and a temporary unblock that stays open 5 minutes to 4 hours and opens within 7 days.
-    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500, minUninstallSeconds: 172_800, minTemporarySeconds: 300, maxTemporarySeconds: 14_400, maxTemporaryStartSeconds: 604_800)
+    /// The values the installed service always uses: 30 minute delay, 60 second to 7 day range, 48 hour recovery, 15 minute lockout after 5 wrong passwords, at most 500 blocked sites and path rules together, an uninstall wait of at least 48 hours, a temporary unblock that stays open 5 minutes to 4 hours and opens within 7 days, and a state save every 15 seconds while a countdown runs.
+    public static let production = Policy(defaultDelaySeconds: 1800, minDelaySeconds: 60, maxDelaySeconds: 604_800, recoverySeconds: 172_800, lockoutSeconds: 900, maxFailedAttempts: 5, pbkdf2Iterations: 210_000, maxSites: 500, minUninstallSeconds: 172_800, minTemporarySeconds: 300, maxTemporarySeconds: 14_400, maxTemporaryStartSeconds: 604_800, saveIntervalSeconds: 15)
 
-    /// Short waits and a low site cap (20) for sandbox runs and tests only, so tests can reach the cap quickly. A temporary unblock may stay open for as little as 1 second, so a test can open and close a window in seconds; its other limits are the production ones.
-    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20, minUninstallSeconds: 2, minTemporarySeconds: 1, maxTemporarySeconds: 14_400, maxTemporaryStartSeconds: 604_800)
+    /// Short waits and a low site cap (20) for sandbox runs and tests only, so tests can reach the cap quickly. A temporary unblock may stay open for as little as 1 second, so a test can open and close a window in seconds; the state is saved every 2 seconds while a countdown runs, so a test sees the periodic save quickly; its other limits are the production ones.
+    public static let fastForTests = Policy(defaultDelaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 604_800, recoverySeconds: 3, lockoutSeconds: 2, maxFailedAttempts: 5, pbkdf2Iterations: 1000, maxSites: 20, minUninstallSeconds: 2, minTemporarySeconds: 1, maxTemporarySeconds: 14_400, maxTemporaryStartSeconds: 604_800, saveIntervalSeconds: 2)
 }
 
 /// The whole policy of SiteBlock in one class: it holds the state, applies commands, advances countdowns, and reports what the hosts file should contain. It does no file or socket work, so tests can drive it with fake time.

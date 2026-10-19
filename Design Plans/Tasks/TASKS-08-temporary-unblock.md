@@ -85,7 +85,7 @@
 
 **Sub-steps:**
 - 4a. Confirm that the enforcement pass runs right after `engine.tick` in the timer tick, and that the catch-up before a command saves and enforces when `engine.tick` returns `true`. A tick that opens or ends a temporary unblock must rewrite the hosts file and the browser policy files in that same tick, and the rewrite must count as a change made on purpose, so it is not logged as tampering.
-- 4b. Make the "any countdown running" check count a site or rule that has a `temporaryUnblock`, so the state is saved at least every 15 seconds while one is waiting or open.
+- 4b. Make the "any countdown running" check count a site or rule that has a `temporaryUnblock`, so the state is saved at least every `policy.saveIntervalSeconds` (15 seconds in production) while one is waiting or open.
 - 4c. Set `engine.onTemporaryUnblockEvent` so that each sentence is written to the log. The five lines are in [03-daemon-cli-app.md](../03-daemon-cli-app.md) § Daemon Runtime: approved (site or rule, start wait and window), opened, ended, cancelled while waiting, and ended early. Each opening and ending is logged once, whether it happened in a timer tick or in the catch-up before a command.
 - 4d. Update the logging comments to say that passwords are never logged and that a domain or rule appears only in the temporary unblock lines.
 - 4e. In the request handler that checks site names and rule text on the connection's thread, include `temporaryUnblock` (site name) and `temporaryUnblockPath` (rule text). A request that is missing its password or window skips the check, so the engine answers `badRequest` first.

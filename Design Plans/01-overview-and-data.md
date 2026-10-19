@@ -20,7 +20,7 @@ SiteBlock is a macOS website blocker that works below the browser, so it blocks 
 
 - `siteblockd` is a background service that runs as root (the administrator account that is allowed to change system files). It owns the list of blocked sites, writes them into the system hosts file, and puts them back within two seconds if anyone removes them.
 - `siteblock` is a Terminal command that talks to `siteblockd`.
-- `SiteBlock.app` is a menu bar app (an icon in the top-right menu bar of the screen) that talks to `siteblockd` and shows the blocked sites, the unblock countdowns and the settings.
+- `SiteBlock.app` is a menu bar app (an icon in the top-right menu bar of the screen) that talks to `siteblockd` and shows the blocked sites, the unblock countdowns and the settings. It also checks GitHub once a day for a newer version of SiteBlock and installs that version when the person asks.
 
 Blocking a site is always free and instant. Unblocking a site needs the SiteBlock password, and even with the right password the site stays blocked for a waiting period (30 minutes by default) before it opens. During that wait anyone can cancel the unblock without a password. A site can also be unblocked for a chosen stretch of time, called a temporary unblock. It stays blocked while a start wait runs, which is never shorter than the unblock delay, then it opens for the chosen window, and then it is blocked again on its own.
 
@@ -36,6 +36,7 @@ Blocking a site is always free and instant. Unblocking a site needs the SiteBloc
 6. Make unblocking take effect only after a waiting period, so that even a successful bypass of the password costs time.
 7. Never lock the user out permanently. A forgotten password can be reset with the Mac admin password plus a 48-hour wait.
 8. Let a person open a blocked site, or a blocked part of a site, for a chosen window of time. It needs the password, it never opens sooner than the unblock delay, and it blocks itself again when the window ends.
+9. Tell the person when a newer version of SiteBlock exists, and install it only after the person clicks "Update" and types the Mac password. An update keeps every block, the SiteBlock password, the unblock delay and every countdown.
 
 ---
 
@@ -101,6 +102,8 @@ Both background jobs are LaunchDaemons (programs that macOS's `launchd` starts a
 
 The menu bar app also talks to the running Chrome, Edge and Brave processes for its tab watcher. That traffic is Apple Events between the app and each browser, in the user's own login session, and it does not pass through the daemon or the socket.
 
+**Updates.** The menu bar app also talks to GitHub. Once a day it downloads a small file, `version.json`, from the latest release of the SiteBlock repository. The file names the newest published build and carries a checksum (a fingerprint of the package's bytes, which changes if any byte of the file changes). When that build is newer than the installed one, the panel shows a banner with "Update" and "Not now". "Update" downloads the package, checks that it is complete and that its programs are intact, and then runs the same installer as a first install. macOS asks for the Mac password, and nothing on the Mac changes before the person types it. Nothing installs by itself, because the installer runs as root. The blocks, the SiteBlock password, the unblock delay and every countdown stay as they were, because the installer never touches `state.json`. This traffic runs between the app and GitHub in the user's own login session, and it does not pass through the daemon or the socket. See [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater and [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds.
+
 ---
 
 ## Threat Model and Honest Limits
@@ -119,6 +122,7 @@ SiteBlock defends against the owner of the Mac acting on impulse. It does not de
 - Guessing the password with a script. Five wrong passwords lock password checks for 15 minutes.
 - Shortening the waiting period on impulse. Making the wait longer applies at once. Making it shorter has to sit through the current wait first.
 - Opening a site early through a temporary unblock. Its start wait is never shorter than the unblock delay, it needs the password, and the site stays fully blocked until the start wait ends.
+- Installing a new version without the person knowing. The app never installs anything by itself: it needs a click on "Update" and the Mac password, which macOS asks for in its own prompt because the installer runs as root. The app downloads only from two fixed GitHub addresses, and it installs only a package whose checksum and program signatures check out.
 
 **What SiteBlock cannot stop:**
 
@@ -130,11 +134,19 @@ SiteBlock defends against the owner of the Mac acting on impulse. It does not de
 - A blocked part of a site that shows for a moment. The tab watcher checks twice a second, so the part of the site can be visible for up to about half a second before the tab reloads.
 - A part of a site that opens without a page load in Firefox. SiteBlock cannot read Firefox's tabs, so only a reload or a direct open applies the path rule there. Safari has no path rules.
 
+**Limits of updates:**
+
+- The checksum proves integrity, not authorship. `version.json` and `SiteBlock.zip` come from the same GitHub release, so the checksum shows that the download is complete and was not changed on its way to the Mac. It does not show who made the package. Someone who took over the GitHub account could publish a harmful package together with a matching checksum. The person would still have to approve the install with the Mac password. A signature from an Apple Developer ID (a certificate Apple issues to registered developers) that the updater checks would close this gap, and it needs a paid Apple Developer account.
+- The package is not notarized (Apple has not scanned and approved it), so the first install on a Mac still needs a right-click on `Install SiteBlock.command` and "Open". An update does not need that, because the app runs the installer script directly.
+- The update check is part of the installed app. A Mac that has a SiteBlock version without the update check never looks for updates, so it is updated once by hand, with the same steps as a first install. After that, the app finds later updates by itself.
+
 ---
 
 ## Data Model
 
-All persistent data lives in one JSON file, `state.json`, owned by root with mode `0600` (only root can read or write it). The Swift type is `PersistedState` in `SiteBlockCore`.
+All of the daemon's persistent data lives in one JSON file, `state.json`, owned by root with mode `0600` (only root can read or write it). The Swift type is `PersistedState` in `SiteBlockCore`.
+
+The menu bar app keeps one value of its own outside this file: the build number of the update the person dismissed with "Not now", saved in the app's `UserDefaults` (the macOS store for an app's own settings) under the key `dismissedUpdateBuild`. It is never sent to the daemon and has no effect on blocking. See [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater.
 
 ### PersistedState
 
@@ -222,7 +234,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 
 ### StatusSnapshot
 
-- `version: String` — the daemon's version string.
+- `version: String` — the daemon's version string, in the form `1.0.<build>`, where `<build>` is the number of commits the programs were built from (see [04-infrastructure.md](04-infrastructure.md) § Version Numbers).
 - `passwordSet: Bool`
 - `blocked: [BlockedSiteStatus]` — each with `domain`, `hosts`, `unblockSecondsRemaining: Int?` and `temporaryUnblock: TemporaryUnblockStatus?`.
 - `delaySeconds: Int`
@@ -283,6 +295,8 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Watchdog check: every 5 seconds.
 - Tab watcher check: every 0.5 seconds, and only while a path rule exists and Chrome, Edge or Brave is running.
 - Recheck of a refused Automation permission: at most every 10 seconds per browser.
-- State is saved to disk after every command that changes it, and at least every 15 seconds while any countdown is running, so a crash loses at most 15 seconds of countdown progress. A temporary unblock counts as a running countdown from the moment it is scheduled until it ends, and the state is also saved at once when it opens and when it ends.
+- Version string: `1.0.<build>`, where `<build>` is the number of commits on the checked-out branch when the programs were built, or 0 when git was not available.
+- Update check: the first check 60 seconds after the app starts, then one every 24 hours, and one whenever the person presses "Check for updates" in Settings. A check waits at most 15 seconds for GitHub, and a package download waits at most 5 minutes.
+- State is saved to disk after every command that changes it, and at least every `saveIntervalSeconds` while any countdown is running (15 seconds in `Policy.production`, 2 seconds in `Policy.fastForTests`), so a crash loses at most 15 seconds of countdown progress in the installed service. A temporary unblock counts as a running countdown from the moment it is scheduled until it ends, and the state is also saved at once when it opens and when it ends.
 
-Sandbox mode (used by tests, see [04-infrastructure.md](04-infrastructure.md) § Sandbox Mode) can lower the delay floor, the recovery wait, the lockout length, the shortest temporary unblock window and the tick interval.
+Sandbox mode (used by tests, see [04-infrastructure.md](04-infrastructure.md) § Sandbox Mode) can lower the delay floor, the recovery wait, the lockout length, the shortest temporary unblock window, the save interval and the tick interval.

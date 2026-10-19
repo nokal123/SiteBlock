@@ -3,7 +3,7 @@ import SiteBlockCore
 import Testing
 
 // What survives a daemon restart: lockout, failed-attempt count, and running countdowns.
-// Design: 01-overview-and-data.md § Fixed Policy Values ("State is saved to disk after every command and at least every 15 seconds while any countdown is running"); 03-daemon-cli-app.md § DaemonRuntime.
+// Design: 01-overview-and-data.md § Fixed Policy Values ("State is saved to disk after every command and at least every `saveIntervalSeconds` while any countdown is running": 15 in production, 2 under --policy-fast, which every sandbox daemon here runs with); 03-daemon-cli-app.md § DaemonRuntime.
 @Suite("Restart persistence")
 struct RestartTests {
     static let password = SandboxDaemon.password
@@ -125,8 +125,8 @@ struct RestartTests {
         }
     }
 
-    // 01 § Fixed Policy Values: while a countdown runs, the state is saved at least every 15 seconds. So a kill -9 with no command for 15 seconds loses at most the last 15 s of progress, not all of it. The state file is polled instead of sleeping a fixed time: the wait ends the moment the periodic save has happened (the earliest it can, since the period is 15 s), and the restarted daemon must show the progress that was saved. The first save after the command is the periodic one, because every command saves at once and nothing else saves while a countdown runs.
-    @Test func aKill9DuringALongCountdownLosesAtMostFifteenSecondsOfProgress() throws {
+    // 01 § Fixed Policy Values and 03 § Daemon Runtime: while a countdown runs, the state is saved at least every `policy.saveIntervalSeconds` (15 in production; 2 under --policy-fast, which this daemon runs with). So a kill -9 with no command for that long loses at most the last interval of progress, not all of it. The state file is polled instead of sleeping a fixed time: the wait ends the moment the periodic save has happened. The first save after the command is the periodic one, because every command saves at once and nothing else saves while a countdown runs. It cannot come earlier than the interval after the command save (the lower bound catches a daemon that saves far more often than it should, or one that ignores the policy's number), and a daemon that kept the production 15 s would miss the upper bound.
+    @Test func aKill9DuringALongCountdownLosesAtMostOneSaveIntervalOfProgress() throws {
         try withDaemon { daemon in
             try daemon.prepare(blocking: "reddit.com")
             try daemon.send(.setDelay, password: Self.password, seconds: 30).requireOK()
@@ -137,10 +137,11 @@ struct RestartTests {
                 let site = (daemon.stateObject()?["blocked"] as? [[String: Any]])?.first
                 return (site?["pendingUnblock"] as? [String: Any])?["remainingSeconds"] as? Double
             }
-            let saved = waitUntil(timeout: 17.5, interval: 0.05) { (savedRemaining() ?? 30) < 29.5 }
+            let saved = waitUntil(timeout: 8.0, interval: 0.05) { (savedRemaining() ?? 30) < 29.5 }
             let savedAt = watch.elapsed
             try #require(saved != nil, "the state file still held the command-time countdown after \(savedAt) s: no periodic save happened")
-            #expect(savedAt <= 16.5, "the first save after the command came after \(savedAt) s, later than the design's 15 s")
+            #expect(savedAt >= 1.7, "the first save after the command came after only \(savedAt) s, sooner than the 2 s save interval of the fast policy")
+            #expect(savedAt <= 4.0, "the first save after the command came after \(savedAt) s, later than the fast policy's 2 s interval (the production 15 s would show up here)")
             #expect(daemon.kill9() != nil)
             try daemon.start()
             let reply = try daemon.status()

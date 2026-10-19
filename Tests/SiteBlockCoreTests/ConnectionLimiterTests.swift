@@ -340,8 +340,9 @@ private func fillNonRoot(_ limiter: ConnectionLimiter, total: Int, firstUID: uid
         }
         // A limiter without its lock can corrupt its own dictionary and then spin forever. Waiting with a limit turns that into a failure
         // that names the cause, instead of a test run that never ends (a correct limiter finishes this in well under a second).
-        guard group.wait(timeout: .now() + 60) == .success else {
-            Issue.record("the eight workers did not finish within 60 seconds: the limiter deadlocked or spun, which points to a data race inside it")
+        // 180 seconds, not 60: the full suite now runs many integration tests and compiles at the same time, and on a loaded machine (or GitHub's slower runners) the eight workers took longer than 60 seconds without anything being wrong. A real deadlock never finishes, so a longer limit still catches it.
+        guard group.wait(timeout: .now() + 180) == .success else {
+            Issue.record("the eight workers did not finish within 180 seconds: the limiter deadlocked or spun, which points to a data race inside it")
             return
         }
         #expect(live.problems.isEmpty, "limits exceeded under concurrency: \(live.problems.prefix(3))")

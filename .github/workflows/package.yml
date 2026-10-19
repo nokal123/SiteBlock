@@ -1,8 +1,9 @@
 # Rebuilds the installable SiteBlock package whenever app code is pushed to master, and publishes it
 # as the GitHub Release "latest", so the newest version is always at one fixed download link:
-#   https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock-1.0.0.zip
+#   https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip
 # Steps: build on a fresh Apple Silicon Mac, run every test (a failing test stops the run, so a
-# broken package is never published), run scripts/package.sh, then replace the "latest" release.
+# broken package is never published), run scripts/package.sh, then replace the "latest" release with
+# SiteBlock.zip and version.json (the file the app reads to learn the newest version and the zip's checksum).
 name: Build and publish package
 
 on:
@@ -36,6 +37,9 @@ jobs:
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
+        with:
+          # The whole history, because the build number is the count of commits. A shallow checkout would count 1.
+          fetch-depth: 0
 
       - name: Show the build tools
         run: |
@@ -55,7 +59,7 @@ jobs:
             exit 1
           }
 
-      # Builds the release programs, signs them ad hoc and writes dist/SiteBlock-<version>.zip.
+      # Builds the release programs, signs them ad hoc and writes dist/SiteBlock.zip and dist/version.json.
       - name: Build the package
         run: scripts/package.sh
 
@@ -63,21 +67,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SiteBlock-package
-          path: dist/*.zip
+          path: |
+            dist/SiteBlock.zip
+            dist/version.json
           retention-days: 30
 
       # Deletes the previous "latest" release and its tag, then creates it again at this commit with the
-      # new zip, so the fixed download link always serves the newest build.
+      # new zip and version.json, so the fixed download links always serve the newest build.
       - name: Publish as the "latest" release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ZIP="$(ls dist/*.zip)"
-          VERSION="$(basename "$ZIP" .zip | sed 's/^SiteBlock-//')"
+          VERSION="$(jq -r .version dist/version.json)"
           gh release delete latest --cleanup-tag --yes 2>/dev/null || true
-          gh release create latest "$ZIP" \
+          gh release create latest dist/SiteBlock.zip dist/version.json \
             --target "${{ github.sha }}" \
             --title "SiteBlock $VERSION (latest build)" \
             --notes "Built automatically from commit ${{ github.sha }}.
 
-          To install on an Apple Silicon Mac with macOS 14 or newer: download $(basename "$ZIP"), unzip it, and follow INSTALL.txt inside (right-click \"Install SiteBlock.command\" and choose Open)."
+          To install on an Apple Silicon Mac with macOS 14 or newer: download SiteBlock.zip, unzip it, and follow INSTALL.txt inside (right-click \"Install SiteBlock.command\" and choose Open). version.json describes this build and is what the SiteBlock app reads to check for updates."
