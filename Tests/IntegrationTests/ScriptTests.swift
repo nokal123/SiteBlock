@@ -167,10 +167,10 @@ struct WriteBuildNumberScriptTests {
         let count = try git(repositoryRoot, ["rev-list", "--count", "HEAD"])
         #expect(siteBlockBuildNumber == Int(count), "run scripts/write-build-number.sh and rebuild")
         #expect(siteBlockBuildID == "1.0." + count)
-        #expect(siteBlockVersion == "\(siteBlockMarketingVersion) (build \(count))")
+        #expect(siteBlockVersion == siteBlockMarketingVersion)
         let version = try runDaemonProgram(["--version"])
         #expect(version.status == 0)
-        #expect(version.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "siteblockd \(siteBlockVersion)", "got: \(version.stdout)")
+        #expect(version.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "siteblockd \(siteBlockVersion) (build \(count))", "got: \(version.stdout)")
     }
 }
 

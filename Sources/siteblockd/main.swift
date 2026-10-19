@@ -96,7 +96,8 @@ let logger = Logger()
 
 switch options.mode! {
 case .version:
-    print("siteblockd \(siteBlockVersion)")
+    // The build scripts read both numbers from this line, so it carries the build number too: "siteblockd 1.2.0 (build 51)".
+    print("siteblockd \(siteBlockVersion) (build \(siteBlockBuildNumber))")
 case .printPlist(let job):
     // The install script writes the plist files from this output, so the plist text has a single source.
     print(LaunchdPlists.xml(for: job, paths: paths), terminator: "")

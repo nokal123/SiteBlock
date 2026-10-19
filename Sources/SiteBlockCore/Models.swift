@@ -6,8 +6,8 @@ public let siteBlockSeries = "1.2"
 public let siteBlockSeriesFirstBuild = 51
 /// The version number people see: the series followed by how many builds came after the series' first one, so the series starts at 1.2.0 and counts 1.2.1, 1.2.2 and so on, and starts again at .0 when the series changes. A build made without git (build 0) reads <series>.0. Updates are ordered by the overall build number, never by this text, so starting again at .0 never hides an update.
 public let siteBlockMarketingVersion = "\(siteBlockSeries).\(max(0, siteBlockBuildNumber - siteBlockSeriesFirstBuild))"
-/// The version shown in the app, the CLI and the daemon's log: the version number plus the build number, for example "1.2.0 (build 52)".
-public let siteBlockVersion = "\(siteBlockMarketingVersion) (build \(siteBlockBuildNumber))"
+/// The version shown in the app, the CLI and the daemon's status reply, for example "1.2.0". The build number is shown only by `siteblockd --version`, which the build scripts read.
+public let siteBlockVersion = siteBlockMarketingVersion
 /// The technical build id written to version.json's `version` field: 1.0 followed by the build number. Copies of SiteBlock older than 1.2.0 accept an update only when that field reads exactly so, so it keeps this form and the version people see goes in `displayVersion`.
 public let siteBlockBuildID = "1.0.\(siteBlockBuildNumber)"
 

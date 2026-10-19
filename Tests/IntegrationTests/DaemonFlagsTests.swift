@@ -102,7 +102,8 @@ struct DaemonFlagsTests {
             let fromDaemon = Self.afterName(daemonProgram.stdout, "siteblockd")
             let fromCLI = Self.afterName(cli.stdout, "siteblock")
             #expect(!status.version.isEmpty)
-            #expect(fromDaemon == status.version, "siteblockd --version printed \(daemonProgram.stdout)")
+            // siteblockd --version adds the build number for the build scripts: "<version> (build <n>)".
+            #expect(fromDaemon == "\(status.version) (build \(siteBlockBuildNumber))", "siteblockd --version printed \(daemonProgram.stdout)")
             #expect(fromCLI == status.version, "siteblock version printed \(cli.stdout)")
         }
     }
