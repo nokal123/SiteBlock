@@ -101,3 +101,5 @@ Run the tests with `scripts/test.sh`. It adds the compiler flags that Swift Test
 To see what SiteBlock finds on each network connection and what it would do about its DNS servers, run `siteblockd --print-dns-plan` (the installed copy is `/usr/local/libexec/siteblock/siteblockd`, and `build/` holds the copy that `scripts/build.sh` made). It only reads, needs no administrator rights, and changes nothing.
 
 If an install breaks, run `sudo scripts/install.sh` again. It replaces the programs and restarts the background jobs, and it keeps every block, the password and every countdown.
+
+To see how often SiteBlock has been downloaded (per version, plus update checks, which roughly count copies in use), run `scripts/stats.sh`.

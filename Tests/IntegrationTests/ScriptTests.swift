@@ -359,6 +359,7 @@ struct PackageWorkflowTests {
     @Test func theReleaseStepUploadsBothFilesFromDist() throws {
         let release = try #require(step(containing: "gh release create"), "no step creates the release")
         #expect(release.contains("dist/SiteBlock.zip") && release.contains("dist/version.json"), "release step:\n\(release)")
-        #expect(release.contains("latest"), "the release must be the one tagged latest")
+        // 04 § Automatic Package Builds: each version gets its own release tagged v<version>, marked as the latest, so older releases (and their download counts) are kept.
+        #expect(release.contains("\"v$VERSION\"") && release.contains("--latest"), "the release must be tagged v<version> and marked latest")
     }
 }
