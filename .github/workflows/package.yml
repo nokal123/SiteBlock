@@ -9,9 +9,11 @@ name: Build and publish package
 on:
   push:
     branches: [master]
-    # Only app changes rebuild the package; edits to docs or design plans alone do not.
+    # App and test changes rebuild the package; edits to docs or design plans alone do not.
     paths:
       - "Sources/**"
+      # Tests decide whether a package is published, so a change to them rebuilds too.
+      - "Tests/**"
       - "Resources/**"
       - "scripts/**"
       - "Package.swift"
