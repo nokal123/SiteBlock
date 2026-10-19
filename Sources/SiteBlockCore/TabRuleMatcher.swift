@@ -67,3 +67,11 @@ public enum TabRuleMatcher {
         }
     }
 }
+
+/// What the tab watcher is given from each status snapshot.
+public extension StatusSnapshot {
+    /// The path rules the tab watcher looks for: every rule in the snapshot except those a temporary unblock currently has open, because an open rule is allowed for now and its tabs must be left alone. Rules waiting to open, or waiting to unblock for good, are still blocked, so they stay in. An older daemon that reports no path rules gives an empty list.
+    var watchedPathRules: [WatchedPathRule] {
+        (blockedPaths ?? []).filter { $0.temporaryUnblock?.isOpen != true }.map { WatchedPathRule(domain: $0.domain, path: $0.path) }
+    }
+}

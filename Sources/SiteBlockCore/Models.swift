@@ -106,7 +106,7 @@ public struct BlockedSite: Codable, Equatable, Sendable {
     public var hosts: [String]
     /// Set when an unblock was approved; when it reaches zero the site is removed.
     public var pendingUnblock: Countdown?
-    /// Set when a temporary unblock was approved; the site opens after its start wait and is blocked again when its window ends. A state file written before temporary unblocks existed has no such key, and the synthesized decoder reads a missing optional key as nil, so such a file still loads.
+    /// Set when a temporary unblock was approved; the site opens after its start wait and is blocked again when its window ends. A state file written before temporary unblocks existed has no such key, and a missing key reads as nil, so such a file still loads.
     public var temporaryUnblock: TemporaryUnblock?
 
     /// Creates a blocked site record.
@@ -119,6 +119,18 @@ public struct BlockedSite: Codable, Equatable, Sendable {
 
     /// True while a temporary unblock has this site open, which means its hosts are left out of the hosts file and the browsers' lists.
     public var isTemporarilyOpen: Bool { temporaryUnblock?.isOpen == true }
+
+    /// The names of the stored fields.
+    private enum CodingKeys: String, CodingKey { case domain, hosts, pendingUnblock, temporaryUnblock }
+
+    /// Reads a saved site. A temporary unblock that is present but cannot be read (for example a hand-edited record missing its window) is dropped instead of failing the whole file: a state file that fails to load is set aside, which could take the whole block list with it, while dropping the record only means the site stays blocked.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        domain = try container.decode(String.self, forKey: .domain)
+        hosts = try container.decode([String].self, forKey: .hosts)
+        pendingUnblock = try container.decodeIfPresent(Countdown.self, forKey: .pendingUnblock)
+        temporaryUnblock = try? container.decodeIfPresent(TemporaryUnblock.self, forKey: .temporaryUnblock)
+    }
 }
 
 /// One path rule: the start of a path on a site that stays blocked while the rest of the site stays open, for example `/shorts` on youtube.com. Only the browsers' own block lists can enforce it; the hosts file can only block whole names.
@@ -142,6 +154,18 @@ public struct BlockedPath: Codable, Equatable, Sendable {
 
     /// True while a temporary unblock has this rule open, which means the browsers' lists leave it out.
     public var isTemporarilyOpen: Bool { temporaryUnblock?.isOpen == true }
+
+    /// The names of the stored fields.
+    private enum CodingKeys: String, CodingKey { case domain, path, pendingUnblock, temporaryUnblock }
+
+    /// Reads a saved path rule. As for a site, a temporary unblock that is present but cannot be read is dropped, so the rule stays blocked and the rest of the file still loads.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        domain = try container.decode(String.self, forKey: .domain)
+        path = try container.decode(String.self, forKey: .path)
+        pendingUnblock = try container.decodeIfPresent(Countdown.self, forKey: .pendingUnblock)
+        temporaryUnblock = try? container.decodeIfPresent(TemporaryUnblock.self, forKey: .temporaryUnblock)
+    }
 }
 
 /// A requested shorter unblock delay that has not taken effect yet.

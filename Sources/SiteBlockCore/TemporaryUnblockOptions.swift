@@ -21,4 +21,21 @@ public enum TemporaryUnblockOptions {
         }
         return Formatting.duration(seconds)
     }
+
+    /// The gray line under the form's pickers: "Opens at 3:42 PM, blocks again at 4:42 PM." once a window is chosen, and only "Opens at 3:42 PM." before that. The times are `startSeconds` (and then `windowSeconds` more) after `now`, written in the given calendar's time zone and the given locale.
+    public static func scheduleText(startSeconds: Int, windowSeconds: Int?, now: Date, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let opens = now.addingTimeInterval(TimeInterval(startSeconds))
+        guard let windowSeconds else { return "Opens \(clockPhrase(opens, now: now, calendar: calendar, locale: locale))." }
+        let closes = opens.addingTimeInterval(TimeInterval(windowSeconds))
+        return "Opens \(clockPhrase(opens, now: now, calendar: calendar, locale: locale)), blocks again \(clockPhrase(closes, now: now, calendar: calendar, locale: locale))."
+    }
+
+    /// Words for a moment in time: "at 3:42 PM" on the same day as `now`, "tomorrow at 3:42 PM" on the next day, and the weekday and date after that ("Tue, Oct 21 at 3:42 PM"). "Same day" is judged in the calendar's time zone, so a time just after midnight counts as tomorrow.
+    public static func clockPhrase(_ date: Date, now: Date, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        let time = date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar, timeZone: calendar.timeZone))
+        if calendar.isDate(date, inSameDayAs: now) { return "at \(time)" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) { return "tomorrow at \(time)" }
+        let day = date.formatted(Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone).weekday(.abbreviated).month(.abbreviated).day())
+        return "\(day) at \(time)"
+    }
 }

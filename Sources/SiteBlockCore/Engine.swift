@@ -278,11 +278,7 @@ public final class Engine {
         if let index = state.blocked.firstIndex(where: { $0.domain == domain }) {
             // Re-adding a site that is waiting to unblock, or that has a temporary unblock, is a way to say "keep it blocked". Neither needs a password, because it only makes things stricter.
             let target = Target(isRule: false, index: index, name: domain)
-            if pendingUnblock(of: target) != nil {
-                clearPendingUnblock(of: target)
-                return success("Unblock cancelled; \(domain) stays blocked.")
-            }
-            if let message = cancelTemporaryUnblock(of: target) { return success(message) }
+            if let message = clearEveryUnblock(of: target) { return success(message) }
             throw reject(.alreadyBlocked, "\(domain) is already blocked.")
         }
         // Every block must be undoable later, so blocking needs a password to exist. The check comes after the existing-site case so cancelling a pending unblock never needs one.
@@ -322,6 +318,14 @@ public final class Engine {
         return try cancelAnyUnblock(of: Target(isRule: false, index: index, name: domain))
     }
 
+    /// The shared body of `add` and `addPath` for an entry that is already blocked: clears every unblock it holds and returns the reply, or nil when it holds none. An entry holding both kinds at once (only a hand-edited file can hold that) has both cleared, so re-adding always leaves it plainly blocked; the reply then speaks about the permanent unblock, and the temporary one still reports its own event.
+    private func clearEveryUnblock(of target: Target) -> String? {
+        let hadPending = pendingUnblock(of: target) != nil
+        if hadPending { clearPendingUnblock(of: target) }
+        let temporaryMessage = cancelTemporaryUnblock(of: target)
+        return hadPending ? "Unblock cancelled; \(target.name) stays blocked." : temporaryMessage
+    }
+
     /// The shared body of cancelUnblock and cancelUnblockPath. A pending unblock is cleared first, as it always was. Otherwise a temporary unblock is ended, and when there is neither the request fails with nothingPending.
     private func cancelAnyUnblock(of target: Target) throws -> Response {
         if pendingUnblock(of: target) != nil {
@@ -357,11 +361,7 @@ public final class Engine {
         if let index = pathRuleIndex(rule) {
             // Like `add`: re-adding a rule that is waiting to unblock, or that has a temporary unblock, keeps it blocked, with no password.
             let target = Target(isRule: true, index: index, name: text)
-            if pendingUnblock(of: target) != nil {
-                clearPendingUnblock(of: target)
-                return success("Unblock cancelled; \(text) stays blocked.")
-            }
-            if let message = cancelTemporaryUnblock(of: target) { return success(message) }
+            if let message = clearEveryUnblock(of: target) { return success(message) }
             throw reject(.alreadyBlocked, "\(text) is already blocked.")
         }
         // The same two checks as `add`: every block must be undoable later, and the cap counts sites and rules together.

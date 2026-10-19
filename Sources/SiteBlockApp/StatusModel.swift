@@ -339,13 +339,9 @@ final class StatusModel: ObservableObject {
         snapshot = status
         snapshotInstant = arrivedAt
         // Every applied snapshot carries the full list of path rules (including those waiting to unblock, which are still blocked), so the watcher always works from the daemon's latest list. An identical answer has the same rules, so skipping it above loses nothing.
-        tabWatcher?.setRules(Self.watchedRules(in: status))
+        tabWatcher?.setRules(status.watchedPathRules)
     }
 
-    /// The path rules of a status snapshot, in the form the tab watcher compares tab addresses with. A rule whose temporary unblock is open is left out, because it is allowed right now and the watcher must not reload tabs on it; it comes back in the list the moment the window ends. A rule that is still waiting to open stays in. An old daemon that reports no path rules gives an empty list.
-    private static func watchedRules(in status: StatusSnapshot) -> [WatchedPathRule] {
-        (status.blockedPaths ?? []).filter { $0.temporaryUnblock?.isOpen != true }.map { WatchedPathRule(domain: $0.domain, path: $0.path) }
-    }
 
     /// Stores the browsers that refused permission, publishing only when the list actually changed so the panel does not redraw for nothing.
     private func updateDeniedBrowserNames(_ names: [String]) {

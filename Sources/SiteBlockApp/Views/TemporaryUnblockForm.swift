@@ -98,21 +98,9 @@ struct TemporaryUnblockForm: View {
         }
     }
 
-    /// The sentence for `scheduleLine`, worked out from `now`.
+    /// The sentence for `scheduleLine`, worked out from `now` (see `TemporaryUnblockOptions.scheduleText`).
     private func scheduleText(now: Date) -> String {
-        let opens = now.addingTimeInterval(TimeInterval(startSeconds))
-        guard let windowSeconds else { return "Opens \(clockPhrase(opens, now: now))." }
-        let closes = opens.addingTimeInterval(TimeInterval(windowSeconds))
-        return "Opens \(clockPhrase(opens, now: now)), blocks again \(clockPhrase(closes, now: now))."
-    }
-
-    /// Words for a moment in time: "at 3:42 PM" for today, "tomorrow at 3:42 PM" for tomorrow, and the weekday and date after that ("Tue, Oct 21 at 3:42 PM").
-    private func clockPhrase(_ date: Date, now: Date) -> String {
-        let time = date.formatted(date: .omitted, time: .shortened)
-        let calendar = Calendar.current
-        if calendar.isDate(date, inSameDayAs: now) { return "at \(time)" }
-        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) { return "tomorrow at \(time)" }
-        return "\(date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) at \(time)"
+        TemporaryUnblockOptions.scheduleText(startSeconds: startSeconds, windowSeconds: windowSeconds, now: now)
     }
 
     /// Sends the choice. The password field is emptied first, so the password is never left on screen whether the daemon accepts the request or not; after a refusal the form stays open with everything else kept, and the cursor goes to the password field.

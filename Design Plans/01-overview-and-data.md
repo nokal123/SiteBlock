@@ -283,6 +283,6 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Watchdog check: every 5 seconds.
 - Tab watcher check: every 0.5 seconds, and only while a path rule exists and Chrome, Edge or Brave is running.
 - Recheck of a refused Automation permission: at most every 10 seconds per browser.
-- State is saved to disk after every command and at least every 15 seconds while any countdown is running. A temporary unblock counts as a running countdown from the moment it is scheduled until it ends, and the state is also saved at once when it opens and when it ends.
+- State is saved to disk after every command that changes it, and at least every 15 seconds while any countdown is running, so a crash loses at most 15 seconds of countdown progress. A temporary unblock counts as a running countdown from the moment it is scheduled until it ends, and the state is also saved at once when it opens and when it ends.
 
 Sandbox mode (used by tests, see [04-infrastructure.md](04-infrastructure.md) § Sandbox Mode) can lower the delay floor, the recovery wait, the lockout length, the shortest temporary unblock window and the tick interval.
