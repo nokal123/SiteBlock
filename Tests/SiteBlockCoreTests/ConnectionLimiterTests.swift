@@ -313,7 +313,8 @@ private func fillNonRoot(_ limiter: ConnectionLimiter, total: Int, firstUID: uid
         let group = DispatchGroup()
         for worker in 0..<8 {
             group.enter()
-            DispatchQueue.global().async {
+            // Each worker gets its own thread rather than a slot in the shared dispatch pool. The other tests run in parallel and many of them block pool threads while they wait (for a sandbox daemon, for example); on a small machine such as GitHub's runners the pool filled up, the workers never started, and this test timed out although the limiter was fine.
+            Thread {
                 defer { group.leave() }
                 var rng = SeededGenerator(state: UInt64(worker) &+ 1)
                 var held: [uid_t] = []
@@ -336,7 +337,7 @@ private func fillNonRoot(_ limiter: ConnectionLimiter, total: Int, firstUID: uid
                     live.releasing(uid)
                     limiter.release(uid: uid)
                 }
-            }
+            }.start()
         }
         // A limiter without its lock can corrupt its own dictionary and then spin forever. Waiting with a limit turns that into a failure
         // that names the cause, instead of a test run that never ends (a correct limiter finishes this in well under a second).
