@@ -328,7 +328,7 @@ private enum UpdateWork {
         return staging
     }
 
-    /// Shows the macOS password prompt and starts the installer as root, detached. Nothing the person's account can write is trusted after the password. The root command first copies the staged zip into a new root-owned folder (`mktemp -d`, mode 700) and removes the staging folder. In that folder it recomputes the zip's SHA-256 and compares it with the expected one, unzips it, checks the layout and runs `codesign --verify --strict` on the three programs. Only then does it start `install.sh` from that folder in the background with `nohup` and return at once. The installer is detached because it stops and replaces this very app: a shell that was a child of the app would end with it, and the install would stop half done. The background shell removes the root folder when the installer ends and writes `SITEBLOCK-UPDATE-EXIT <token> <exit code>` as the last line of the log. Throws `cancelled` when the person cancels the prompt, and `checksFailed` when a root-side check fails.
+    /// Shows the macOS password prompt and starts the installer as root, detached. Nothing the person's account can write is trusted after the password. The root command first copies the staged zip into a new root-owned folder (`mktemp -d`, mode 700) and removes the staging folder. In that folder it recomputes the zip's SHA-256 and compares it with the expected one, unzips it, checks the layout and runs `codesign --verify --strict` on the three programs. Only then does it start `install.sh` from that folder in a background shell that ignores the hang-up signal, and return at once. It does not use `nohup`: under the password prompt there is no terminal, and macOS's `nohup` then refuses to start ("can't detach from console"), so the installer would never run. The installer is detached because it stops and replaces this very app: a shell that was a child of the app would end with it, and the install would stop half done. The background shell removes the root folder when the installer ends and writes `SITEBLOCK-UPDATE-EXIT <token> <exit code>` as the last line of the log. Throws `cancelled` when the person cancels the prompt, and `checksFailed` when a root-side check fails.
     static func startInstaller(staging: URL, expectedSHA256: String, version: String, token: String) throws {
         // The checksum goes into a shell command, so it must be exactly 64 lowercase hex characters before it gets anywhere near one.
         guard expectedSHA256.utf8.count == 64, expectedSHA256.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) else { throw UpdateStepError.checksFailed }
@@ -354,7 +354,7 @@ private enum UpdateWork {
         for p in \(folders); do if [ ! -d "$unz/$p" ] || [ -L "$unz/$p" ]; then exit 3; fi; done
         for p in \(files); do if [ ! -f "$unz/$p" ] || [ -L "$unz/$p" ]; then exit 3; fi; done
         for p in \(programs); do /usr/bin/codesign --verify --strict "$unz/$p" >/dev/null 2>&1 || exit 3; done
-        /usr/bin/nohup /bin/bash -c "$4" _ "$root" "$3" > \(logPath) 2>&1 < /dev/null &
+        /bin/bash -c "trap '' HUP; $4" _ "$root" "$3" > \(logPath) 2>&1 < /dev/null &
         root=""
         exit 0
         """
