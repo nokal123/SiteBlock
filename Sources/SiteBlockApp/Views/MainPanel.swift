@@ -11,6 +11,8 @@ struct MainPanel: View {
             // Changing the id when the panel closes makes SwiftUI discard the screen's state, which empties any password that was typed and closes forms and Settings.
             .id(model.closeCount)
             .frame(width: 440)
+            // Every screen fills the whole panel from the top. The panel window keeps the size the home screen gave it, so a shorter screen (Settings) would otherwise sit at the bottom of the window and leave an empty, see-through strip under the menu bar; Settings' scroll area stretches to fill the height instead.
+            .frame(maxHeight: .infinity, alignment: .top)
             .background(WindowVisibilityObserver { model.panelVisibilityChanged($0) })
     }
 }
