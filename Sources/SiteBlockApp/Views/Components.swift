@@ -188,6 +188,8 @@ struct WindowVisibilityObserver: NSViewRepresentable {
         var onChange: (Bool) -> Void
         /// The notification subscriptions, kept so they can be removed.
         private var tokens: [NSObjectProtocol] = []
+        /// Where the panel's top edge sat when it opened, just under the menu bar, or nil while it is closed. It is used to put the top edge back after the panel changes size.
+        private var topEdge: CGFloat?
 
         /// Creates the view with the callback to use.
         init(onChange: @escaping (Bool) -> Void) {
@@ -221,8 +223,26 @@ struct WindowVisibilityObserver: NSViewRepresentable {
                 center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.report() }
             }
             // A menu bar panel closes the moment it stops being the key window (a click anywhere else). Treating that as "hidden" at once means typed passwords are discarded even if the window's own visibility flags lag behind.
-            tokens.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in self?.onChange(false) })
+            tokens.append(center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                self?.topEdge = nil
+                self?.onChange(false)
+            })
+            // The panel's top edge is remembered when it opens, and put back whenever it changes size (see keepTopEdge).
+            tokens.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                self?.topEdge = window.frame.maxY
+            })
+            tokens.append(center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                self?.keepTopEdge(of: window)
+            })
             report()
+        }
+
+        /// Moves the panel back up after it changed size, so its top edge stays just under the menu bar. macOS keeps a resized window's bottom edge where it was, so without this a panel that gets shorter (going from the home screen to Settings, for example) slides down and leaves a gap below the menu bar. Moving the window does not resize it, so this never triggers itself again.
+        private func keepTopEdge(of window: NSWindow) {
+            guard let topEdge, abs(window.frame.maxY - topEdge) > 0.5 else { return }
+            window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: topEdge))
         }
 
         /// Tells the callback whether the window is currently showing.

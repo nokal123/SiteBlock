@@ -78,6 +78,20 @@ private let brokenFields: [BrokenFile] = {
 
 @Suite("UpdateCheck constants and parse") struct UpdateCheckParseTests {
     // 02 § UpdateCheck: the two links are written into the code and are exactly these addresses.
+    // 02 § UpdateCheck: an optional displayVersion (the version people see, such as 1.2.0) is kept when it is three short numbers, and the banner shows it; a file without it shows `version`.
+    @Test func aDisplayVersionIsKeptAndShown() throws {
+        let info = try #require(UpdateCheck.parse(Data(versionJSON(["displayVersion": jsonString("1.2.0")]).utf8)))
+        #expect(info.displayVersion == "1.2.0" && info.shownVersion == "1.2.0")
+        let without = try #require(UpdateCheck.parse(Data(versionJSON([:]).utf8)))
+        #expect(without.displayVersion == nil && without.shownVersion == without.version)
+    }
+
+    // 02 § UpdateCheck: a displayVersion that is not three numbers of one to four digits makes the whole file unusable, so the banner never shows odd text.
+    @Test(arguments: ["", "1.2", "1.2.0.1", "v1.2.0", "1.2.x", "1..0", "12345.0.0", "1.2.0 ", "<b>1.2.0</b>"])
+    func aMalformedDisplayVersionIsRejected(_ shown: String) {
+        #expect(UpdateCheck.parse(Data(versionJSON(["displayVersion": jsonString(shown)]).utf8)) == nil)
+    }
+
     @Test func theTwoLinksAreTheDocumentedGitHubAddresses() {
         #expect(UpdateCheck.versionURL.absoluteString == "https://github.com/nokal123/SiteBlock/releases/latest/download/version.json")
         #expect(UpdateCheck.packageURL.absoluteString == "https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip")

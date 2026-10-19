@@ -162,14 +162,15 @@ struct WriteBuildNumberScriptTests {
         #expect(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "Sources/SiteBlockCore/BuildNumber.swift")
     }
 
-    // 04 § Version Numbers: "Every program shows the version 1.0.<build>, where <build> is the number of commits". The programs built from this checkout (by scripts/test.sh, which runs the script first) show the checkout's commit count.
+    // 04 § Version Numbers: the build number is the number of commits; programs show "<version> (build <number>)", and version.json's technical id is 1.0.<build>. The programs built from this checkout (by scripts/test.sh, which runs the script first) show the checkout's commit count.
     @Test func theBuiltDaemonAndTheLibraryShowTheCheckoutsCommitCount() throws {
         let count = try git(repositoryRoot, ["rev-list", "--count", "HEAD"])
-        #expect(siteBlockVersion == "1.0." + count, "the library says \(siteBlockVersion); run scripts/write-build-number.sh and rebuild")
-        #expect(siteBlockBuildNumber == Int(count))
+        #expect(siteBlockBuildNumber == Int(count), "run scripts/write-build-number.sh and rebuild")
+        #expect(siteBlockBuildID == "1.0." + count)
+        #expect(siteBlockVersion == "\(siteBlockMarketingVersion) (build \(count))")
         let version = try runDaemonProgram(["--version"])
         #expect(version.status == 0)
-        #expect(version.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "siteblockd 1.0." + count, "got: \(version.stdout)")
+        #expect(version.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "siteblockd \(siteBlockVersion)", "got: \(version.stdout)")
     }
 }
 
@@ -190,7 +191,7 @@ private struct PackageRun {
     mkdir -p build/SiteBlock.app/Contents/MacOS
     # A tiny program compiled together with THIS tree's generated BuildNumber.swift (package.sh has just written it), so the version it prints is the tree's own, as the real daemon's is.
     mkdir -p "$TMPDIR_STANDIN"
-    printf 'print("siteblockd 1.0.\\(siteBlockBuildNumber)")\\n' > "$TMPDIR_STANDIN/main.swift"
+    printf 'print("siteblockd 1.2.0 (build \\(siteBlockBuildNumber))")\\n' > "$TMPDIR_STANDIN/main.swift"
     swiftc -module-cache-path "$TMPDIR_STANDIN/cache" -o build/siteblockd "$TMPDIR_STANDIN/main.swift" Sources/SiteBlockCore/BuildNumber.swift
     cp build/siteblockd build/siteblock
     cp build/siteblockd build/SiteBlock.app/Contents/MacOS/SiteBlock
@@ -238,12 +239,14 @@ struct PackageScriptTests {
         #expect(listing == ["SiteBlock.zip", "version.json"], "dist holds: \(listing)")
     }
 
-    // 04: version.json has the five fields `version` (text), `build` (a number), `commit`, `asset` and `sha256` (text), and no others.
-    @Test func versionJsonHasExactlyTheFiveDocumentedFieldsWithTheDocumentedTypes() throws {
+    // 04: version.json has the six fields `version` (the technical id 1.0.<build>), `build` (a number), `displayVersion` (the version people see, from the daemon), `commit`, `asset` and `sha256` (text), and no others.
+    @Test func versionJsonHasExactlyTheSixDocumentedFieldsWithTheDocumentedTypes() throws {
         let run = try gitPackage.get()
         let object = try #require(run.versionObject, "version.json is not a JSON object")
-        #expect(Set(object.keys) == ["version", "build", "commit", "asset", "sha256"])
-        #expect(object["version"] is String && object["commit"] is String && object["asset"] is String && object["sha256"] is String)
+        #expect(Set(object.keys) == ["version", "build", "displayVersion", "commit", "asset", "sha256"])
+        #expect(object["version"] is String && object["displayVersion"] is String && object["commit"] is String && object["asset"] is String && object["sha256"] is String)
+        // The stand-in daemon in these tests prints 1.2.0, so that is what package.sh must copy into displayVersion.
+        #expect(object["displayVersion"] as? String == "1.2.0")
         let build = try #require(object["build"] as? NSNumber, "build is not a number")
         #expect(CFGetTypeID(build) != CFBooleanGetTypeID(), "build is a boolean")
         #expect(object["asset"] as? String == "SiteBlock.zip")
@@ -268,7 +271,9 @@ struct PackageScriptTests {
         #expect(info.commit == (try git(run.tree.root, ["rev-parse", "HEAD"])))
         #expect(info.asset == "SiteBlock.zip")
         let daemon = try runProgram(run.tree.root + "/build/siteblockd", ["--version"])
-        #expect(daemon.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "siteblockd " + info.version, "daemon says: \(daemon.stdout)")
+        // version.json's displayVersion is the daemon's own version and `version` is the technical id 1.0.<build>.
+        #expect(daemon.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "siteblockd \(info.displayVersion ?? "") (build \(info.build))", "daemon says: \(daemon.stdout)")
+        #expect(info.version == "1.0.\(info.build)")
     }
 
     // 04: the zip holds one `SiteBlock` folder with build/, scripts/install.sh, scripts/verify-install.sh, Install SiteBlock.command and INSTALL.txt, and it is a valid zip.

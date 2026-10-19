@@ -114,7 +114,7 @@
 - Implementation steps → [Tasks/TASKS-08-temporary-unblock.md](Tasks/TASKS-08-temporary-unblock.md)
 
 ### Versions and Updates
-- The version `1.0.<build>` and how the build number is made → [04-infrastructure.md](04-infrastructure.md) § Version Numbers
+- The version people see (`1.2.0`, series plus a count that starts again at `.0`), the build number, how the build number is made → [04-infrastructure.md](04-infrastructure.md) § Version Numbers
 - The generated `BuildNumber.swift` and `siteBlockVersion` → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, [02-core-components.md](02-core-components.md) § Models and Protocol Types (Version constants)
 - What GitHub publishes (`SiteBlock.zip`, `version.json`, the fixed download links) → [04-infrastructure.md](04-infrastructure.md) § Packaging for Another Mac, § Automatic Package Builds
 - Why the workflow checks out the full history → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, § Automatic Package Builds

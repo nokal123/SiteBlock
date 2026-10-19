@@ -13,14 +13,19 @@ public struct UpdateInfo: Codable, Equatable, Sendable {
     public let asset: String
     /// The SHA-256 checksum of the package as 64 lowercase hex characters.
     public let sha256: String
+    /// The version number people see, for example 1.2.0, or nil in a version.json written before it existed. The banner shows it in place of `version`.
+    public let displayVersion: String?
+    /// What to show people: `displayVersion` when the file has one, otherwise `version`.
+    public var shownVersion: String { displayVersion ?? version }
 
     /// Creates the info from its five fields. It does not check them; `UpdateCheck.parse` does.
-    public init(version: String, build: Int, commit: String, asset: String, sha256: String) {
+    public init(version: String, build: Int, commit: String, asset: String, sha256: String, displayVersion: String? = nil) {
         self.version = version
         self.build = build
         self.commit = commit
         self.asset = asset
         self.sha256 = sha256
+        self.displayVersion = displayVersion
     }
 }
 
@@ -38,6 +43,8 @@ public enum UpdateCheck {
     public static func parse(_ data: Data) -> UpdateInfo? {
         guard let info = try? JSONDecoder().decode(UpdateInfo.self, from: data) else { return nil }
         guard info.build > 0, info.version == "1.0.\(info.build)", info.asset == packageName else { return nil }
+        // A display version, when present, must look like 1.2.0 (three short numbers), so the banner never shows odd text.
+        if let shown = info.displayVersion, !isDottedVersion(shown) { return nil }
         guard isLowercaseHex(info.sha256, length: 64), isLowercaseHex(info.commit, length: 40) else { return nil }
         return info
     }
@@ -60,6 +67,12 @@ public enum UpdateCheck {
         }
         let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         return actual == expected.lowercased()
+    }
+
+    /// True when the text is three numbers of one to four digits joined by dots, such as 1.2.0.
+    private static func isDottedVersion(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts.allSatisfy { (1...4).contains($0.utf8.count) && $0.utf8.allSatisfy { $0 >= 0x30 && $0 <= 0x39 } }
     }
 
     /// True when the text is exactly `length` characters, each a digit or a lowercase letter a to f. It looks at the raw UTF-8 bytes, so look-alike characters from other scripts never pass.

@@ -78,7 +78,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="$(jq -r .version dist/version.json)"
+          VERSION="$(jq -r '.displayVersion // .version' dist/version.json)"
           gh release delete latest --cleanup-tag --yes 2>/dev/null || true
           gh release create latest dist/SiteBlock.zip dist/version.json \
             --target "${{ github.sha }}" \

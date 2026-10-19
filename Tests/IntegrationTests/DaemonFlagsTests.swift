@@ -85,6 +85,12 @@ struct DaemonFlagsTests {
         #expect(!result.stderr.isEmpty, "the reason goes to standard error")
     }
 
+    // The text after "<name> " on the first line of a program's output, or nil when the line does not start with it.
+    private static func afterName(_ output: String, _ name: String) -> String? {
+        let line = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.hasPrefix(name + " ") ? String(line.dropFirst(name.count + 1)) : nil
+    }
+
     // 03 § siteblockd Entry Point: --version prints the version and exits; the daemon, the CLI and a running daemon's status all report the same version string.
     @Test func versionStringsAgreeAcrossTheDaemonTheCLIAndAStatusReply() throws {
         try withDaemon { daemon in
@@ -92,8 +98,9 @@ struct DaemonFlagsTests {
             let cli = try runCLI(["version"], socket: daemon.socketPath)
             #expect(daemonProgram.status == 0 && cli.status == 0)
             let status = try daemon.status()
-            let fromDaemon = daemonProgram.stdout.split(whereSeparator: \.isWhitespace).last.map(String.init)
-            let fromCLI = cli.stdout.split(whereSeparator: \.isWhitespace).last.map(String.init)
+            // The version string has spaces in it ("1.2.0 (build 51)"), so it is everything after the program's name, not the last word.
+            let fromDaemon = Self.afterName(daemonProgram.stdout, "siteblockd")
+            let fromCLI = Self.afterName(cli.stdout, "siteblock")
             #expect(!status.version.isEmpty)
             #expect(fromDaemon == status.version, "siteblockd --version printed \(daemonProgram.stdout)")
             #expect(fromCLI == status.version, "siteblock version printed \(cli.stdout)")

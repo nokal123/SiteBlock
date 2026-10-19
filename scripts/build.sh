@@ -34,20 +34,22 @@ for product in siteblockd siteblock SiteBlockApp; do
     fi
 done
 
-# The version comes from the built daemon, so the code has the only copy of the version number. It is 1.0.<build>,
-# where <build> is the commit count, and the app's Info.plist gets the same two values.
-VERSION="$("$BIN_DIR/siteblockd" --version | awk '{print $2}')"
-if [[ ! "$VERSION" =~ ^1\.0\.[0-9]+$ ]]; then
-    echo "error: could not read the version (1.0.<build>) from siteblockd --version; got: '$VERSION'" >&2
+# The version (set by hand in Models.swift, for example 1.2.0) and the build number (the commit count) come from the
+# built daemon, so the code has the only copy of both, and the app's Info.plist gets the same two values.
+VERSION_LINE="$("$BIN_DIR/siteblockd" --version)"
+# The daemon prints "siteblockd <version> (build <number>)", for example "siteblockd 1.2.0 (build 52)".
+if [[ ! "$VERSION_LINE" =~ ^siteblockd\ ([0-9]+\.[0-9]+\.[0-9]+)\ \(build\ ([0-9]+)\)$ ]]; then
+    echo "error: could not read the version from siteblockd --version; got: '$VERSION_LINE'" >&2
     exit 1
 fi
-BUILD="${VERSION##*.}"
+VERSION="${BASH_REMATCH[1]}"
+BUILD="${BASH_REMATCH[2]}"
 
 # Start from a clean output folder, so nothing stale from an earlier build is left behind.
 rm -rf "$OUT"
 mkdir -p "$OUT/SiteBlock.app/Contents/MacOS"
 
-# Assemble the app bundle: the program, and the Info.plist template with the version (1.0.<build>) and the build number filled in.
+# Assemble the app bundle: the program, and the Info.plist template with the version (for example 1.2.0) and the build number filled in.
 # The template already holds the bundle identifier (com.nokal.siteblock.app), the name and executable name (SiteBlock),
 # LSUIElement true (no Dock icon) and LSMinimumSystemVersion 14.0.
 cp "$BIN_DIR/SiteBlockApp" "$OUT/SiteBlock.app/Contents/MacOS/SiteBlock"

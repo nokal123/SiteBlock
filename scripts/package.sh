@@ -24,14 +24,15 @@ scripts/write-build-number.sh
 # Build fresh release programs, so the package never ships stale ones.
 scripts/build.sh
 
-# The version comes from the daemon itself, so version.json and INSTALL.txt always match what is inside. The build
-# number is the last part of 1.0.<build>.
-VERSION="$(build/siteblockd --version | awk '{print $NF}')"
-if [[ ! "$VERSION" =~ ^1\.0\.[0-9]+$ ]]; then
-    echo "error: could not read the version (1.0.<build>) from build/siteblockd --version; got: '$VERSION'" >&2
+# The version and the build number come from the daemon itself, so version.json and INSTALL.txt always match what is inside.
+VERSION_LINE="$(build/siteblockd --version)"
+# The daemon prints "siteblockd <version> (build <number>)", for example "siteblockd 1.2.0 (build 52)".
+if [[ ! "$VERSION_LINE" =~ ^siteblockd\ ([0-9]+\.[0-9]+\.[0-9]+)\ \(build\ ([0-9]+)\)$ ]]; then
+    echo "error: could not read the version from siteblockd --version; got: '$VERSION_LINE'" >&2
     exit 1
 fi
-BUILD="${VERSION##*.}"
+VERSION="${BASH_REMATCH[1]}"
+BUILD="${BASH_REMATCH[2]}"
 DIST="dist"
 STAGE="$DIST/SiteBlock"
 ZIP="$DIST/SiteBlock.zip"
@@ -146,9 +147,11 @@ if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
     COMMIT="0000000000000000000000000000000000000000"
 fi
 SHA256="$(shasum -a 256 "$ZIP" | awk '{print tolower($1)}')"
-printf '{\n  "version": "%s",\n  "build": %s,\n  "commit": "%s",\n  "asset": "SiteBlock.zip",\n  "sha256": "%s"\n}\n' "$VERSION" "$BUILD" "$COMMIT" "$SHA256" > "$VERSION_JSON"
+# "version" stays the technical id 1.0.<build>, because copies of SiteBlock older than 1.2.0 accept an update only when it
+# reads exactly so; "displayVersion" is the number people see (for example 1.2.0), which newer copies show in the banner.
+printf '{\n  "version": "1.0.%s",\n  "build": %s,\n  "displayVersion": "%s",\n  "commit": "%s",\n  "asset": "SiteBlock.zip",\n  "sha256": "%s"\n}\n' "$BUILD" "$BUILD" "$VERSION" "$COMMIT" "$SHA256" > "$VERSION_JSON"
 
 echo
 echo "Package ready: $(pwd)/$ZIP ($(du -h "$ZIP" | cut -f1 | tr -d ' '))"
-echo "Version file: $(pwd)/$VERSION_JSON (version $VERSION, sha256 $SHA256)"
+echo "Version file: $(pwd)/$VERSION_JSON (version $VERSION, build $BUILD, sha256 $SHA256)"
 echo "Send the zip to the other Mac and follow INSTALL.txt inside it."

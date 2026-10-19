@@ -87,7 +87,7 @@ struct BannersView: View {
     private func updateBanner(_ info: UpdateInfo) -> some View {
         let updater = model.updater
         return BannerCard(icon: "arrow.down.circle.fill", tint: .blue) {
-            Text("SiteBlock \(info.version) is available.")
+            Text("SiteBlock \(info.shownVersion) is available.")
             if let step = Self.stepText(updater.phase) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

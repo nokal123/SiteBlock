@@ -197,7 +197,7 @@ The test passes when steps 4 to 7 behave as described.
 - [ ] `siteblock unblock <site> --for <duration> --in <duration>` and `siteblock status` work as described in [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI.
 - [ ] With a path rule whose temporary unblock is open, the tab watcher reloads no tab on that part of the site, and it watches the rule again after the window ends.
 - [ ] Rebooting keeps every block and countdown, including the remaining times of a temporary unblock.
-- [ ] Every program shows the version `1.0.<build>`, where `<build>` is the number of commits, and `scripts/write-build-number.sh` writes 0 outside a git checkout.
+- [ ] Every program shows the version `<series>.<n> (build <build>)`, where `<build>` is the number of commits, and `scripts/write-build-number.sh` writes 0 outside a git checkout.
 - [ ] `scripts/package.sh` writes `SiteBlock.zip` and a `version.json` whose `sha256` matches the zip and which `UpdateCheck.parse` accepts.
 - [ ] The menu bar app shows "SiteBlock <version> is available." with "Update" and "Not now" only when the published build is newer than the installed one, and "Not now" hides it for that build until a newer one appears.
 - [ ] "Update" downloads, checks the checksum and the signatures, and installs only after the Mac password is typed. A package that fails a check is never installed and no password prompt appears.

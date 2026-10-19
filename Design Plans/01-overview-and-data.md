@@ -234,7 +234,7 @@ The CLI and the app talk to the daemon over the Unix domain socket (a file-syste
 
 ### StatusSnapshot
 
-- `version: String` — the daemon's version string, in the form `1.0.<build>`, where `<build>` is the number of commits the programs were built from (see [04-infrastructure.md](04-infrastructure.md) § Version Numbers).
+- `version: String` — the daemon's version string, in the form `<version> (build <n>)`, for example `1.2.0 (build 51)`, where `<build>` is the number of commits the programs were built from (see [04-infrastructure.md](04-infrastructure.md) § Version Numbers).
 - `passwordSet: Bool`
 - `blocked: [BlockedSiteStatus]` — each with `domain`, `hosts`, `unblockSecondsRemaining: Int?` and `temporaryUnblock: TemporaryUnblockStatus?`.
 - `delaySeconds: Int`
@@ -295,7 +295,7 @@ Commands that make the Mac stricter never need a password. Commands that loosen 
 - Watchdog check: every 5 seconds.
 - Tab watcher check: every 0.5 seconds, and only while a path rule exists and Chrome, Edge or Brave is running.
 - Recheck of a refused Automation permission: at most every 10 seconds per browser.
-- Version string: `1.0.<build>`, where `<build>` is the number of commits on the checked-out branch when the programs were built, or 0 when git was not available.
+- Version string: `<series>.<n> (build <build>)`, for example `1.2.0 (build 51)` (see [04-infrastructure.md](04-infrastructure.md) § Version Numbers), where `<build>` is the number of commits on the checked-out branch when the programs were built, or 0 when git was not available.
 - Update check: the first check 60 seconds after the app starts, then one every 24 hours, and one whenever the person presses "Check for updates" in Settings. A check waits at most 15 seconds for GitHub, and a package download waits at most 5 minutes.
 - State is saved to disk after every command that changes it, and at least every `saveIntervalSeconds` while any countdown is running (15 seconds in `Policy.production`, 2 seconds in `Policy.fastForTests`), so a crash loses at most 15 seconds of countdown progress in the installed service. A temporary unblock counts as a running countdown from the moment it is scheduled until it ends, and the state is also saved at once when it opens and when it ends.
 

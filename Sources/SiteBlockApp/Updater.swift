@@ -190,13 +190,19 @@ final class Updater: ObservableObject {
         installTask = Task { await runInstall(info) }
     }
 
-    /// Runs the install steps in order: download, verify, copy to the staging folder, ask for the password and start the installer, then wait for it. Each step's file or network work runs off the main thread. Whatever happens, the temporary folders this app owns are removed.
-    private func runInstall(_ info: UpdateInfo) async {
+    /// Runs the install steps in order: read the version file again, download, verify, copy to the staging folder, ask for the password and start the installer, then wait for it. Each step's file or network work runs off the main thread. Whatever happens, the temporary folders this app owns are removed.
+    private func runInstall(_ offered: UpdateInfo) async {
         var downloadFolder: URL?
         var staging: URL?
         defer { installTask = nil }
         do {
             phase = .downloading
+            // The version file is read again right before the download. The download link always serves the newest release, so if a newer build was published since the banner appeared, the old checksum would not match the new zip and a good update would be refused. A fresh read that fails falls back to what the banner offered.
+            var info = offered
+            if let fresh = await Self.fetchVersionInfo(), UpdateCheck.isNewer(fresh, than: siteBlockBuildNumber) {
+                info = fresh
+                available = fresh
+            }
             let folder = try await Task.detached { try await UpdateWork.download() }.value
             downloadFolder = folder
 
@@ -211,7 +217,7 @@ final class Updater: ObservableObject {
 
             phase = .waitingForPassword
             let token = UUID().uuidString
-            try await Task.detached { try UpdateWork.startInstaller(staging: stagingFolder, expectedSHA256: info.sha256, version: info.version, token: token) }.value
+            try await Task.detached { try UpdateWork.startInstaller(staging: stagingFolder, expectedSHA256: info.sha256, version: info.shownVersion, token: token) }.value
             // The root command has copied the zip into its own folder and removed the staging folder.
             staging = nil
 

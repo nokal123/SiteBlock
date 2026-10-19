@@ -394,7 +394,7 @@ A line counts as a BEGIN marker when its trimmed text starts with `# BEGIN SiteB
 
 **Types:**
 - `public struct UpdateInfo: Codable, Equatable, Sendable` — what the published `version.json` says about the newest build. Its properties:
-  - `version: String` — the version text, in the form `1.0.<build>`.
+  - `version: String` — the technical id, in the form `1.0.<build>`; `displayVersion: String?` is the version people see, such as `1.2.0`, which the banner shows when present (`shownVersion`). A `displayVersion` that is not three numbers of one to four digits makes `parse` return nil.
   - `build: Int` — the build number, which is the number of commits the package was built from.
   - `commit: String` — the full hash of the commit the package was built from.
   - `asset: String` — the file name of the package, `SiteBlock.zip`.
