@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # The whole history, because the build number is the count of commits. A shallow checkout would count 1.
           fetch-depth: 0
@@ -74,7 +74,7 @@ jobs:
         run: scripts/package.sh
 
       - name: Keep the zip as a run artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: SiteBlock-package
           path: |
