@@ -33,8 +33,9 @@ concurrency:
 
 jobs:
   package:
-    # macos-15 runs on Apple Silicon (arm64), which is what SiteBlock is built for.
-    runs-on: macos-15
+    # macos-26 runs on Apple Silicon (arm64), which is what SiteBlock is built for, and has the macOS 26 SDK. The SDK an app is
+    # built with decides its look and layout on newer macOS, so building with an older SDK makes the panel look and behave differently.
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - name: Check out the code
@@ -48,6 +49,13 @@ jobs:
           sw_vers
           swift --version
           uname -m
+          xcrun --sdk macosx --show-sdk-version
+
+      # Stops before building when the macOS SDK is older than 26, so a package that looks different from the tested app is never published.
+      - name: Require the macOS 26 SDK
+        run: |
+          SDK="$(xcrun --sdk macosx --show-sdk-version)"
+          if [ "${SDK%%.*}" -lt 26 ]; then echo "::error title=Old SDK::The macOS SDK is $SDK; SiteBlock must be built with 26 or newer."; exit 1; fi
 
       # Runs the unit and integration tests. The integration tests start the real daemon in sandbox
       # mode (a temporary folder in place of /etc/hosts and the system folders), so they need no root.

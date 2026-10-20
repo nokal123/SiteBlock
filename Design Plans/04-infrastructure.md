@@ -219,7 +219,9 @@ Before zipping, the script checks every copied program with `codesign --verify -
 
 ## Automatic Package Builds
 
-`.github/workflows/package.yml` is a GitHub Actions workflow (a script GitHub runs on its own machines) that runs on every push to `master` that touches `Sources/`, `Resources/`, `scripts/`, `Package.swift`, `Install SiteBlock.command` or the workflow itself, and can also be started by hand from the repository's Actions tab. It runs on a `macos-15` runner (Apple Silicon), in this order:
+`.github/workflows/package.yml` is a GitHub Actions workflow (a script GitHub runs on its own machines) that runs on every push to `master` that touches `Sources/`, `Resources/`, `scripts/`, `Package.swift`, `Install SiteBlock.command` or the workflow itself, and can also be started by hand from the repository's Actions tab. It runs on a `macos-26` runner (Apple Silicon), in this order:
+
+**SDK:** the package is built with the macOS 26 SDK, the same as local builds. The SDK an app is built with decides its look and layout on newer macOS, so a package built with the macOS 15 SDK looked and laid out differently from the tested app. A workflow step stops the run before building when `xcrun --sdk macosx --show-sdk-version` is below 26.
 
 1. Check out the code with its full history (`fetch-depth: 0`), so the commit count, and with it the build number, is the same as on a Mac that holds the whole repository. Print the macOS and Swift versions.
 2. Run `scripts/test.sh` (with Xcode present it runs plain `swift test`). A failing test stops the run, so a broken package is never published. The step also turns each failed test line into a GitHub error annotation (a red message attached to the run), up to the first 20. A failed test line is a line of the test output that contains `✘`. GitHub shows annotations on the public run page, while the full log can be read only by someone logged in to GitHub, so the failing test names are readable without logging in.
