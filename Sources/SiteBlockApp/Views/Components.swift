@@ -248,3 +248,42 @@ struct WindowVisibilityObserver: NSViewRepresentable {
         }
     }
 }
+
+/// Makes the scroll area it sits in use the thin overlay scroll bar (no track) and draw no background of its own, so the see-through panel shows through where the scroll bar is. macOS picks the scroll bar style from its "Show scroll bars" setting; with a mouse connected that is the older style with a solid track, which showed as an opaque strip down the right edge of the glass panel. The style is set again whenever macOS changes its preferred style. Place it as a background inside the scroll area's content.
+struct OverlayScrollBars: NSViewRepresentable {
+    /// Creates the invisible view that finds the scroll area around it.
+    func makeNSView(context: Context) -> FinderView { FinderView() }
+
+    /// Applies the style again whenever SwiftUI updates the view.
+    func updateNSView(_ view: FinderView, context: Context) { view.apply() }
+
+    /// An empty AppKit view whose only job is to reach the scroll area that contains it.
+    final class FinderView: NSView {
+        /// The subscription to macOS changing its preferred scroll bar style.
+        private var token: NSObjectProtocol?
+
+        /// Applies the style once the view is on screen, and starts listening for style changes.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+            if token == nil {
+                token = NotificationCenter.default.addObserver(forName: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.apply() }
+            }
+        }
+
+        /// Stops listening when the view goes away.
+        deinit {
+            if let token { NotificationCenter.default.removeObserver(token) }
+        }
+
+        /// Sets the overlay scroll bar and no background on the enclosing scroll area. It runs after the current layout pass, because SwiftUI may set the style itself while laying out.
+        func apply() {
+            DispatchQueue.main.async { [weak self] in
+                guard let scrollView = self?.enclosingScrollView else { return }
+                if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
+                scrollView.drawsBackground = false
+            }
+        }
+    }
+}
+

@@ -52,6 +52,8 @@ struct SettingsView: View {
                     uninstallSection
                 }
                 .padding(16)
+                // The thin scroll bar with no track, so the see-through panel shows through it too.
+                .background(OverlayScrollBars())
             }
             .frame(maxHeight: Self.maxFormHeight)
             .scrollBounceBehavior(.basedOnSize)

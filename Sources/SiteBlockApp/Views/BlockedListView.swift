@@ -47,6 +47,8 @@ struct BlockedListView: View {
                             BlockedRow(model: model, item: ruleItem(rule), delaySeconds: snapshot.delaySeconds, canUnblock: snapshot.passwordSet)
                         }
                     }
+                    // The thin scroll bar with no track, so the see-through panel shows through it too.
+                    .background(OverlayScrollBars())
                 }
                 .frame(height: listHeight)
                 .onPreferenceChange(ClosedRowHeightKey.self) { measured in if measured > 0, measured < .infinity { rowHeight = measured } }
