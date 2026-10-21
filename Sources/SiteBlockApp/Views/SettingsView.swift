@@ -1,7 +1,7 @@
 import SiteBlockCore
 import SwiftUI
 
-/// The Settings screen, shown inside the panel (a back button returns to the list) rather than in a separate window. It holds three forms (the unblock delay, the password, and uninstall) and one information box about the adult content filter. Every form needs the current password, and every password field is emptied as soon as the form is submitted.
+/// The Settings screen, shown inside the panel (a back button returns to the list) rather than in a separate window. It holds three forms (the unblock delay, the password, and uninstall) and two information boxes, one about the adult content filter and one with the contact email address. Every form needs the current password, and every password field is emptied as soon as the form is submitted.
 struct SettingsView: View {
     @ObservedObject var model: StatusModel
     /// The latest status from the daemon.
@@ -50,6 +50,7 @@ struct SettingsView: View {
                     if snapshot.adultFilterEnabled == true { adultFilterSection }
                     updatesSection
                     uninstallSection
+                    contactSection
                 }
                 .padding(16)
                 // The thin scroll bar with no track, so the see-through panel shows through it too.
@@ -208,6 +209,18 @@ struct SettingsView: View {
                     .disabled(model.updater.isWorking)
             }
             if let result = model.updater.checkResult { MessageLine(text: result.text, isError: result.isError) }
+        }
+    }
+
+    // MARK: - Contact
+
+    /// The information box with the email address for comments, questions and ideas. It has no controls.
+    private var contactSection: some View {
+        SectionCard(title: "Contact") {
+            Text("For comments, questions, or ideas, please email nokal123@gmail.com")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
