@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- siteblockd.exe: runs as the SiteBlock and SiteBlockWatchdog services, or as a console process in sandbox mode. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SiteBlock.Daemon</RootNamespace>
+    <AssemblyName>siteblockd</AssemblyName>
+    <AssemblyTitle>SiteBlock service</AssemblyTitle>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SiteBlock.Service\SiteBlock.Service.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The integration tests call the flag parser (Program.Parse and ProtectedFolderFor) in-process. -->
+    <InternalsVisibleTo Include="SiteBlock.Integration.Tests" />
+  </ItemGroup>
+</Project>

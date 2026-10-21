@@ -92,6 +92,16 @@ For the strongest protection, use a standard (non-administrator) macOS account d
 
 The service writes to `/Library/Logs/SiteBlock/siteblockd.log` and the watchdog to `/Library/Logs/SiteBlock/watchdog.log`. A line saying "hosts file repaired" means something edited `/etc/hosts` and SiteBlock put its lines back. A line saying "family DNS unreachable" means the family DNS servers do not answer on the current network, so SiteBlock is using the network's own DNS until they do.
 
+## SiteBlock for Windows
+
+SiteBlock also runs on Windows. It does the same job as the Mac version: it blocks the sites you choose in every browser and app at once, unblocking needs the SiteBlock password and a waiting period (30 minutes by default), and it always blocks adult websites. It needs Windows 10 version 2004 or newer, or Windows 11, on an Intel, AMD or Arm PC. The Windows version lives in the `windows/` folder; its design is in `Design Plans/06-windows.md`.
+
+The newest package is always at **https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip**.
+
+To install it, unzip the package, right-click **`Install SiteBlock.cmd`** and choose "Run as administrator". Windows SmartScreen (the check that warns about programs few people have run) may say it protected your PC, because SiteBlock is not signed with a code-signing certificate. Click "More info", then "Run anyway". The installer sets up the two background services, adds the shield icon to the taskbar's notification area, and checks that everything runs. You choose your SiteBlock password the first time you block a site, as on the Mac.
+
+The `siteblock` command works in any new terminal (Command Prompt or PowerShell) after the install, with the same commands as the Mac. `siteblock recover` must be run from a terminal opened with "Run as administrator". The tray app checks GitHub once a day for a newer version and asks Windows for permission (the UAC prompt) before it updates.
+
 ## For developers
 
 The design documents are in `Design Plans/`, starting with `00-INDEX.md`.

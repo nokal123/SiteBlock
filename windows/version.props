@@ -1,0 +1,7 @@
+<Project>
+  <!-- The Windows version people see is <WindowsSeries>.<builds since WindowsSeriesFirstBuild>. Change both together to start a new series. -->
+  <PropertyGroup>
+    <WindowsSeries>1.0</WindowsSeries>
+    <WindowsSeriesFirstBuild>0</WindowsSeriesFirstBuild>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,4 @@
+# Windows reads these two files with Windows line endings (CR LF): cmd.exe misreads a .cmd file without them,
+# and older Notepad shows a text file without them as one long line. package.ps1 also converts them when it packs.
+*.cmd text eol=crlf
+INSTALL.txt text eol=crlf

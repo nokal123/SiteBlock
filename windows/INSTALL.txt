@@ -1,0 +1,76 @@
+SiteBlock for Windows - installing on this PC
+
+SiteBlock blocks the websites you choose in every browser and app on this PC, for everyone who uses it.
+It also always blocks adult websites: it sets this PC's DNS servers to Cloudflare for Families and turns on
+the adult-site filter and SafeSearch in Chrome, Edge, Brave and Firefox. Only uninstalling SiteBlock removes this.
+Unblocking a site needs the SiteBlock password and then a waiting period, and uninstalling needs the password
+and then a 48-hour wait. Only install it if the person who uses this PC wants it.
+
+Requirements: Windows 11, or Windows 10 version 2004 or newer, on an Intel, AMD or Arm PC, and an
+administrator account (or someone who knows an administrator password).
+
+
+INSTALL
+
+1. Unzip SiteBlock-Windows.zip: right-click it, choose "Extract All...", then click Extract.
+   Keep the SiteBlock folder together; the installer needs everything in it.
+
+2. Open the SiteBlock folder, right-click "Install SiteBlock.cmd" and choose "Run as administrator".
+   (Double-clicking it also works: it then asks for administrator rights itself.)
+
+3. Windows may show a blue box that says "Windows protected your PC". This is Windows SmartScreen. It warns
+   about programs that few people have downloaded and that are not signed with a paid certificate, which is
+   true of SiteBlock. Click "More info", then click "Run anyway".
+
+4. Windows asks "Do you want to allow this app to make changes to your device?". Click Yes. On an account
+   that is not an administrator, type an administrator's password here.
+
+5. A black window shows the installer working. It copies SiteBlock into C:\Program Files\SiteBlock, sets up
+   two background services that keep the block in place, makes SiteBlock start every time someone signs in,
+   and then checks that everything works. Lines that start with SKIP are normal before you block a site.
+   When it says "SiteBlock is installed", press any key to close the window.
+
+
+THE SHIELD ICON
+
+SiteBlock lives in a shield icon by the clock, at the right end of the taskbar.
+Click it, type a site (for example youtube.com) and press Block. The first time, SiteBlock asks you to choose
+your SiteBlock password. Keep that password safe: it cannot be shown again.
+
+Windows often hides new icons. If you cannot see the shield, click the small ^ arrow by the clock: the shield
+is in the box that opens. To keep it always visible, drag the shield from that box onto the taskbar next to the
+clock. (On Windows 11 you can also open Settings > Personalization > Taskbar > Other system tray icons and
+turn SiteBlock on.)
+
+Chrome and Edge: while any site is blocked, their menus say "Managed by your organization". That only refers to
+SiteBlock's block list.
+
+
+UPDATES
+
+SiteBlock checks for a newer version once a day. When there is one, the panel shows a banner with an Update
+button. Click Update, then click Yes when Windows asks for permission. Your blocked sites, your password and
+every countdown are kept.
+
+
+UNINSTALL
+
+Click the shield icon, open Settings, and choose Uninstall. It asks for your SiteBlock password, and then
+SiteBlock removes itself after 48 hours (or after your unblock delay, if that is longer).
+The same works from a terminal with: siteblock uninstall
+
+
+FORGOTTEN PASSWORD
+
+Open the Start menu, type "Terminal" (or "PowerShell"), right-click it and choose "Run as administrator".
+Then type this and press Enter:
+
+    siteblock recover
+
+The password is cleared after 48 hours, and you choose a new one the next time you block a site.
+
+
+IF SOMETHING GOES WRONG
+
+Running "Install SiteBlock.cmd" again repairs SiteBlock and keeps your blocked sites and password.
+SiteBlock's logs are in C:\ProgramData\SiteBlock\Logs. They never contain your sites or your password.

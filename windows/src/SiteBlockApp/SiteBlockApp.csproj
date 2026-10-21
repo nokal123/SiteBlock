@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SiteBlockApp.exe: the tray icon and panel. Windows only. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>SiteBlock.App</RootNamespace>
+    <AssemblyName>SiteBlockApp</AssemblyName>
+    <AssemblyTitle>SiteBlock</AssemblyTitle>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The entry point is Program.Main, which makes sure only one copy runs; there is no App.xaml. -->
+    <StartupObject>SiteBlock.App.Program</StartupObject>
+    <!-- The generated code behind [LibraryImport] in NativeMethods.cs needs unsafe blocks. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Windows Forms is used only for the tray icon. Its global usings would clash with WPF's types of the same names, so the files that need it import it under an alias. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SiteBlock.AppLogic\SiteBlock.AppLogic.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SiteBlock.Windows.Tests" />
+    <!-- The live update test's probe uses the app's own downloader and elevated runner. -->
+    <InternalsVisibleTo Include="SiteBlock.UpdateProbe" />
+  </ItemGroup>
+</Project>

@@ -22,6 +22,10 @@
 ### [05-testing-and-operations.md](05-testing-and-operations.md)
 **Open for:** unit and integration test lists, installed-system verification, live tab-watcher test, live update test, update check and script tests, security notes, logs, success criteria
 
+### [06-windows.md](06-windows.md)
+**Open for:** everything about SiteBlock for Windows: what stays the same as the Mac, how each Mac piece maps to Windows, the C# solution layout, the Windows service layer (flags, named pipe, hosts file, registry browser policy, adapter DNS, service and tray app guards, uninstall), the `siteblock.exe` CLI, the tray app (panel, tab watcher through UI Automation, updater), installed paths and access lists, install, package and release, the Windows threat model, Windows tests
+- The Windows design only states what differs from the Mac design; every other rule is the Mac's, in files 01 to 05
+
 ---
 
 ## Source File → Design Plan Mapping
@@ -77,6 +81,39 @@
 27. `Install SiteBlock.command` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Install Script
 28. `Tests/SiteBlockCoreTests/*` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Unit Tests
 29. `Tests/IntegrationTests/*` — **Primary:** [05-testing-and-operations.md](05-testing-and-operations.md) § Integration Tests
+
+### Windows
+
+30. `windows/src/SiteBlock.Core/*.cs` (the C# port of SiteBlockCore: `DomainNormalizer`, `Punycode`, `DomainExpander`, `PathRuleParser`, `TabRuleMatcher`, `TabReloadDecider`, `HostsFileEditor`, `PasswordHasher`, `Models`, `Protocol`, `Engine`, `StateStore`, `DaemonClient`, `Formatting`, `ConnectionLimiter`, `UninstallRule`, `TemporaryUnblockOptions`, `UpdateCheck`, `DNSProbePacket`, `FamilyDNSProbe`, `BrowserPolicy`, `ChromePolicy`, `WindowsBrowserPolicy`, `Peer`, `PipeNames`, `BuildInfo`, `JsonCoding`, `SwiftText`) — **Primary:** [06-windows.md](06-windows.md) § SiteBlock.Core (the C# port of SiteBlockCore) — **Also:** [02-core-components.md](02-core-components.md) (the rules each type implements)
+31. `windows/src/SiteBlock.Service/DaemonRuntime.cs` — **Primary:** [06-windows.md](06-windows.md) § DaemonRuntime — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime
+32. `windows/src/SiteBlock.Service/PipeServer.cs` — **Primary:** [06-windows.md](06-windows.md) § PipeServer — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SocketServer
+33. `windows/src/SiteBlock.Service/ConsoleSession.cs` — **Primary:** [06-windows.md](06-windows.md) § Flags (the console user's SID)
+34. `windows/src/SiteBlock.Service/HostsEnforcer.cs` — **Primary:** [06-windows.md](06-windows.md) § HostsEnforcer
+35. `windows/src/SiteBlock.Service/PolicyStores.cs`, `windows/src/SiteBlock.Service/BrowserPolicyEnforcer.cs` — **Primary:** [06-windows.md](06-windows.md) § BrowserPolicyEnforcer — **Also:** [06-windows.md](06-windows.md) § SiteBlock.Core (Windows browser policy rules)
+36. `windows/src/SiteBlock.Service/DnsBackends.cs`, `windows/src/SiteBlock.Service/DnsEnforcer.cs` — **Primary:** [06-windows.md](06-windows.md) § DNSEnforcer
+37. `windows/src/SiteBlock.Service/ServiceGuard.cs` — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog
+38. `windows/src/SiteBlock.Service/ServiceControl.cs` (includes `ServiceConfigReader`) — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog
+39. `windows/src/SiteBlock.Service/Watchdog.cs` — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog (Watchdog loop)
+40. `windows/src/SiteBlock.Service/AppGuard.cs`, `windows/src/SiteBlock.Service/AppGuardNative.cs` — **Primary:** [06-windows.md](06-windows.md) § AppGuard
+41. `windows/src/SiteBlock.Service/AclGuard.cs` — **Primary:** [06-windows.md](06-windows.md) § Installed Paths and Permissions
+42. `windows/src/SiteBlock.Service/ProgramFolder.cs` — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog (Program files) — **Also:** [06-windows.md](06-windows.md) § AppGuard
+43. `windows/src/SiteBlock.Service/OwnershipNative.cs` — **Primary:** [06-windows.md](06-windows.md) § HostsEnforcer (The takeover) — **Also:** [06-windows.md](06-windows.md) § Installed Paths and Permissions
+44. `windows/src/SiteBlock.Service/Uninstaller.cs` — **Primary:** [06-windows.md](06-windows.md) § Uninstaller
+45. `windows/src/SiteBlock.Service/Paths.cs` — **Primary:** [06-windows.md](06-windows.md) § Installed Paths and Permissions (Sandbox)
+46. `windows/src/SiteBlock.Service/Log.cs` — **Primary:** [06-windows.md](06-windows.md) § How Each Mac Piece Maps to Windows (log rotation) — **Also:** [06-windows.md](06-windows.md) § HostsEnforcer (Logging)
+47. `windows/src/SiteBlock.Service/ProcessRunner.cs` — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog (the `sc.exe` calls)
+48. `windows/src/SiteBlock.Service/Contracts.cs` (service names and the enforcer and guard interfaces) — **Primary:** [06-windows.md](06-windows.md) § Flags (the two service names) — **Also:** [06-windows.md](06-windows.md) § DaemonRuntime
+49. `windows/src/siteblockd/Program.cs` — **Primary:** [06-windows.md](06-windows.md) § Flags
+50. `windows/src/siteblock/Program.cs` — **Primary:** [06-windows.md](06-windows.md) § siteblock.exe CLI
+51. `windows/src/SiteBlock.AppLogic/*.cs` (`StatusModel`, `PanelModel`, `HomeModel`, `RowModel`, `SettingsModel`, `FormModels`, `Banners`, `Feedback`, `ToneColors`, `Defaults`, `ObservableModel`, `Interfaces`, `TabWatcher`, `Updater`, `UpdatePackage`) — **Primary:** [06-windows.md](06-windows.md) § Tray App (Structure) — **Also:** [06-windows.md](06-windows.md) § TabWatcher, § Updater
+52. `windows/src/SiteBlockApp/**` (the WPF tray app: `Program.cs`, `TrayIcon.cs`, `PanelWindow.cs`, `Theme.cs`, `Ui.cs`, `OverlayScrollViewer.cs`, `NativeMethods.cs`, `WindowsServices.cs`, `app.manifest`, `Views/*`) — **Primary:** [06-windows.md](06-windows.md) § Tray App (The panel)
+53. `windows/src/SiteBlockApp/UiaBrowserTabs.cs` — **Primary:** [06-windows.md](06-windows.md) § TabWatcher
+54. `windows/scripts/build.ps1`, `windows/scripts/package.ps1`, `windows/scripts/write-build-number.ps1`, `windows/scripts/write-build-number.sh`, `windows/version.props`, `windows/BuildNumber.props` (generated, ignored by git) — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release
+55. `windows/scripts/install.ps1`, `windows/Install SiteBlock.cmd`, `windows/INSTALL.txt` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release
+56. `windows/scripts/verify-install.ps1` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (the installer runs it) — **Also:** [06-windows.md](06-windows.md) § Testing
+57. `windows/scripts/e2e.ps1` — **Primary:** [06-windows.md](06-windows.md) § Testing (items 5 to 7)
+58. `.github/workflows/windows.yml` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (GitHub workflow)
+59. `windows/tests/*` (`SiteBlock.Core.Tests`, `SiteBlock.Integration.Tests`, `SiteBlock.AppLogic.Tests`, `SiteBlock.Windows.Tests`, `SiteBlock.UpdateProbe`) — **Primary:** [06-windows.md](06-windows.md) § Testing — **Also:** [06-windows.md](06-windows.md) § Solution Layout
 
 ---
 
@@ -151,6 +188,23 @@
 - Running tests without Xcode → [04-infrastructure.md](04-infrastructure.md) § Package.swift
 - Version numbers, `SiteBlock.zip` and `version.json` → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, § Packaging for Another Mac
 - Failed test names on the public GitHub run page → [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds
+
+### Windows
+- What is the same as the Mac and what differs → [06-windows.md](06-windows.md) § What Is the Same on Both Systems, § How Each Mac Piece Maps to Windows
+- Solution projects, which build on the Mac → [06-windows.md](06-windows.md) § Solution Layout
+- `siteblockd.exe` flags, sandbox refusal rules, service start detection, console user → [06-windows.md](06-windows.md) § Flags
+- Named pipe, its access list, how the caller is identified → [06-windows.md](06-windows.md) § PipeServer
+- Hosts file repair, `DataBasePath`, takeover → [06-windows.md](06-windows.md) § HostsEnforcer
+- Registry policy for Chrome, Edge, Brave and Firefox → [06-windows.md](06-windows.md) § SiteBlock.Core (Windows browser policy rules), § BrowserPolicyEnforcer
+- Family DNS on adapters → [06-windows.md](06-windows.md) § DNSEnforcer
+- Services, watchdog and tray app guards → [06-windows.md](06-windows.md) § ServiceGuard and the watchdog, § AppGuard
+- Folder access lists → [06-windows.md](06-windows.md) § Installed Paths and Permissions
+- Uninstall steps → [06-windows.md](06-windows.md) § Uninstaller
+- Tray app, panel, tab watcher and updater → [06-windows.md](06-windows.md) § Tray App
+- Installer, package, version numbers and the GitHub workflow → [06-windows.md](06-windows.md) § Install, Package and Release
+- Windows limits → [06-windows.md](06-windows.md) § Threat Model on Windows
+- Windows tests, the live tab-watcher test and the live update test → [06-windows.md](06-windows.md) § Testing
+- Implementation steps → [Tasks/TASKS-10-windows.md](Tasks/TASKS-10-windows.md)
 
 ---
 

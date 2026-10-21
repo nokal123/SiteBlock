@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SiteBlock.Core\SiteBlock.Core.csproj" />
+    <ProjectReference Include="..\..\src\SiteBlock.Service\SiteBlock.Service.csproj" />
+    <!-- siteblockd's assembly is referenced so the flag parser (internal) can be called in-process; both programs are also run as real child processes. -->
+    <ProjectReference Include="..\..\src\siteblockd\siteblockd.csproj" OutputItemType="SiteBlockProgram" />
+    <ProjectReference Include="..\..\src\siteblock\siteblock.csproj" ReferenceOutputAssembly="false" OutputItemType="SiteBlockProgram" />
+  </ItemGroup>
+
+  <!-- Records where each referenced program's .dll was built (its own output folder, wherever the build put it) as assembly metadata "SiteBlockProgram.<name>", so the tests can start the real programs. -->
+  <Target Name="RecordSiteBlockProgramPaths" BeforeTargets="GetAssemblyAttributes" DependsOnTargets="ResolveProjectReferences">
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>SiteBlockProgram.%(SiteBlockProgram.Filename)</_Parameter1>
+        <_Parameter2>%(SiteBlockProgram.FullPath)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
+</Project>

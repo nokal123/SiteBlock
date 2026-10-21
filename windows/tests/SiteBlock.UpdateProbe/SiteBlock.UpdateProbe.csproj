@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A test build of the tray app's updater: e2e.ps1 runs it against a local test server for the live update test (06-windows.md, Testing, item 7). It is never shipped. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>SiteBlock.UpdateProbe</RootNamespace>
+    <AssemblyName>SiteBlock.UpdateProbe</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SiteBlockApp\SiteBlockApp.csproj" />
+  </ItemGroup>
+</Project>

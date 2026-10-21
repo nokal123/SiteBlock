@@ -1,0 +1,152 @@
+# Builds, tests and packages SiteBlock for Windows whenever Windows code is pushed to the windows or master branch,
+# then installs the package for real on GitHub's Windows machine and runs the end-to-end checks (windows/scripts/e2e.ps1).
+# Only on master, it then publishes the package as a new GitHub Release windows-v<version>, and replaces the files of
+# the fixed release windows-latest, so the newest Windows build is always at one fixed download link:
+#   https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip
+# No Windows release is ever marked latest: the Mac app's updater reads releases/latest, which must stay the Mac package.
+# Steps: run every test project (a failing test stops the run, so a broken package is never published), run
+# windows/scripts/package.ps1, run windows/scripts/e2e.ps1, keep the zip and the logs as run artifacts, then publish.
+name: Windows package
+
+on:
+  push:
+    branches: [windows, master]
+    # Windows code and this workflow rebuild the package; edits to docs, design plans or the Mac app alone do not.
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows.yml"
+  # Also allows a manual run from the repository's Actions tab.
+  workflow_dispatch:
+
+# Creating releases and moving the windows-latest tag need permission to write to the repository.
+permissions:
+  contents: write
+
+# A newer push cancels a run still in progress, so the newest code always wins.
+concurrency:
+  group: windows-package
+  cancel-in-progress: true
+
+jobs:
+  package:
+    # A fresh Windows Server 2025 machine for each run. The job has administrator rights, which the real install needs.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v6
+        with:
+          # The whole history, because the build number is the count of commits. A shallow checkout would count 1.
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Show the build tools
+        run: |
+          [System.Environment]::OSVersion.VersionString
+          $env:PROCESSOR_ARCHITECTURE
+          dotnet --version
+          "PowerShell $($PSVersionTable.PSVersion)"
+          # Windows PowerShell 5.1 is what runs install.ps1 and verify-install.ps1 on people's PCs (and in e2e.ps1).
+          powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+
+      # Runs every test project in the solution. Each failed test also becomes an error annotation (up to 20), read
+      # from the test result (.trx) files, because annotations show on the public run page, while the full log can only
+      # be read by someone logged in to GitHub.
+      - name: Run the tests
+        run: |
+          dotnet test windows/SiteBlock.sln -c Release --logger "trx" --logger "console;verbosity=normal" --results-directory windows/TestResults
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # Makes text safe for an annotation: GitHub reads %, CR and LF as control characters.
+            function Escape([string]$text) { return $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A') }
+            $failed = foreach ($trx in (Get-ChildItem -Path windows/TestResults -Recurse -Filter *.trx -ErrorAction SilentlyContinue)) {
+              Select-Xml -Path $trx.FullName -XPath "//*[local-name()='UnitTestResult'][@outcome='Failed']" | ForEach-Object { $_.Node }
+            }
+            $failed | Select-Object -First 20 | ForEach-Object {
+              $message = ''
+              $node = $_.SelectSingleNode(".//*[local-name()='ErrorInfo']/*[local-name()='Message']")
+              if ($null -ne $node) { $message = ($node.InnerText -split "`r?`n")[0] }
+              Write-Host "::error title=Failed test::$(Escape "$($_.testName): $message")"
+            }
+            exit 1
+          }
+
+      # Builds both kinds of PC (x64 and arm64) and writes windows/dist/SiteBlock-Windows.zip and version-windows.json.
+      - name: Build the package
+        run: pwsh windows/scripts/package.ps1
+
+      - name: Keep the zip as a run artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: SiteBlock-Windows-package
+          path: |
+            windows/dist/SiteBlock-Windows.zip
+            windows/dist/version-windows.json
+          retention-days: 30
+
+      # Installs the package for real on this machine and runs the end-to-end checks. Each failed check becomes an annotation.
+      - name: Install the package and run the end-to-end checks
+        run: pwsh windows/scripts/e2e.ps1
+
+      # The service's logs and the installer output, kept even when the checks fail, so a failure can be read afterwards.
+      # The logs never hold blocked sites or passwords, by design.
+      - name: Keep the end-to-end logs as a run artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: SiteBlock-Windows-e2e-logs
+          path: windows/dist/e2e-logs
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # Creates a release for this version, tagged windows-v<version> (for example windows-v1.0.3), not marked latest.
+      # A release that already exists for this version is left alone. Older releases are kept, so GitHub keeps each
+      # version's download counts (scripts/stats.sh adds them up).
+      - name: Publish this version as a release
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json).displayVersion
+          $tag = "windows-v$version"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "The release $tag already exists; it is left as it is."
+            exit 0
+          }
+          $notes = "Built automatically from commit ${{ github.sha }}.`n`nTo install on a Windows 10 (version 2004 or newer) or Windows 11 PC: download SiteBlock-Windows.zip, unzip it, right-click ""Install SiteBlock.cmd"" and choose ""Run as administrator"", and follow INSTALL.txt inside. version-windows.json describes this build and is what the SiteBlock tray app reads to check for updates."
+          gh release create $tag windows/dist/SiteBlock-Windows.zip windows/dist/version-windows.json --latest=false --target "${{ github.sha }}" --title "SiteBlock for Windows $version" --notes $notes
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # Points the fixed tag windows-latest at this commit and gives its release the same two files, so the fixed links
+      # .../releases/download/windows-latest/SiteBlock-Windows.zip and .../version-windows.json always give the newest
+      # build. The files are replaced in place (--clobber) instead of deleting and recreating the release, so the
+      # release keeps its download counts. It is never marked latest.
+      - name: Update the windows-latest release
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json).displayVersion
+          $files = @('windows/dist/SiteBlock-Windows.zip', 'windows/dist/version-windows.json')
+          $notes = "The newest build of SiteBlock for Windows: version $version, from commit ${{ github.sha }}. Its files are replaced by every new build. Download SiteBlock-Windows.zip and follow INSTALL.txt inside."
+          # The checkout keeps the job's token for git, so the tag can be moved with a forced push.
+          git tag -f windows-latest "${{ github.sha }}"
+          git push -f origin refs/tags/windows-latest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          gh release view windows-latest *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload windows-latest @files --clobber
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            gh release edit windows-latest --latest=false --title "SiteBlock for Windows (latest build)" --notes $notes
+          } else {
+            gh release create windows-latest @files --latest=false --prerelease=false --title "SiteBlock for Windows (latest build)" --notes $notes
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }

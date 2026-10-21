@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The C# port of SiteBlockCore: every blocking rule, with no Windows calls, so it builds and is tested on any system. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SiteBlock.Core</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SiteBlock.Core.Tests" />
+  </ItemGroup>
+</Project>

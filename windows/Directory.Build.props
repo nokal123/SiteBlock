@@ -1,0 +1,30 @@
+<Project>
+  <!-- Settings every SiteBlock for Windows project shares. -->
+  <Import Project="$(MSBuildThisFileDirectory)version.props" />
+  <Import Project="$(MSBuildThisFileDirectory)BuildNumber.props" Condition="Exists('$(MSBuildThisFileDirectory)BuildNumber.props')" />
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Lets the WPF tray app and the Windows-only tests build on the Mac; they still run only on Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Company>SiteBlock</Company>
+    <Product>SiteBlock</Product>
+    <!-- BuildNumber.props is written by scripts/write-build-number; without it the build number is 0. -->
+    <SiteBlockBuildNumber Condition="'$(SiteBlockBuildNumber)' == ''">0</SiteBlockBuildNumber>
+    <SiteBlockPatch>$([MSBuild]::Subtract($(SiteBlockBuildNumber), $(WindowsSeriesFirstBuild)))</SiteBlockPatch>
+    <SiteBlockPatch Condition="$(SiteBlockPatch) &lt; 0">0</SiteBlockPatch>
+    <Version>$(WindowsSeries).$(SiteBlockPatch)</Version>
+    <FileVersion>$(WindowsSeries).$(SiteBlockPatch).$(SiteBlockBuildNumber)</FileVersion>
+    <InformationalVersion>$(WindowsSeries).$(SiteBlockPatch) (build $(SiteBlockBuildNumber))</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The programs read the build number from this attribute (see SiteBlock.Core/BuildInfo.cs). -->
+    <AssemblyMetadata Include="SiteBlockBuildNumber" Value="$(SiteBlockBuildNumber)" />
+    <AssemblyMetadata Include="SiteBlockSeries" Value="$(WindowsSeries)" />
+    <AssemblyMetadata Include="SiteBlockSeriesFirstBuild" Value="$(WindowsSeriesFirstBuild)" />
+  </ItemGroup>
+</Project>
