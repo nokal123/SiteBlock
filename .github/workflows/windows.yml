@@ -155,7 +155,7 @@ jobs:
 
       # Creates a release for this version, tagged windows-v<version> (for example windows-v1.0.3), not marked latest.
       # A release that already exists for this version is left alone. Older releases are kept, so GitHub keeps each
-      # version's download counts (scripts/stats.sh adds them up).
+      # version's download counts (windows/scripts/stats.sh adds them up).
       # The first Windows release must be 1.0.0. When no windows-v release exists yet and this build would publish as anything else, version.props'
       # WindowsSeriesFirstBuild does not match master's commit count, and the run stops here, naming the number to set, instead of publishing a wrong first version.
       - name: Check the first release is 1.0.0

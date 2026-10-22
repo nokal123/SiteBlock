@@ -113,6 +113,7 @@
 56. `windows/scripts/verify-install.ps1` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (the installer runs it) — **Also:** [06-windows.md](06-windows.md) § Testing
 57. `windows/scripts/e2e.ps1` — **Primary:** [06-windows.md](06-windows.md) § Testing (items 5 to 7)
 58. `.github/workflows/windows.yml` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (GitHub workflow)
+58a. `windows/scripts/stats.sh` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (Download counts)
 59. `windows/tests/*` (`SiteBlock.Core.Tests`, `SiteBlock.Integration.Tests`, `SiteBlock.AppLogic.Tests`, `SiteBlock.Windows.Tests`, `SiteBlock.UpdateProbe`) — **Primary:** [06-windows.md](06-windows.md) § Testing — **Also:** [06-windows.md](06-windows.md) § Solution Layout
 
 ---
