@@ -110,23 +110,39 @@ public sealed class WireProtocolTests
     public void FifthSimultaneousConnectionFromOneUser_IsClosedWithoutAReplyAndTheSlotFreesLater()
     {
         using var daemon = SandboxDaemon.Start(tickSeconds: 60);
-        // Every sandbox caller is the same user, so four idle connections use up that user's slots.
-        var idle = Enumerable.Range(0, 4).Select(_ => RawConnection.Open(daemon.PipePath)).ToList();
-        try
+        // Each idle connection holds its slot only for the server's 2-second request limit, which starts when it is admitted. On a slow machine opening four connections and
+        // checking a fifth can take longer than that, the first slots are given back, and the fifth is rightly admitted; such an attempt proves nothing, so it is tried again
+        // (with the slots freed first). The limit is asserted only on an attempt that finished inside the window.
+        const double windowSeconds = 1.8;
+        string? fifthReply = null;
+        double elapsed = 0;
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            Thread.Sleep(300);
-            using (var fifth = RawConnection.Open(daemon.PipePath))
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            // Every sandbox caller is the same user, so four idle connections use up that user's slots.
+            var idle = Enumerable.Range(0, 4).Select(_ => RawConnection.Open(daemon.PipePath)).ToList();
+            try
             {
-                fifth.Write("{\"command\":\"status\"}\n");
-                Assert.Equal("", fifth.ReadLine(1.5));
+                Thread.Sleep(100);
+                using (var fifth = RawConnection.Open(daemon.PipePath))
+                {
+                    fifth.Write("{\"command\":\"status\"}\n");
+                    // The window is measured to the moment the fifth request is out; the read below may rightly wait.
+                    elapsed = clock.Elapsed.TotalSeconds;
+                    fifthReply = fifth.ReadLine(1.5);
+                }
+                // The idle ones are answered with the read timeout and their slots are given back.
+                foreach (var connection in idle) Assert.Contains("badRequest", connection.ReadLine(8) ?? "");
             }
-            // The idle ones are answered with the read timeout and their slots are given back.
-            foreach (var connection in idle) Assert.Contains("badRequest", connection.ReadLine(8) ?? "");
+            finally
+            {
+                foreach (var connection in idle) connection.Dispose();
+            }
+            if (elapsed <= windowSeconds) break;
         }
-        finally
-        {
-            foreach (var connection in idle) connection.Dispose();
-        }
+        Assert.True(elapsed <= windowSeconds, $"no attempt checked the fifth connection while the four were still holding their slots (last took {elapsed:0.00} s)");
+        // "" means the server closed the fifth connection without a byte; anything else is a reply it should never have sent, and null means it neither answered nor closed.
+        Assert.True(fifthReply == "", $"the fifth connection should be closed without a reply, but got {(fifthReply is null ? "no close within 1.5 s" : $"\"{fifthReply}\"")} after {elapsed:0.00} s");
         Assert.True(Wait.Until(() => { try { return RawConnection.Exchange(daemon.PipePath, "{\"command\":\"status\"}", 3)["ok"]!.GetValue<bool>(); } catch (Exception) { return false; } }, 5));
     }
 
