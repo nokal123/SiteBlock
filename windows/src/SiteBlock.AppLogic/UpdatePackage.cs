@@ -112,6 +112,10 @@ public static class UpdatePackage
         string files = string.Join(", ", RequiredFiles(architectureFolder).Select(parts => PowerShellQuoted(string.Join('\\', parts))));
         var script = new StringBuilder();
         script.AppendLine("$ErrorActionPreference = 'Stop'");
+        // Windows PowerShell 5.1 loads commands written in PowerShell, such as Get-FileHash, from the folders in PSModulePath. A process started from PowerShell 7 (or
+        // from a program it started) carries 7's folders there, and 5.1 then cannot find those commands, so the path is put back to Windows PowerShell's own before anything runs.
+        // install.ps1, started below, inherits the corrected path.
+        script.AppendLine("$env:PSModulePath = (@([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine'), (Join-Path $PSHOME 'Modules')) | Where-Object { $_ }) -join ';'");
         script.AppendLine("$code = 1");
         script.AppendLine("$root = $null");
         script.AppendLine($"$source = {PowerShellQuoted(zipPath)}");

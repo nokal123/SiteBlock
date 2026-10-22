@@ -165,27 +165,49 @@ function Test-HostsLines {
     }
 }
 
-# Check 4: the Windows name lookup (not just the file) returns 0.0.0.0 for the test site.
+# Check 4: the Windows name lookup (not just the file) gives no real address for the test site. Windows' resolver answers a hosts file line
+# "0.0.0.0 name" with 0.0.0.0 (and "::" with ::), but the lookup programs use (getaddrinfo, behind [System.Net.Dns]) drops those "no address"
+# answers and reports "no data" instead. Both mean the name is blocked, so the check passes when the program lookup gives only 0.0.0.0 and ::,
+# or when it gives no data while the resolver's own answer is only 0.0.0.0 and ::.
 function Test-Lookup {
-    Write-Heading 4 "the Windows name lookup returns 0.0.0.0 for www.$TestDomain"
+    Write-Heading 4 "the Windows name lookup gives no real address for www.$TestDomain"
     if (-not (Test-SiteIsBlocked)) { Write-SkipUntilBlocked; return }
     $text = ''
     # The service empties the name cache after each change, but a retry or two costs nothing and avoids a false alarm.
     for ($attempt = 1; $attempt -le 3; $attempt++) {
-        try {
-            $addresses = @([System.Net.Dns]::GetHostAddresses("www.$TestDomain") | ForEach-Object { $_.ToString() })
-            $text = $addresses -join ', '
-            $real = @($addresses | Where-Object { $_ -ne '0.0.0.0' -and $_ -ne '::' })
-            if ($addresses.Count -gt 0 -and $real.Count -eq 0) {
-                Write-Pass "www.$TestDomain resolves to $text"
-                return
-            }
-        } catch {
-            $text = "lookup failed: $($_.Exception.Message)"
+        $result = Get-BlockedLookup "www.$TestDomain"
+        $text = $result.Text
+        if ($result.Blocked) {
+            Write-Pass "www.$TestDomain $text"
+            return
         }
         Start-Sleep -Seconds 1
     }
-    Write-Fail "www.$TestDomain did not resolve to 0.0.0.0 (got: $text)"
+    Write-Fail "www.$TestDomain is not blocked by the name lookup (got: $text)"
+}
+
+# Looks a name up the way programs do and the way Windows' resolver does, and says whether it is blocked (see Test-Lookup). Returns an object with
+# Blocked (true or false) and Text (what was seen).
+function Get-BlockedLookup([string]$name) {
+    $unspecified = @('0.0.0.0', '::')
+    try {
+        $addresses = @([System.Net.Dns]::GetHostAddresses($name) | ForEach-Object { $_.ToString() })
+        $real = @($addresses | Where-Object { $unspecified -notcontains $_ })
+        return New-Object PSObject -Property @{ Blocked = ($addresses.Count -gt 0 -and $real.Count -eq 0); Text = "resolves to $($addresses -join ', ')" }
+    } catch {
+        $socket = $_.Exception.InnerException
+        if (-not ($socket -is [System.Net.Sockets.SocketException]) -or ($socket.SocketErrorCode -ne 'NoData' -and $socket.SocketErrorCode -ne 'HostNotFound')) {
+            return New-Object PSObject -Property @{ Blocked = $false; Text = "lookup failed: $($_.Exception.Message)" }
+        }
+        $answers = @()
+        try {
+            $answers = @(Resolve-DnsName -Name $name -ErrorAction Stop | Where-Object { $_.Type -eq 'A' -or $_.Type -eq 'AAAA' } | ForEach-Object { $_.IPAddress })
+        } catch {
+            return New-Object PSObject -Property @{ Blocked = $false; Text = "lookup gave no data and Resolve-DnsName failed: $($_.Exception.Message)" }
+        }
+        $real = @($answers | Where-Object { $unspecified -notcontains $_ })
+        return New-Object PSObject -Property @{ Blocked = ($answers.Count -gt 0 -and $real.Count -eq 0); Text = "gives no address to programs; Windows' resolver answers $($answers -join ', ')" }
+    }
 }
 
 # Check 5: a real connection attempt to the test page fails.

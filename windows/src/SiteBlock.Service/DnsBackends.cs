@@ -163,10 +163,21 @@ public sealed class WindowsDnsBackend : IDnsSettingsBackend
             };
             if (type is not ("Ethernet" or "Wireless80211" or "Tunnel" or "Ppp")) continue;
             string id = adapter.Id;
+            // Only an adapter with TCP/IP settings of its own (a key under the IPv4 interfaces key) can hold DNS servers. Windows also reports network filters, such as
+            // "Ethernet 3-WFP Native MAC Layer LightWeight Filter-0000", and virtual switch ports as Ethernet adapters; they have no such key and are left out.
+            if (!HasIpv4Settings(id)) continue;
             bool hasIpv6 = HasIpv6(id);
             adapters.Add(new DnsAdapter(id, adapter.Name, type, adapter.Description, true, [.. ReadServers(Ipv4InterfacesKey, id), .. (hasIpv6 ? ReadServers(Ipv6InterfacesKey, id) : [])], hasIpv6));
         }
         return adapters;
+    }
+
+    /// <summary>True when the adapter has IPv4 settings (its key under the Tcpip interfaces key exists).</summary>
+    private static bool HasIpv4Settings(string id)
+    {
+        using var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        using var key = root.OpenSubKey(Ipv4InterfacesKey + "\\" + id);
+        return key is not null;
     }
 
     /// <summary>True when the adapter has IPv6 settings (its key under the Tcpip6 interfaces key exists).</summary>

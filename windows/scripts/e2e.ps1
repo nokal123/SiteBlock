@@ -351,28 +351,43 @@ function Test-HostsLines {
 
 # The Windows name lookup returns 0.0.0.0 for www.youtube.com.
 function Test-Lookup {
+    # Windows' resolver answers the hosts file's "0.0.0.0 name" with 0.0.0.0 (and "::" with ::), but the lookup programs use drops those "no address"
+    # answers and reports "no data". Either result means the name is blocked; Get-BlockedLookup tells them apart from a real address or a broken lookup.
     $script:LastLookup = ''
-    $script:LookupError = ''
     $elapsed = Wait-Until 5000 {
-        try {
-            $addresses = @([System.Net.Dns]::GetHostAddresses("www.$TestDomain") | ForEach-Object { $_.ToString() })
-        } catch {
-            # The lookup's own error (such as "No such host is known") is kept, so a failure says what Windows answered.
-            $script:LookupError = $_.Exception.InnerException.Message
-            if (-not $script:LookupError) { $script:LookupError = $_.Exception.Message }
-            return $false
-        }
-        $script:LastLookup = $addresses -join ', '
-        $addresses.Count -gt 0 -and @($addresses | Where-Object { $_ -ne '0.0.0.0' -and $_ -ne '::' }).Count -eq 0
+        $result = Get-BlockedLookup "www.$TestDomain"
+        $script:LastLookup = $result.Text
+        $result.Blocked
     }
     if ($elapsed -lt 0) {
-        # What Windows' own resolver says, with the source of each answer, and how many hosts file lines name the site.
-        $resolver = ''
-        try { $resolver = (@(Resolve-DnsName -Name "www.$TestDomain" -ErrorAction Stop) | ForEach-Object { "$($_.Type) $($_.IPAddress) section=$($_.Section)" }) -join '; ' } catch { $resolver = "Resolve-DnsName failed: $($_.Exception.Message)" }
         $hostsCount = @(Get-HostsLines | Where-Object { $_ -match "\swww\.$([regex]::Escape($TestDomain))$" }).Count
-        throw "www.$TestDomain resolves to '$($script:LastLookup)', not 0.0.0.0 (lookup error: '$($script:LookupError)'; Resolve-DnsName: $resolver; hosts lines for it: $hostsCount)"
+        throw "www.$TestDomain is not blocked by the name lookup: $($script:LastLookup) (hosts lines for it: $hostsCount)"
     }
-    return "resolves to $($script:LastLookup)"
+    return $script:LastLookup
+}
+
+# Looks a name up the way programs do and the way Windows' resolver does, and says whether it is blocked (see Test-Lookup). Returns an object with
+# Blocked (true or false) and Text (what was seen). The same rule is in verify-install.ps1.
+function Get-BlockedLookup([string]$name) {
+    $unspecified = @('0.0.0.0', '::')
+    try {
+        $addresses = @([System.Net.Dns]::GetHostAddresses($name) | ForEach-Object { $_.ToString() })
+        $real = @($addresses | Where-Object { $unspecified -notcontains $_ })
+        return New-Object PSObject -Property @{ Blocked = ($addresses.Count -gt 0 -and $real.Count -eq 0); Text = "resolves to $($addresses -join ', ')" }
+    } catch {
+        $socket = $_.Exception.InnerException
+        if (-not ($socket -is [System.Net.Sockets.SocketException]) -or ($socket.SocketErrorCode -ne 'NoData' -and $socket.SocketErrorCode -ne 'HostNotFound')) {
+            return New-Object PSObject -Property @{ Blocked = $false; Text = "lookup failed: $($_.Exception.Message)" }
+        }
+        $answers = @()
+        try {
+            $answers = @(Resolve-DnsName -Name $name -ErrorAction Stop | Where-Object { $_.Type -eq 'A' -or $_.Type -eq 'AAAA' } | ForEach-Object { $_.IPAddress })
+        } catch {
+            return New-Object PSObject -Property @{ Blocked = $false; Text = "lookup gave no data and Resolve-DnsName failed: $($_.Exception.Message)" }
+        }
+        $real = @($answers | Where-Object { $unspecified -notcontains $_ })
+        return New-Object PSObject -Property @{ Blocked = ($answers.Count -gt 0 -and $real.Count -eq 0); Text = "gives no address to programs; Windows' resolver answers $($answers -join ', ')" }
+    }
 }
 
 # Chrome's policy key holds the adult-filter values and a block list with the site.
@@ -456,6 +471,9 @@ function Test-FamilyDns {
                 $adapter = $_
                 $adapter.OperationalStatus -eq 'Up' -and
                 ($adapter.NetworkInterfaceType -eq 'Ethernet' -or $adapter.NetworkInterfaceType -eq 'Wireless80211') -and
+                # Only an adapter with TCP/IP settings of its own can hold DNS servers, the same rule the service uses; Windows also lists network filters (such as
+                # "Ethernet 3-WFP Native MAC Layer LightWeight Filter-0000") and switch ports as Ethernet adapters, and those have no such settings.
+                (Test-Path -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.Id)") -and
                 @($vpnWords | Where-Object { $adapter.Description.IndexOf($_, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -eq 0
             })
     }
@@ -485,8 +503,10 @@ function Test-FamilyDns {
             $key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.Id)"
             $static = '(no key)'; $dhcp = ''
             if (Test-Path -LiteralPath $key) {
+                # A value that is not there reads as empty; under strict mode a missing property would otherwise be an error.
                 $values = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
-                $static = "'$($values.NameServer)'"; $dhcp = "'$($values.DhcpNameServer)'"
+                $read = { param($valueName) if ($null -ne $values -and $values.PSObject.Properties[$valueName]) { [string]$values.PSObject.Properties[$valueName].Value } else { '' } }
+                $static = "'$(& $read 'NameServer')'"; $dhcp = "'$(& $read 'DhcpNameServer')'"
             }
             $client = ''
             # Index lookup and the DNS client can both refuse a filter pseudo-adapter; that refusal is part of the answer.
@@ -647,8 +667,14 @@ function Test-TrayApp {
     $user = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
     if ([string]::IsNullOrEmpty($user)) { Skip-Check 'nobody is signed in at the console of this machine' }
     $session = Get-ConsoleSessionId
-    # Lists the tray app processes in the console session.
-    $inSession = { @(Get-Process -Name 'SiteBlockApp' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session }) }
+    # Lists the tray app processes in the console session that run the installed program, read from Windows' process list (Win32_Process), the same
+    # facts the service's guard uses: the session and the program path. Each entry has the process ID as Id.
+    $appPath = Join-Path $ProgramDir 'SiteBlockApp.exe'
+    $inSession = {
+        @(Get-CimInstance Win32_Process -Filter "Name='SiteBlockApp.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.SessionId -eq $session -and $_.ExecutablePath -eq $appPath } |
+            ForEach-Object { New-Object PSObject -Property @{ Id = [int]$_.ProcessId } })
+    }
     $first = Wait-Until 15000 { (& $inSession).Count -gt 0 }
     if ($first -lt 0) {
         # Every tray app process with its session and program path, the sessions with their users, and the app guard's lines from the service log.
@@ -780,7 +806,11 @@ function Test-LiveTabWatcher {
         # A few more watcher ticks must not reload it again.
         Start-Sleep -Seconds 3
         $reloads = (Get-TabReloadCount) - $before
-        if ($reloads -ne 1) { throw "the tray app logged $reloads reloads, not exactly one" }
+        if ($reloads -ne 1) {
+            $nowUrl = ''
+            try { $nowUrl = Invoke-TabScript $moving.webSocketDebuggerUrl 'location.href' } catch { $nowUrl = "unreadable: $($_.Exception.Message)" }
+            throw "the tray app logged $reloads reloads, not exactly one (the moved tab is now at '$nowUrl'). End of app.log: $(Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 15)"
+        }
         $stayMark = Invoke-TabScript $staying.webSocketDebuggerUrl 'window.__siteblockMark'
         if ($stayMark -ne 'marked') { throw 'the second window, which never left an allowed page, was reloaded too' }
         return "reloaded once after $elapsed ms; the other window was left alone"
