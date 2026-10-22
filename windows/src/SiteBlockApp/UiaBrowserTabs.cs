@@ -154,7 +154,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         catch (Exception error)
         {
             Forget(hwnd);
-            ReportOncePerMinute($"tab reader: pressing the reload button failed ({error.GetType().Name})");
+            if (ShouldReport()) _log.Info($"tab reader: pressing the reload button failed ({error.GetType().Name}); {DescribeElement(button)}");
             throw;
         }
     }
@@ -244,6 +244,21 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             if (_lastSearchReport != long.MinValue && now - _lastSearchReport < 60_000) return false;
             _lastSearchReport = now;
             return true;
+        }
+    }
+
+    /// <summary>Describes one control for the log: its class name, control type, whether it is enabled, and the UI Automation patterns (abilities, such as Invoke or Toggle) it offers. No text from the control is included.</summary>
+    private static string DescribeElement(AutomationElement element)
+    {
+        try
+        {
+            AutomationElement.AutomationElementInformation info = element.Current;
+            string patterns = string.Join(", ", element.GetSupportedPatterns().Select(pattern => pattern.ProgrammaticName));
+            return $"the button is {info.ClassName}/{info.ControlType.ProgrammaticName}, enabled={info.IsEnabled}, patterns: [{patterns}]";
+        }
+        catch (Exception error)
+        {
+            return $"describing the button failed ({error.GetType().Name})";
         }
     }
 
