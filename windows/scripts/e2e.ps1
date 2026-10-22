@@ -160,6 +160,17 @@ function Wait-Until([int]$timeoutMs, [scriptblock]$condition) {
     }
 }
 
+# Returns the last lines of a text file joined with " | ", for a failure message on the run page (the uploaded logs can only be downloaded by someone
+# logged in to GitHub), or a note saying why it could not be read.
+function Get-LogTail([string]$path, [int]$lines = 15) {
+    try {
+        $text = Read-SharedText $path
+        return ((@($text -split "`r?`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -Last $lines | ForEach-Object { $_.Trim() }) -join ' | ')
+    } catch {
+        return "($(Split-Path -Leaf $path) could not be read: $($_.Exception.Message))"
+    }
+}
+
 # Returns the line of "siteblock status" output for a blocked site ("  youtube.com (28 hosts) ..."), or $null.
 function Get-SiteLine([string]$statusText, [string]$domain) {
     foreach ($line in ($statusText -split "`r?`n")) {
@@ -341,12 +352,26 @@ function Test-HostsLines {
 # The Windows name lookup returns 0.0.0.0 for www.youtube.com.
 function Test-Lookup {
     $script:LastLookup = ''
+    $script:LookupError = ''
     $elapsed = Wait-Until 5000 {
-        $addresses = @([System.Net.Dns]::GetHostAddresses("www.$TestDomain") | ForEach-Object { $_.ToString() })
+        try {
+            $addresses = @([System.Net.Dns]::GetHostAddresses("www.$TestDomain") | ForEach-Object { $_.ToString() })
+        } catch {
+            # The lookup's own error (such as "No such host is known") is kept, so a failure says what Windows answered.
+            $script:LookupError = $_.Exception.InnerException.Message
+            if (-not $script:LookupError) { $script:LookupError = $_.Exception.Message }
+            return $false
+        }
         $script:LastLookup = $addresses -join ', '
         $addresses.Count -gt 0 -and @($addresses | Where-Object { $_ -ne '0.0.0.0' -and $_ -ne '::' }).Count -eq 0
     }
-    if ($elapsed -lt 0) { throw "www.$TestDomain resolves to '$($script:LastLookup)', not 0.0.0.0" }
+    if ($elapsed -lt 0) {
+        # What Windows' own resolver says, with the source of each answer, and how many hosts file lines name the site.
+        $resolver = ''
+        try { $resolver = (@(Resolve-DnsName -Name "www.$TestDomain" -ErrorAction Stop) | ForEach-Object { "$($_.Type) $($_.IPAddress) section=$($_.Section)" }) -join '; ' } catch { $resolver = "Resolve-DnsName failed: $($_.Exception.Message)" }
+        $hostsCount = @(Get-HostsLines | Where-Object { $_ -match "\swww\.$([regex]::Escape($TestDomain))$" }).Count
+        throw "www.$TestDomain resolves to '$($script:LastLookup)', not 0.0.0.0 (lookup error: '$($script:LookupError)'; Resolve-DnsName: $resolver; hosts lines for it: $hostsCount)"
+    }
     return "resolves to $($script:LastLookup)"
 }
 
@@ -414,7 +439,10 @@ function Test-VerifyInstallScript {
     $result = Invoke-Program $WindowsPowerShell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $verifyScript) @() 120
     [System.IO.File]::WriteAllText((Join-Path $LogOut 'verify-install.log'), $result.Text)
     foreach ($line in ($result.Text -split "`r?`n")) { Write-Host "    $line" }
-    if ($result.ExitCode -ne 0) { throw "verify-install.ps1 exited $($result.ExitCode) (its FAIL lines are above)" }
+    if ($result.ExitCode -ne 0) {
+        $failLines = (@($result.Text -split "`r?`n") | Where-Object { $_ -match '^\s*FAIL' } | ForEach-Object { $_.Trim() }) -join ' | '
+        throw "verify-install.ps1 exited $($result.ExitCode): $failLines"
+    }
 }
 
 # Every Ethernet and Wi-Fi adapter that is up (except VPN adapters) uses the family DNS servers, or the service logged
@@ -439,15 +467,34 @@ function Test-FamilyDns {
             return $true
         }
         $wrong = @()
+        $script:DnsWrongAdapters = @()
         foreach ($adapter in (& $listAdapters)) {
             $servers = @($adapter.GetIPProperties().DnsAddresses | ForEach-Object { $_.ToString() })
-            if (($servers -notcontains '1.1.1.3') -or ($servers -notcontains '1.0.0.3')) { $wrong += "$($adapter.Name) uses $($servers -join ', ')" }
+            if (($servers -notcontains '1.1.1.3') -or ($servers -notcontains '1.0.0.3')) {
+                $wrong += "$($adapter.Name) uses $($servers -join ', ')"
+                $script:DnsWrongAdapters += $adapter
+            }
         }
         $script:DnsProblem = $wrong -join '; '
         if ($wrong.Count -eq 0) { $script:DnsOutcome = 'every adapter uses 1.1.1.3 and 1.0.0.3' }
         return ($wrong.Count -eq 0)
     }
-    if ($elapsed -lt 0) { throw "after 40 seconds: $($script:DnsProblem), and the log does not say ""family DNS unreachable""" }
+    if ($elapsed -lt 0) {
+        # For each adapter: its ID, its static and network-given servers in the registry, and the servers Windows' DNS client reports for it.
+        $details = foreach ($adapter in (@($script:DnsWrongAdapters) | Select-Object -First 8)) {
+            $key = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($adapter.Id)"
+            $static = '(no key)'; $dhcp = ''
+            if (Test-Path -LiteralPath $key) {
+                $values = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+                $static = "'$($values.NameServer)'"; $dhcp = "'$($values.DhcpNameServer)'"
+            }
+            $client = ''
+            # Index lookup and the DNS client can both refuse a filter pseudo-adapter; that refusal is part of the answer.
+            try { $client = (@(Get-DnsClientServerAddress -InterfaceIndex $adapter.GetIPProperties().GetIPv4Properties().Index -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses) -join ',' } catch { $client = "n/a ($($_.Exception.Message))" }
+            "$($adapter.Name) [$($adapter.Id); $($adapter.Description)] registry NameServer=$static DhcpNameServer=$dhcp client=$client"
+        }
+        throw "after 40 seconds: $($script:DnsProblem), and the log does not say ""family DNS unreachable"". Details: $($details -join ' || ')"
+    }
     return $script:DnsOutcome
 }
 
@@ -476,7 +523,8 @@ function Test-ShortTemporaryUnblockNotCounted {
         if ($result.Text -match 'Wrong password|Too many wrong passwords|checks are locked') { throw "request $i was checked against the password: $($result.Text)" }
     }
     $again = Invoke-SiteBlock @('unblock', $TestDomain) @($WrongPassword)
-    if ($again.Text -match 'Too many wrong passwords|checks are locked') { throw "password checks are locked after the short requests: $($again.Text)" }
+    # Only a lockout answer contains "Too many wrong passwords". An ordinary wrong-password answer also says "... before password checks are locked", so that phrase proves nothing.
+    if ($again.Text -match 'Too many wrong passwords') { throw "password checks are locked after the short requests: $($again.Text)" }
     $left = Get-TriesLeft $again.Text
     if ($script:TriesLeftAfterFirstWrong -ge 0 -and $left -ge 0 -and $left -ne $script:TriesLeftAfterFirstWrong - 1) {
         throw "the second wrong password left $left tries, but $($script:TriesLeftAfterFirstWrong - 1) were expected, so the short requests were counted"
@@ -602,7 +650,16 @@ function Test-TrayApp {
     # Lists the tray app processes in the console session.
     $inSession = { @(Get-Process -Name 'SiteBlockApp' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session }) }
     $first = Wait-Until 15000 { (& $inSession).Count -gt 0 }
-    if ($first -lt 0) { throw "no SiteBlockApp process started in the console session ($session, user $user) within 15 seconds" }
+    if ($first -lt 0) {
+        # Every tray app process with its session and program path, the sessions with their users, and the app guard's lines from the service log.
+        $apps = (@(Get-CimInstance Win32_Process -Filter "Name='SiteBlockApp.exe'" -ErrorAction SilentlyContinue) | ForEach-Object { "pid $($_.ProcessId) session $($_.SessionId) $($_.ExecutablePath)" }) -join '; '
+        if (-not $apps) { $apps = 'none' }
+        $explorers = (@(Get-Process -Name explorer -ErrorAction SilentlyContinue) | ForEach-Object { "explorer pid $($_.Id) session $($_.SessionId)" }) -join '; '
+        $sessions = ''
+        try { $sessions = ((& query.exe session 2>&1) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) -join ' | ' } catch { $sessions = "query session failed: $($_.Exception.Message)" }
+        $guardLines = (@((Read-SharedText $DaemonLog) -split "`r?`n") | Where-Object { $_ -match 'tray app' } | Select-Object -Last 8) -join ' | '
+        throw "no SiteBlockApp process started in the console session ($session, user $user) within 15 seconds. Tray app processes: $apps. $explorers. Sessions: $sessions. Guard log: $guardLines"
+    }
     $old = @(& $inSession | ForEach-Object { $_.Id })
     $old | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     $elapsed = Wait-Until 10000 { @(& $inSession | Where-Object { $old -notcontains $_.Id }).Count -gt 0 }
@@ -814,7 +871,7 @@ function Test-LiveUpdate {
 
         # The install path: the same package with its real checksum installs, and the service keeps its state.
         $good = Invoke-UpdateProbe $probe "http://127.0.0.1:$port/good/version-windows.json" $package $installedBuild
-        if ($good['phase'] -ne 'Idle' -or $good['stillAvailable'] -ne 'False' -or $good['failure'] -ne '') { throw "the install ended as '$($good['phase'])' / '$($good['failure'])' / notice '$($good['notice'])' (update.log is in the logs)" }
+        if ($good['phase'] -ne 'Idle' -or $good['stillAvailable'] -ne 'False' -or $good['failure'] -ne '') { throw "the install ended as '$($good['phase'])' / '$($good['failure'])' / notice '$($good['notice'])'. End of update.log: $(Get-LogTail (Join-Path $LogDir 'update.log') 25)" }
         Wait-Daemon 30
         if ($null -eq (Get-SiteLine (Get-StatusText) $TestDomain)) { throw "$TestDomain is no longer blocked after the update" }
         $check = Invoke-SiteBlock @('unblock', $TestDomain) @($Password)
