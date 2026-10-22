@@ -133,6 +133,8 @@ public sealed class TabWatcher : IDisposable
         if (rules.Count == 0)
         {
             _decider.ForgetAll();
+            // Nothing is remembered about any tab now, so no failed reload is either; a tab seen again later starts with all its tries.
+            _failedReloads.Clear();
             return;
         }
         IReadOnlyList<BrowserProcess> browsers;
@@ -147,6 +149,8 @@ public sealed class TabWatcher : IDisposable
         if (browsers.Count == 0)
         {
             _decider.ForgetAll();
+            // Nothing is remembered about any tab now, so no failed reload is either; a tab seen again later starts with all its tries.
+            _failedReloads.Clear();
             return;
         }
 
@@ -165,6 +169,9 @@ public sealed class TabWatcher : IDisposable
                 continue;
             }
             List<string> toReload = _decider.TabsToReload(browser.ProcessId, windows.Select(window => (window.WindowId, window.Url)), ruleList);
+            // A tab handed back for a retry is returned by the decider only while it is still on a blocked address. When it was not returned, it has left (or could not be
+            // read this look), so its failure record goes and a later return starts with all its tries.
+            foreach (var key in _failedReloads.Keys.Where(key => key.ProcessId == browser.ProcessId && _failedReloads[key].HandedBack && !toReload.Contains(key.TabId)).ToList()) _failedReloads.Remove(key);
             foreach (string windowId in toReload) ReloadIfStillBlocked(browser, windowId, ruleList);
         }
 

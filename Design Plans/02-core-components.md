@@ -170,6 +170,8 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 **Behavioral notes:** A process whose tab list could not be read in a given tick is not passed to `tabsToReload` in that tick, so its memory is kept and a later successful read continues from it. Different processes never share memory, even when two of them use the same tab ID.
 
 
+**Forget(processId, tabId):** drops what is remembered about one tab, so the next list that shows it on a matching address returns it again; a process left with no remembered tab has no entry, and an unknown process or tab changes nothing. The Windows tab watcher calls it when a reload it was asked for did not happen and a retry falls due ([06-windows.md](06-windows.md) § TabWatcher).
+
 **Repeated tab id:** a browser never lists the same tab id twice in one answer, but when a list does, the tab is handled once, by its first appearance: that appearance decides whether the id is returned and which address is remembered, and later appearances are ignored.
 ---
 

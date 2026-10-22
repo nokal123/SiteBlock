@@ -90,20 +90,26 @@ public sealed class WireProtocolTests
     {
         using var daemon = SandboxDaemon.Start(tickSeconds: 60);
         using var silent = RawConnection.Open(daemon.PipePath);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         string? reply = null;
-        var waiting = Task.Run(() => RawConnection.Time(() => reply = silent.ReadLine(10)));
+        TimeSpan silentAnsweredAt = TimeSpan.Zero;
+        var waiting = Task.Run(() => { reply = silent.ReadLine(10); silentAnsweredAt = clock.Elapsed; });
 
-        // While the silent client waits, a normal client is served at once.
+        // While the silent client waits, a normal client is served.
         await Task.Delay(300);
-        var elapsedForOther = RawConnection.Time(() => Assert.True(daemon.Send(new Request(Command.Status)).Ok));
-        TimeSpan elapsed = await waiting;
+        Assert.True(daemon.Send(new Request(Command.Status)).Ok);
+        TimeSpan otherAnsweredAt = clock.Elapsed;
+        await waiting;
 
-        Assert.True(elapsedForOther < TimeSpan.FromSeconds(1.5), $"status took {elapsedForOther.TotalSeconds:0.00} s");
+        // The point is that the normal client does not wait behind the silent one. A server that served one connection at a time would answer it only after the silent
+        // client's 2-second limit ran out, so it must be answered first. This compares the two moments rather than holding the normal answer to a fixed 1.5 seconds,
+        // because that bound failed under load (1.89 s, with every test class running in parallel) while the order was still right.
+        Assert.True(otherAnsweredAt < silentAnsweredAt, $"the normal client was answered at {otherAnsweredAt.TotalSeconds:0.00} s, not before the silent client's timeout reply at {silentAnsweredAt.TotalSeconds:0.00} s");
         Assert.False(string.IsNullOrEmpty(reply), "the silent client got no reply");
         var json = (JsonObject)JsonNode.Parse(reply!)!;
         AssertRefused(json, "badRequest");
         Assert.Equal("No request arrived within 2 seconds.", (string?)json["error"]);
-        Assert.InRange(elapsed.TotalSeconds, 1.6, 8);
+        Assert.InRange(silentAnsweredAt.TotalSeconds, 1.6, 8);
     }
 
     [Fact]
