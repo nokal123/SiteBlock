@@ -162,7 +162,7 @@ public sealed class BlockingTests
     }
 
     // Writes network-services.json with a plain adapter that takes the network's servers, one with hand-set servers, and a VPN that must be left alone.
-    private static void WriteAdapters(SandboxDaemon daemon) => File.WriteAllText(daemon.NetworkServicesPath, """
+    private static void WriteAdapters(SandboxDaemon daemon) => SandboxDaemon.WriteAllText(daemon.NetworkServicesPath, """
         {
           "{11111111-1111-1111-1111-111111111111}": { "name": "Ethernet", "servers": [] },
           "{22222222-2222-2222-2222-222222222222}": { "name": "Wi-Fi", "servers": ["192.168.1.1", "fd00::1"] },

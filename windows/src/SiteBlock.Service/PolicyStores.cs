@@ -172,7 +172,8 @@ public sealed class FilePolicyStore : IPolicyStore
     {
         var keys = new Dictionary<string, Dictionary<string, RegValue>>(StringComparer.OrdinalIgnoreCase);
         if (!File.Exists(_path)) return keys;
-        string text = File.ReadAllText(_path);
+        // Read with full sharing, so this read never makes a test's (or a person's) delete or save of the file fail.
+        string text = SharedFile.ReadAllText(_path);
         if (string.IsNullOrWhiteSpace(text)) return keys;
         JsonNode? root;
         try { root = JsonNode.Parse(text); }

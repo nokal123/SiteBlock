@@ -92,6 +92,10 @@ public sealed class HostsEnforcer : IHostsEnforcer
         // In production the file could be frozen by a read-only attribute or an access list that denies SYSTEM, so free it before writing.
         if (IsProduction) TakeOverFile(force: false);
 
+        // Another program (or the person, in an editor) may have saved the file since it was read. Writing now would replace that save with text built from the
+        // older copy and lose it, so the file is read once more and the pass stops when it changed; the next pass, 2 seconds later, starts from the new text.
+        if (outcome is ReadOutcome.Read or ReadOutcome.Missing && (ReadCurrent(out string again) != outcome || again != current)) return false;
+
         if (!WriteAtomically(wanted)) return false;
 
         // A recently resolved blocked site could keep working from the DNS cache, so empty it once the file has changed.

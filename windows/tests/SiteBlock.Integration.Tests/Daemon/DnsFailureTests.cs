@@ -69,7 +69,9 @@ public sealed class DnsFailureTests
         using var daemon = SandboxDaemon.Create(prepare: d =>
         {
             File.WriteAllText(d.NetworkServicesPath, $$"""{ "{{Wifi}}": { "name": "Wi-Fi", "servers": ["192.168.1.1", "fd00::1"] }, "{{Lab}}": { "name": "Lab LAN", "servers": [] } }""");
-            File.WriteAllText(Path.Combine(d.Root, "family-dns-probe-delay"), "4");
+            // A 12-second first check leaves a real window to watch after the daemon has started and the password has been set. Those two steps took 4.2 seconds
+            // on GitHub's shared Windows machine, which left no window at all when the check took 4 seconds and the window 3.
+            File.WriteAllText(Path.Combine(d.Root, "family-dns-probe-delay"), "12");
         });
         var sinceLaunch = Stopwatch.StartNew();
         daemon.Launch();
@@ -77,8 +79,8 @@ public sealed class DnsFailureTests
 
         // A command runs a DNS pass too; with no answer yet it must change nothing and record nothing.
         daemon.Setup();
-        TimeSpan left = TimeSpan.FromSeconds(3) - sinceLaunch.Elapsed;
-        Assert.True(left > TimeSpan.FromSeconds(0.5), $"the daemon took {sinceLaunch.Elapsed.TotalSeconds:0.0} s to start, too long to watch the first check's 4-second wait");
+        TimeSpan left = TimeSpan.FromSeconds(10) - sinceLaunch.Elapsed;
+        Assert.True(left > TimeSpan.FromSeconds(0.5), $"the daemon took {sinceLaunch.Elapsed.TotalSeconds:0.0} s to start, too long to watch the first check's 12-second wait");
         AssertStaysFor(daemon, Wifi, ["192.168.1.1", "fd00::1"], left, "an adapter changed before the first reachability answer");
         Assert.Empty(ServersOf(daemon, Lab));
         Assert.True(SavedDns(daemon) is null or { Count: 0 }, "originals were recorded before the first reachability answer");

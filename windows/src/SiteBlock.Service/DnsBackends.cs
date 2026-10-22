@@ -70,7 +70,7 @@ public sealed class FileDnsBackend : IDnsSettingsBackend
         if (!File.Exists(_path)) return [];
         try
         {
-            return JsonNode.Parse(File.ReadAllText(_path)) as JsonObject ?? throw new IOException($"{_path} is not a JSON object of adapter entries");
+            return JsonNode.Parse(SharedFile.ReadAllText(_path)) as JsonObject ?? throw new IOException($"{_path} is not a JSON object of adapter entries");
         }
         catch (JsonException error)
         {
