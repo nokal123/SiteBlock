@@ -63,21 +63,36 @@ jobs:
       # be read by someone logged in to GitHub.
       - name: Run the tests
         run: |
-          dotnet test windows/SiteBlock.sln -c Release --logger "trx" --logger "console;verbosity=normal" --results-directory windows/TestResults
+          New-Item -ItemType Directory -Force -Path windows/TestResults | Out-Null
+          # The console output is also kept in a file, so a run that ends without any failed test (a test host that crashed or was aborted) can still say why.
+          dotnet test windows/SiteBlock.sln -c Release --logger "trx" --logger "console;verbosity=normal" --results-directory windows/TestResults 2>&1 | Tee-Object -FilePath windows/TestResults/console.txt
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             # Makes text safe for an annotation: GitHub reads %, CR and LF as control characters.
             function Escape([string]$text) { return $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A') }
-            $failed = foreach ($trx in (Get-ChildItem -Path windows/TestResults -Recurse -Filter *.trx -ErrorAction SilentlyContinue)) {
-              Select-Xml -Path $trx.FullName -XPath "//*[local-name()='UnitTestResult'][@outcome='Failed']" | ForEach-Object { $_.Node }
-            }
-            $failed | Select-Object -First 20 | ForEach-Object {
-              $message = ''
-              $node = $_.SelectSingleNode(".//*[local-name()='ErrorInfo']/*[local-name()='Message']")
-              # The whole message, its lines joined with " | ", because an assertion's expected and actual values come after its first line; capped so the run page stays readable.
-              if ($null -ne $node) { $message = (($node.InnerText -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ' | ' }
-              if ($message.Length -gt 1500) { $message = $message.Substring(0, 1500) + '…' }
-              Write-Host "::error title=Failed test::$(Escape "$($_.testName): $message")"
+            try {
+              $failed = @(foreach ($trx in (Get-ChildItem -Path windows/TestResults -Recurse -Filter *.trx -ErrorAction SilentlyContinue)) {
+                Select-Xml -Path $trx.FullName -XPath "//*[local-name()='UnitTestResult'][@outcome='Failed']" | ForEach-Object { $_.Node }
+              })
+              foreach ($result in ($failed | Select-Object -First 20)) {
+                $message = ''
+                $node = $result.SelectSingleNode(".//*[local-name()='ErrorInfo']/*[local-name()='Message']")
+                # The whole message, its lines joined with " | ", because an assertion's expected and actual values come after its first line; capped so the run page stays readable.
+                if ($null -ne $node) { $message = ((($node.InnerText -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ' | ') }
+                if ($message.Length -gt 1500) { $message = $message.Substring(0, 1500) + '...' }
+                Write-Host "::error title=Failed test::$(Escape "$($result.testName): $message")"
+              }
+              if ($failed.Count -eq 0) {
+                # No test failed, so the run itself broke (a build error, or a test host that crashed or was aborted). The lines that say so, and the end of the output, become annotations.
+                $console = @(Get-Content -LiteralPath windows/TestResults/console.txt -ErrorAction SilentlyContinue)
+                $telling = @($console | Where-Object { $_ -match 'error|abort|crash|Unhandled|Exception|Fatal|Stack overflow|timed out' } | Select-Object -First 15)
+                foreach ($line in $telling) { Write-Host "::error title=Test run problem::$(Escape $line.Trim())" }
+                $tail = ($console | Select-Object -Last 25 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ' | '
+                if ($tail.Length -gt 3000) { $tail = $tail.Substring($tail.Length - 3000) }
+                Write-Host "::error title=End of the test output::$(Escape $tail)"
+              }
+            } catch {
+              Write-Host "::error title=Test report failed::$(Escape $_.Exception.Message)"
             }
             exit 1
           }
