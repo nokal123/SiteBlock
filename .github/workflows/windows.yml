@@ -99,7 +99,19 @@ jobs:
 
       # Builds both kinds of PC (x64 and arm64) and writes windows/dist/SiteBlock-Windows.zip and version-windows.json.
       - name: Build the package
-        run: pwsh windows/scripts/package.ps1
+        run: |
+          pwsh windows/scripts/package.ps1 2>&1 | Tee-Object -FilePath windows/package-output.txt
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # The error lines and the end of the output become annotations, because the full log can only be read by someone logged in to GitHub.
+            function Escape([string]$text) { return $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A') }
+            $output = @(Get-Content -LiteralPath windows/package-output.txt -ErrorAction SilentlyContinue)
+            foreach ($line in @($output | Where-Object { $_ -match 'error|failed|exception|cannot' } | Select-Object -First 10)) { Write-Host "::error title=Package problem::$(Escape $line.Trim())" }
+            $tail = ($output | Select-Object -Last 30 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ' | '
+            if ($tail.Length -gt 3000) { $tail = $tail.Substring($tail.Length - 3000) }
+            Write-Host "::error title=End of the package output::$(Escape $tail)"
+            exit $code
+          }
 
       - name: Keep the zip as a run artifact
         uses: actions/upload-artifact@v6

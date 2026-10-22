@@ -270,10 +270,18 @@ public sealed class PipeServer
                 _onRejected(peer);
                 return;
             }
+            // The slot counts requests being served. It is given back exactly once: just before the reply is written (see ServeAsync), or here when no reply goes out.
+            bool released = false;
+            void ReleaseSlot()
+            {
+                if (released) return;
+                released = true;
+                _limiter.Release(peer);
+            }
             bool answered = false;
             try
             {
-                answered = await ServeAsync(pipe, peer).ConfigureAwait(false);
+                answered = await ServeAsync(pipe, peer, ReleaseSlot).ConfigureAwait(false);
             }
             catch (Exception error) when (error is IOException or ObjectDisposedException or OperationCanceledException)
             {
@@ -281,8 +289,7 @@ public sealed class PipeServer
             }
             finally
             {
-                // The slot counts requests being served, so it is free as soon as the reply is out; the client's next request never meets its own finished one.
-                _limiter.Release(peer);
+                ReleaseSlot();
             }
             // On Windows, closing the server end throws away bytes the client has not read yet. The client hangs up as soon as it has read its line, so the server waits for that
             // hang-up (a read that ends), for at most 2 seconds; it is a cancellable read, so a client that never reads cannot hold the instance.
@@ -399,7 +406,7 @@ public sealed class PipeServer
     /// Serves one admitted connection: reads the request, calls the handler, and writes the reply plus a newline. Every outcome ends in a reply or a clean close.
     /// Returns true when the caller should still wait for the client to hang up (a reply went out and nothing was drained yet).
     /// </summary>
-    private async Task<bool> ServeAsync(NamedPipeServerStream pipe, Peer peer)
+    private async Task<bool> ServeAsync(NamedPipeServerStream pipe, Peer peer, Action releaseSlot)
     {
         var (kind, line) = await ReadRequestLineAsync(pipe).ConfigureAwait(false);
         Response response;
@@ -452,6 +459,9 @@ public sealed class PipeServer
             // If encoding somehow fails, a fixed failure line is sent instead of nothing.
             reply = """{"error":"The reply could not be encoded.","errorCode":"internal","ok":false}"""u8.ToArray();
         }
+        // The slot is given back before the reply is written, not after. A client can read its reply the instant the bytes are out and open its next connection at once; if the slot were
+        // freed only after the write returned, that next connection could arrive while the finished one still counted against the same user and be turned away.
+        releaseSlot();
         using var writeLimit = new CancellationTokenSource(TimeSpan.FromSeconds(ClientTimeoutSeconds));
         // The reply goes out before the drain: it is small enough for the pipe's buffer, and the client reads it once its own oversized write has been taken off its hands.
         await pipe.WriteAsync(reply.Append((byte)'\n').ToArray(), writeLimit.Token).ConfigureAwait(false);

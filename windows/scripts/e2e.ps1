@@ -66,7 +66,11 @@ function Add-Result([string]$outcome, [string]$name, [string]$why) {
         'PASS' {
             if ($why) { Write-Host "PASS $name ($why)" -ForegroundColor Green } else { Write-Host "PASS $name" -ForegroundColor Green }
         }
-        'SKIP' { Write-Host "SKIP ${name}: $why" -ForegroundColor Yellow }
+        'SKIP' {
+            Write-Host "SKIP ${name}: $why" -ForegroundColor Yellow
+            # A skip is a notice on the run page too, so it is plain from outside which checks did not run and why.
+            Write-Host ('::notice title={0}::{1}' -f (ConvertTo-AnnotationText "e2e skipped: $name" -Title), (ConvertTo-AnnotationText $why))
+        }
         'FAIL' {
             Write-Host "FAIL ${name}: $why" -ForegroundColor Red
             Write-Host ('::error title={0}::{1}' -f (ConvertTo-AnnotationText "e2e $name" -Title), (ConvertTo-AnnotationText $why))
@@ -842,6 +846,17 @@ function Save-Logs {
     try { $text = Read-SharedText $DaemonLog } catch { $text = "could not read it: $($_.Exception.Message)" }
     $lines = @($text -split "`r?`n")
     $lines | Select-Object -Last 50 | ForEach-Object { Write-Host "    $_" }
+    # When a check failed, the end of each service log also becomes a warning on the run page, because the uploaded logs can only be downloaded by someone
+    # logged in to GitHub. The logs never hold a blocked site, a path rule or a password, by design.
+    if (@($script:Results | Where-Object { $_.Outcome -eq 'FAIL' }).Count -gt 0) {
+        foreach ($log in @($DaemonLog, (Join-Path $LogDir 'watchdog.log'))) {
+            $logText = ''
+            try { $logText = Read-SharedText $log } catch { continue }
+            $tail = (@($logText -split "`r?`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 40) -join ' | '
+            if ($tail.Length -gt 4000) { $tail = $tail.Substring($tail.Length - 4000) }
+            if ($tail -ne '') { Write-Host ('::warning title={0}::{1}' -f (ConvertTo-AnnotationText "end of $(Split-Path -Leaf $log)" -Title), (ConvertTo-AnnotationText $tail)) }
+        }
+    }
 }
 
 # Prints the totals and every failed check again, and returns the exit code (1 when any check failed).
@@ -853,6 +868,9 @@ function Write-Summary {
     Write-Host '=============================================='
     Write-Host "Summary: $passed passed, $($failed.Count) failed, $skipped skipped"
     foreach ($result in $failed) { Write-Host "  FAIL $($result.Name): $($result.Why)" -ForegroundColor Red }
+    # The totals as a notice on the run page, so a green run still says how many checks really ran.
+    $passedNames = (@($script:Results | Where-Object { $_.Outcome -eq 'PASS' } | ForEach-Object { $_.Name }) -join '; ')
+    Write-Host ('::notice title={0}::{1}' -f (ConvertTo-AnnotationText 'e2e summary' -Title), (ConvertTo-AnnotationText "$passed passed, $($failed.Count) failed, $skipped skipped. Passed: $passedNames"))
     if ($failed.Count -gt 0) { return 1 }
     return 0
 }
