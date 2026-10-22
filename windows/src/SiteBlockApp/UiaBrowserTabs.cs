@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Accessibility;
 using System.Globalization;
 using System.Windows.Automation;
 using SiteBlock.AppLogic;
@@ -149,7 +151,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         AutomationElement button = Element(hwnd, reloadButton: true) ?? throw new InvalidOperationException("The window has no reload button.");
         try
         {
-            ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            Press(hwnd, button);
         }
         catch (Exception error)
         {
@@ -246,6 +248,53 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             return true;
         }
     }
+
+    /// <summary>
+    /// Presses a browser button. A button that offers UI Automation's Invoke pattern is invoked. Chrome's reload button does not: it offers only ExpandCollapse (which opens
+    /// its menu) and ScrollItem, so it is pressed the way screen readers press it, through the older accessibility interface (MSAA), whose default action for a button is a
+    /// press. The MSAA object is found by asking this window's own accessibility tree what lies at the button's centre, so a window lying on top never gets the press, and
+    /// it is pressed only when it is a button. Throws when the button cannot be pressed.
+    /// </summary>
+    private static void Press(IntPtr hwnd, AutomationElement button)
+    {
+        if (button.TryGetCurrentPattern(InvokePattern.Pattern, out object invoke))
+        {
+            ((InvokePattern)invoke).Invoke();
+            return;
+        }
+        // UI Automation and MSAA both give screen positions in physical pixels here, because the app is per-monitor DPI aware.
+        System.Windows.Rect bounds = button.Current.BoundingRectangle;
+        if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0) throw new InvalidOperationException("The reload button has no position on screen.");
+        int x = (int)(bounds.Left + bounds.Width / 2);
+        int y = (int)(bounds.Top + bounds.Height / 2);
+
+        Guid accessibleId = AccessibleInterfaceId;
+        int result = AccessibleObjectFromWindow(hwnd, ObjectIdClient, ref accessibleId, out object rootObject);
+        if (result != 0 || rootObject is not IAccessible root) throw new InvalidOperationException($"The window's accessibility object could not be read (0x{result:X8}).");
+        // accHitTest answers with the object at the point, or with a child number of the object it was asked on, or with nothing.
+        object hit = root.accHitTest(x, y);
+        (IAccessible target, object child) = hit switch
+        {
+            IAccessible element => (element, (object)ChildSelf),
+            int childNumber when childNumber != ChildSelf => (root, childNumber),
+            _ => throw new InvalidOperationException("Nothing in the window lies at the reload button's position."),
+        };
+        int role = Convert.ToInt32(target.get_accRole(child), System.Globalization.CultureInfo.InvariantCulture);
+        if (!ButtonRoles.Contains(role)) throw new InvalidOperationException($"The object at the reload button's position is not a button (MSAA role {role}).");
+        target.accDoDefaultAction(child);
+    }
+
+    // IID_IAccessible, the MSAA interface asked for from the window.
+    private static readonly Guid AccessibleInterfaceId = new("618736E0-3C3D-11CF-810C-00AA00389B71");
+    // OBJID_CLIENT: the window's content (for Chrome, its whole accessibility tree), rather than its frame.
+    private const uint ObjectIdClient = 0xFFFFFFFC;
+    // CHILDID_SELF: "the object itself" when calling an MSAA method.
+    private const int ChildSelf = 0;
+    // The MSAA roles of a button: push button (0x2B), button with drop-down (0x38), button with menu (0x39) and split button (0x3E).
+    private static readonly HashSet<int> ButtonRoles = [0x2B, 0x38, 0x39, 0x3E];
+
+    [DllImport("oleacc.dll")]
+    private static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint objectId, ref Guid interfaceId, [MarshalAs(UnmanagedType.IUnknown)] out object accessible);
 
     /// <summary>Describes one control for the log: its class name, control type, whether it is enabled, and the UI Automation patterns (abilities, such as Invoke or Toggle) it offers. No text from the control is included.</summary>
     private static string DescribeElement(AutomationElement element)
