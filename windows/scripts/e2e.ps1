@@ -725,10 +725,11 @@ function Invoke-TabScript([string]$webSocketUrl, [string]$expression) {
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
     $limit = New-Object System.Threading.CancellationTokenSource 10000
     try {
-        $socket.ConnectAsync([Uri]$webSocketUrl, $limit.Token).GetAwaiter().GetResult()
+        # [void]: PowerShell gives back a placeholder object (VoidTaskResult) from waiting on these tasks, which would otherwise become part of this function's output.
+        [void]$socket.ConnectAsync([Uri]$webSocketUrl, $limit.Token).GetAwaiter().GetResult()
         $request = @{ id = 1; method = 'Runtime.evaluate'; params = @{ expression = $expression; returnByValue = $true } } | ConvertTo-Json -Compress -Depth 5
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($request)
-        $socket.SendAsync((New-Object System.ArraySegment[byte] -ArgumentList @(,$bytes)), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $limit.Token).GetAwaiter().GetResult()
+        [void]$socket.SendAsync((New-Object System.ArraySegment[byte] -ArgumentList @(,$bytes)), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $limit.Token).GetAwaiter().GetResult()
         # Chrome may send other messages first; the answer is the one carrying id 1.
         while ($true) {
             $text = New-Object System.Text.StringBuilder
@@ -806,16 +807,26 @@ function Test-LiveTabWatcher {
         }
         $before = Get-TabReloadCount
         # The tray app reads the rule list on its next status poll, every 30 seconds while its panel is closed, so the wait allows for that.
-        [void](Invoke-TabScript $moving.webSocketDebuggerUrl "history.pushState({}, '', '/sbtabtest/clip'); location.href")
-        $elapsed = Wait-Until 45000 { (Invoke-TabScript $moving.webSocketDebuggerUrl "typeof window.__siteblockMark") -eq 'undefined' }
-        if ($elapsed -lt 0) { throw 'the tab that moved onto the blocked path was not reloaded within 45 seconds' }
+        $pushed = Invoke-TabScript $moving.webSocketDebuggerUrl "history.pushState({}, '', '/sbtabtest/clip'); location.href"
+        # What the tab does after the move, every half second for the first few seconds, so a failure shows who moved or reloaded it (Chrome itself or the tray app).
+        $timeline = New-Object System.Collections.Generic.List[string]
+        $timeline.Add("after pushState: $pushed")
+        $timelineWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $elapsed = Wait-Until 45000 {
+            $state = Invoke-TabScript $moving.webSocketDebuggerUrl "location.href + ' mark=' + (typeof window.__siteblockMark)"
+            if ($timelineWatch.ElapsedMilliseconds -lt 6000 -or $state -notmatch 'mark=string') { $timeline.Add("$($timelineWatch.ElapsedMilliseconds) ms: $state") }
+            $state -match 'mark=undefined'
+        }
+        $script:TabTimeline = ($timeline | Select-Object -First 25) -join ' | '
+        if ($elapsed -lt 0) { throw "the tab that moved onto the blocked path was not reloaded within 45 seconds (timeline: $($script:TabTimeline))" }
         # A few more watcher ticks must not reload it again.
         Start-Sleep -Seconds 3
         $reloads = (Get-TabReloadCount) - $before
         if ($reloads -ne 1) {
             $nowUrl = ''
             try { $nowUrl = Invoke-TabScript $moving.webSocketDebuggerUrl 'location.href' } catch { $nowUrl = "unreadable: $($_.Exception.Message)" }
-            throw "the tray app logged $reloads reloads, not exactly one (the moved tab is now at '$nowUrl'). End of app.log: $(Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 15)"
+            $chromeVersion = (Get-Item -LiteralPath $chrome).VersionInfo.ProductVersion
+            throw "the tray app logged $reloads reloads, not exactly one (Chrome $chromeVersion; the moved tab is now at '$nowUrl'; timeline: $($script:TabTimeline)). End of app.log: $(Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 15)"
         }
         $stayMark = Invoke-TabScript $staying.webSocketDebuggerUrl 'window.__siteblockMark'
         if ($stayMark -ne 'marked') { throw 'the second window, which never left an allowed page, was reloaded too' }
