@@ -132,7 +132,11 @@ public sealed class WireProtocolTests
                     fifthReply = fifth.ReadLine(1.5);
                 }
                 // The idle ones are answered with the read timeout and their slots are given back.
-                foreach (var connection in idle) Assert.Contains("badRequest", connection.ReadLine(8) ?? "");
+                foreach (var connection in idle)
+                {
+                    string? idleReply = connection.ReadLine(8);
+                    Assert.True(idleReply?.Contains("badRequest") == true, $"an idle connection should get the 2-second badRequest, but got {(idleReply is null ? "no reply and no close within 8 s" : $"\"{idleReply}\"")} ({clock.Elapsed.TotalSeconds:0.00} s after the first connection)");
+                }
             }
             finally
             {

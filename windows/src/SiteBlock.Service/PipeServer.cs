@@ -124,10 +124,53 @@ public sealed class PipeServer
     private NamedPipeServerStream CreateInstance(bool isFirst)
     {
         if (!OperatingSystem.IsWindows()) return new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxInstances, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-        // FirstPipeInstance makes the creation fail when the name already exists, so a program that grabbed the name first cannot pose as the service.
-        var options = PipeOptions.Asynchronous | (isFirst ? PipeOptions.FirstPipeInstance : PipeOptions.None);
-        return NamedPipeServerStreamAcl.Create(_pipeName, PipeDirection.InOut, MaxInstances, PipeTransmissionMode.Byte, options, 4096, 4096, BuildSecurity(_sandbox));
+        return CreateWindowsInstance(_pipeName, isFirst, BuildSecurity(_sandbox));
     }
+
+    /// <summary>
+    /// Creates one Windows pipe instance with CreateNamedPipe directly, so every flag is certain: overlapped I/O (FILE_FLAG_OVERLAPPED), which is what lets the 2-second limits cancel a
+    /// read that is waiting for a silent client without holding a thread; FILE_FLAG_FIRST_PIPE_INSTANCE on the first one, so creation fails when the name already exists and a program that
+    /// grabbed the name first cannot pose as the service; PIPE_REJECT_REMOTE_CLIENTS, so Windows itself refuses connections from other computers; and the access list.
+    /// Throws <see cref="IOException"/> when Windows refuses (for example error 231 while every instance is busy, or error 5 when another program already owns the name).
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static NamedPipeServerStream CreateWindowsInstance(string name, bool isFirst, PipeSecurity security)
+    {
+        const uint pipeAccessDuplex = 0x3, fileFlagOverlapped = 0x40000000, fileFlagFirstPipeInstance = 0x00080000;
+        // PIPE_TYPE_BYTE, PIPE_READMODE_BYTE and PIPE_WAIT are all 0.
+        const uint pipeRejectRemoteClients = 0x8;
+        byte[] descriptor = security.GetSecurityDescriptorBinaryForm();
+        var pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
+        try
+        {
+            var attributes = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), SecurityDescriptor = pinned.AddrOfPinnedObject(), InheritHandle = 0 };
+            uint openMode = pipeAccessDuplex | fileFlagOverlapped | (isFirst ? fileFlagFirstPipeInstance : 0);
+            var handle = CreateNamedPipeW(@"\\.\pipe\" + name, openMode, pipeRejectRemoteClients, MaxInstances, 4096, 4096, 0, ref attributes);
+            if (handle.IsInvalid)
+            {
+                int error = Marshal.GetLastPInvokeError();
+                handle.Dispose();
+                throw new IOException($"CreateNamedPipe failed with Windows error {error}", unchecked((int)0x80070000) | error);
+            }
+            return new NamedPipeServerStream(PipeDirection.InOut, isAsync: true, isConnected: false, handle);
+        }
+        finally
+        {
+            pinned.Free();
+        }
+    }
+
+    /// <summary>SECURITY_ATTRIBUTES from minwinbase.h.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        public int InheritHandle;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafePipeHandle CreateNamedPipeW(string name, uint openMode, uint pipeMode, uint maxInstances, uint outBufferSize, uint inBufferSize, uint defaultTimeout, ref SecurityAttributes attributes);
 
     /// <summary>
     /// What every signed-in user may do with the pipe: read and write data, and read its attributes and permissions. It leaves out the right to create pipe instances, so no other program
