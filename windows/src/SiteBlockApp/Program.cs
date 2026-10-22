@@ -67,7 +67,7 @@ internal sealed class SiteBlockApplication : Application
         IClock clock = SystemClock.Instance;
 
         var updater = new Updater(new HttpUpdateDownloader(), new UacElevatedRunner(), new RegistryDismissedUpdateStore(), clock, ui);
-        var tabWatcher = new TabWatcher(new UiaBrowserTabs(), clock, _log);
+        var tabWatcher = new TabWatcher(new UiaBrowserTabs(_log), clock, _log);
         _status = new StatusModel(new CoreDaemonClient(new DaemonClient()), clock, ui, updater, tabWatcher);
         var panelModel = new PanelModel(_status);
 

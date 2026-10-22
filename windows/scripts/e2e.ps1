@@ -820,7 +820,10 @@ function Test-LiveTabWatcher {
             $state -match 'mark=undefined'
         }
         $script:TabTimeline = ($timeline | Select-Object -First 25) -join ' | '
-        if ($elapsed -lt 0) { throw "the tab that moved onto the blocked path was not reloaded within 45 seconds (timeline: $($script:TabTimeline))" }
+        if ($elapsed -lt 0) {
+            $tail = Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 12
+            throw "the tab that moved onto the blocked path was not reloaded within 45 seconds (the tab stayed on the blocked path: $(@($timeline)[-1])). End of app.log: $tail"
+        }
         # A few more watcher ticks must not reload it again.
         Start-Sleep -Seconds 3
         $reloads = (Get-TabReloadCount) - $before

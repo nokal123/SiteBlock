@@ -42,6 +42,18 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
     /// <summary>Process names already looked up, by process id and start time, so a reused id is looked up again.</summary>
     private readonly Dictionary<int, (DateTime Started, string? Name)> _processNames = [];
 
+    // The app's log, for a short report of what the reader saw. Every line holds counts and the browser's own control class names only, never an address, a domain or a path rule.
+    private readonly IAppLog _log;
+    // What the reads since the last listing found: addresses read, windows whose address bar was not found, and windows skipped because their address bar had focus.
+    private int _passRead, _passNotFound, _passFocused;
+    // The last summary line written, so a line is written only when something changed.
+    private string _lastSummary = "";
+    // When a failed address bar search was last described in the log (milliseconds since Windows started); one description a minute is enough.
+    private long _lastSearchReport = long.MinValue;
+
+    /// <summary>Creates the reader. <paramref name="log"/> receives a line when what the reader sees changes, and a description of a failed address bar search at most once a minute.</summary>
+    public UiaBrowserTabs(IAppLog log) => _log = log;
+
     /// <summary>Lists the browser processes that own at least one visible, titled browser window right now.</summary>
     public IReadOnlyList<BrowserProcess> RunningBrowsers()
     {
@@ -64,6 +76,19 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             if (DisplayNameOf(processId) is { } name) browsers.Add(new BrowserProcess(processId, name));
             else windows.Remove(processId);
         }
+        // One line when the picture changes: how many browser processes and windows there are, and what the reads since the last listing found.
+        int windowCount = windows.Values.Sum(list => list.Count);
+        string summary;
+        lock (_gate)
+        {
+            summary = $"tab reader: {browsers.Count} browser processes with {windowCount} windows; last look read {_passRead} addresses, {_passNotFound} address bars not found, {_passFocused} skipped while focused";
+            _passRead = _passNotFound = _passFocused = 0;
+        }
+        if (summary != _lastSummary)
+        {
+            _lastSummary = summary;
+            _log.Info(summary);
+        }
         lock (_gate)
         {
             _windows = windows;
@@ -85,12 +110,17 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         {
             try
             {
-                if (ReadAddress(hwnd) is { Length: > 0 } url) result.Add(new BrowserWindowAddress(IdOf(hwnd), url));
+                if (ReadAddress(hwnd) is { Length: > 0 } url)
+                {
+                    result.Add(new BrowserWindowAddress(IdOf(hwnd), url));
+                    lock (_gate) _passRead++;
+                }
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 // This window closed or stopped answering; forget its elements and skip it this tick.
                 Forget(hwnd);
+                ReportOncePerMinute($"tab reader: reading a window failed ({error.GetType().Name})");
             }
         }
         return result;
@@ -133,8 +163,16 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
     /// </summary>
     private string? ReadAddress(IntPtr hwnd)
     {
-        if (Element(hwnd, reloadButton: false) is not { } bar) return null;
-        if (bar.Current.HasKeyboardFocus) return null;
+        if (Element(hwnd, reloadButton: false) is not { } bar)
+        {
+            lock (_gate) _passNotFound++;
+            return null;
+        }
+        if (bar.Current.HasKeyboardFocus)
+        {
+            lock (_gate) _passFocused++;
+            return null;
+        }
         if (!bar.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern)) return null;
         string text = ((ValuePattern)pattern).Current.Value;
         return BrowserAddress.ToUrl(text);
@@ -154,6 +192,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
 
         AutomationElement window = AutomationElement.FromHandle(hwnd);
         found = reloadButton ? Find(window, ReloadButtonClass, ControlType.Button) : Find(window, AddressBarClass, ControlType.Edit);
+        if (found is null && !reloadButton && ShouldReport()) _log.Info(DescribeSearch(window));
         lock (_gate)
         {
             // Chrome builds its accessibility tree only once a reader asks, so the first search can come up empty; the window is searched again later.
@@ -193,6 +232,61 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             }
         }
         return null;
+    }
+
+    /// <summary>True at most once a minute, for a description of a failed address bar search.</summary>
+    private bool ShouldReport()
+    {
+        lock (_gate)
+        {
+            long now = Environment.TickCount64;
+            if (_lastSearchReport != long.MinValue && now - _lastSearchReport < 60_000) return false;
+            _lastSearchReport = now;
+            return true;
+        }
+    }
+
+    /// <summary>Writes a line at most once a minute (shared with the search description).</summary>
+    private void ReportOncePerMinute(string line)
+    {
+        if (ShouldReport()) _log.Info(line);
+    }
+
+    /// <summary>
+    /// Describes what a failed address bar search saw, for the log: how many elements the browser's own controls hold (up to 400), the class names of its first-level
+    /// children and of every edit control found, outside web page content. These are the browser's control names, never page text or an address.
+    /// </summary>
+    private static string DescribeSearch(AutomationElement root)
+    {
+        TreeWalker walker = TreeWalker.ControlViewWalker;
+        var top = new List<string>();
+        var edits = new List<string>();
+        var queue = new Queue<(AutomationElement Element, int Depth)>();
+        queue.Enqueue((root, 0));
+        int visited = 0;
+        try
+        {
+            while (queue.Count > 0 && visited < 400)
+            {
+                var (parent, depth) = queue.Dequeue();
+                AutomationElement? child = walker.GetFirstChild(parent);
+                while (child is not null && visited < 400)
+                {
+                    visited++;
+                    AutomationElement.AutomationElementInformation info = child.Current;
+                    string label = $"{info.ClassName}/{info.ControlType.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal)}";
+                    if (depth == 0 && top.Count < 10) top.Add(label);
+                    if (info.ControlType == ControlType.Edit && edits.Count < 10) edits.Add(label);
+                    if (info.ControlType != ControlType.Document) queue.Enqueue((child, depth + 1));
+                    child = walker.GetNextSibling(child);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            return $"tab reader: no address bar found; describing the window failed after {visited} elements ({error.GetType().Name})";
+        }
+        return $"tab reader: no address bar found among {visited} elements; top level: [{string.Join(", ", top)}]; edit controls: [{string.Join(", ", edits)}]";
     }
 
     /// <summary>The display name of a supported browser process, or null for any other process. Names are cached by process id and start time.</summary>
