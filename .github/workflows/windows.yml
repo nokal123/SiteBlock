@@ -29,6 +29,7 @@ concurrency:
   group: windows-package-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
+# Each action is pinned to the exact commit of the release named after it, so a moved tag can never change what runs with this workflow's write access.
 jobs:
   package:
     # A fresh Windows Server 2025 machine for each run. The job has administrator rights, which the real install needs.
@@ -39,13 +40,13 @@ jobs:
         shell: pwsh
     steps:
       - name: Check out the code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # The whole history, because the build number is the count of commits. A shallow checkout would count 1.
           fetch-depth: 0
 
       - name: Set up .NET 10
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 10.0.x
 
@@ -118,7 +119,7 @@ jobs:
           }
 
       - name: Keep the zip as a run artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: SiteBlock-Windows-package
           path: |
@@ -134,7 +135,7 @@ jobs:
       # The logs never hold blocked sites or passwords, by design.
       - name: Keep the end-to-end logs as a run artifact
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: SiteBlock-Windows-e2e-logs
           path: windows/dist/e2e-logs
