@@ -774,7 +774,13 @@ function Test-LiveTabWatcher {
     if ($null -eq $chrome) { Skip-Check 'Chrome is not installed on this machine' }
     $session = Get-ConsoleSessionId
     if ((Get-Process -Id $PID).SessionId -ne $session) { Skip-Check "this script does not run on the interactive desktop (it is in session $((Get-Process -Id $PID).SessionId), the console is session $session)" }
-    if (@(Get-Process -Name 'SiteBlockApp' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session }).Count -eq 0) { Skip-Check 'the tray app is not running on the interactive desktop' }
+    # The check before this one (the upgrade) stops the tray app on purpose and the service's guard starts it again within seconds, so the app is waited
+    # for, found the same way as in Test-TrayApp: in Windows' process list, in the console session, running the installed program.
+    $appPath = Join-Path $ProgramDir 'SiteBlockApp.exe'
+    $appWait = Wait-Until 20000 { @(Get-CimInstance Win32_Process -Filter "Name='SiteBlockApp.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session -and $_.ExecutablePath -eq $appPath }).Count -gt 0 }
+    if ($appWait -lt 0) { Skip-Check 'the tray app is not running on the interactive desktop (waited 20 seconds)' }
+    # The app reads the rule list on its first status poll after it starts, so a freshly started app is given a moment to come up before the rule is added.
+    Start-Sleep -Seconds 3
 
     $rule = 'example.com/sbtabtest'
     $add = Invoke-SiteBlock @('add', $rule)
