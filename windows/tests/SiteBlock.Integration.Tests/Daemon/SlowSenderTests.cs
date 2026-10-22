@@ -41,7 +41,12 @@ public sealed class SlowSenderTests
         Assert.False((bool)json["ok"]!, reply);
         Assert.Equal("badRequest", (string?)json["errorCode"]);
         Assert.Equal("No request arrived within 2 seconds.", (string?)json["error"]);
-        Assert.InRange(elapsed.TotalSeconds, 1.8, 3.0);
+        // The reply's wording and error code above already prove the server cut the request off at its 2-second limit: a server that waited for the whole
+        // 3.1-second line, or reset its wait on each byte, would answer the status request instead. So the time only has to show the cut came after the
+        // limit and not unreasonably late. The upper bound is 8 seconds, as in WireProtocolTests' idle-connection test, because on GitHub's shared Windows
+        // machine, with other test classes hashing passwords in parallel, this test's own thread pool can add seconds before it sees the reply; a 3-second
+        // bound failed there with 3.95 s and 4.99 s while the reply was the correct one.
+        Assert.InRange(elapsed.TotalSeconds, 1.8, 8.0);
         // Control: the daemon still answers a normal client.
         Assert.True(daemon.SendPatiently(new SiteBlock.Core.Request(SiteBlock.Core.Command.Status)).Ok);
     }

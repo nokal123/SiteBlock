@@ -252,14 +252,16 @@ public sealed class PipeServer
             }
             var connected = waiting;
             var acceptedAt = DateTime.UtcNow;
+            // The 2-second request limit counts from here, on Windows' uptime counter, so neither a slow hand-off to a worker thread nor a clock change stretches it.
+            long acceptedTick = Environment.TickCount64;
             waiting = null;
-            _ = Task.Run(() => ServeConnectionAsync(connected, acceptedAt));
+            _ = Task.Run(() => ServeConnectionAsync(connected, acceptedAt, acceptedTick));
         }
         waiting?.Dispose();
     }
 
     /// <summary>Reads who is on the other end, applies the connection limits, and serves the connection. A connection over its limit is closed at once without a reply.</summary>
-    private async Task ServeConnectionAsync(NamedPipeServerStream pipe, DateTime acceptedAt)
+    private async Task ServeConnectionAsync(NamedPipeServerStream pipe, DateTime acceptedAt, long acceptedTick)
     {
         await using (pipe)
         {
@@ -281,7 +283,7 @@ public sealed class PipeServer
             bool answered = false;
             try
             {
-                answered = await ServeAsync(pipe, peer, ReleaseSlot).ConfigureAwait(false);
+                answered = await ServeAsync(pipe, peer, ReleaseSlot, acceptedTick).ConfigureAwait(false);
             }
             catch (Exception error) when (error is IOException or ObjectDisposedException or OperationCanceledException)
             {
@@ -341,12 +343,14 @@ public sealed class PipeServer
     }
 
     /// <summary>
-    /// Reads bytes until a newline, the end of the stream, or the size limit, within 2 seconds in total, so a client that sends one byte at a time cannot hold the connection open.
+    /// Reads bytes until a newline, the end of the stream, or the size limit, within 2 seconds of the connection being accepted, so a client that sends one byte at a time cannot hold the connection open.
     /// Only the bytes that just arrived are searched for the newline, so a large request costs time in proportion to its size.
     /// </summary>
-    private static async Task<(ReadKind Kind, byte[] Line)> ReadRequestLineAsync(PipeStream pipe)
+    private static async Task<(ReadKind Kind, byte[] Line)> ReadRequestLineAsync(PipeStream pipe, long acceptedTick)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(ClientTimeoutSeconds));
+        // The limit counts from when the connection was accepted, not from when this read starts; time already spent (identity, limits, a busy thread pool) is taken off.
+        long remainingMs = Math.Max(0, ClientTimeoutSeconds * 1000L - (Environment.TickCount64 - acceptedTick));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(remainingMs));
         var collected = new MemoryStream();
         byte[] chunk = new byte[4096];
         while (true)
@@ -406,9 +410,9 @@ public sealed class PipeServer
     /// Serves one admitted connection: reads the request, calls the handler, and writes the reply plus a newline. Every outcome ends in a reply or a clean close.
     /// Returns true when the caller should still wait for the client to hang up (a reply went out and nothing was drained yet).
     /// </summary>
-    private async Task<bool> ServeAsync(NamedPipeServerStream pipe, Peer peer, Action releaseSlot)
+    private async Task<bool> ServeAsync(NamedPipeServerStream pipe, Peer peer, Action releaseSlot, long acceptedTick)
     {
-        var (kind, line) = await ReadRequestLineAsync(pipe).ConfigureAwait(false);
+        var (kind, line) = await ReadRequestLineAsync(pipe, acceptedTick).ConfigureAwait(false);
         Response response;
         bool needsDrain = false;
         switch (kind)
