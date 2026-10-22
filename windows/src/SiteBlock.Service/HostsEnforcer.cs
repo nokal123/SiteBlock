@@ -16,6 +16,8 @@ public sealed class HostsEnforcer : IHostsEnforcer
 {
     // A failure message that repeats is logged at most this often, so a problem that happens every tick (a read-only disk, say) does not fill the log.
     private const long RepeatedFailureLogIntervalMs = 60_000;
+    // How many times one pass starts over because the file was saved by someone else while the pass worked on it.
+    private const int ConcurrentSaveAttempts = 3;
     // The value DataBasePath must hold; the already-expanded form (C:\Windows\...) is treated as equally correct.
     private const string WantedDataBasePath = @"%SystemRoot%\System32\drivers\etc";
 
@@ -65,36 +67,45 @@ public sealed class HostsEnforcer : IHostsEnforcer
         // Moving the file through the DataBasePath redirect must be undone like editing it, so this is checked first on every pass, whether or not the file itself can be read.
         if (IsProduction) RepairDataBasePath();
 
-        var outcome = ReadCurrent(out string current);
-        // An access list that denies SYSTEM read access is taken over, then the file is read again.
-        if (outcome == ReadOutcome.Denied && IsProduction)
+        string current;
+        string wanted;
+        // Another program (or the person, in an editor) may save the file while a pass works. Writing then would replace that save with text built from the older copy
+        // and lose it, so the file is read again just before the write; when it changed, the pass starts over from the new text, up to three times, and only then
+        // leaves the file for the next pass. Starting over at once, rather than waiting for the next pass, keeps a command's change (and the uninstaller's clean-up) from being
+        // left undone by an unlucky save.
+        for (int attempt = 1; ; attempt++)
         {
-            TakeOverFile(force: true);
-            outcome = ReadCurrent(out current);
+            var outcome = ReadCurrent(out current);
+            // An access list that denies SYSTEM read access is taken over, then the file is read again.
+            if (outcome == ReadOutcome.Denied && IsProduction)
+            {
+                TakeOverFile(force: true);
+                outcome = ReadCurrent(out current);
+            }
+            // Text that could not be read is never treated as empty: rewriting it would delete every line the person added themselves. The pass is skipped and the next one, 2 seconds later, tries again.
+            if (outcome is ReadOutcome.Denied or ReadOutcome.Busy)
+            {
+                LogFailure("hosts file could not be read, so it was left unchanged this pass");
+                return false;
+            }
+
+            wanted = HostsFileEditor.Render(current, hosts);
+            if (wanted == current)
+            {
+                // The file already holds exactly what it should.
+                return true;
+            }
+
+            // A folder at the hosts path stops Windows reading any hosts file, so it is renamed out of the way (keeping whatever it holds) before the real file is written.
+            if (outcome == ReadOutcome.NotAFile && !MoveAsideNonFile()) return false;
+
+            // In production the file could be frozen by a read-only attribute or an access list that denies SYSTEM, so free it before writing.
+            if (IsProduction) TakeOverFile(force: false);
+
+            bool changedMeanwhile = outcome is ReadOutcome.Read or ReadOutcome.Missing && (ReadCurrent(out string again) != outcome || again != current);
+            if (!changedMeanwhile) break;
+            if (attempt == ConcurrentSaveAttempts) return false;
         }
-        // Text that could not be read is never treated as empty: rewriting it would delete every line the person added themselves. The pass is skipped and the next one, 2 seconds later, tries again.
-        if (outcome is ReadOutcome.Denied or ReadOutcome.Busy)
-        {
-            LogFailure("hosts file could not be read, so it was left unchanged this pass");
-            return false;
-        }
-
-        string wanted = HostsFileEditor.Render(current, hosts);
-        if (wanted == current)
-        {
-            // The file already holds exactly what it should.
-            return true;
-        }
-
-        // A folder at the hosts path stops Windows reading any hosts file, so it is renamed out of the way (keeping whatever it holds) before the real file is written.
-        if (outcome == ReadOutcome.NotAFile && !MoveAsideNonFile()) return false;
-
-        // In production the file could be frozen by a read-only attribute or an access list that denies SYSTEM, so free it before writing.
-        if (IsProduction) TakeOverFile(force: false);
-
-        // Another program (or the person, in an editor) may have saved the file since it was read. Writing now would replace that save with text built from the
-        // older copy and lose it, so the file is read once more and the pass stops when it changed; the next pass, 2 seconds later, starts from the new text.
-        if (outcome is ReadOutcome.Read or ReadOutcome.Missing && (ReadCurrent(out string again) != outcome || again != current)) return false;
 
         if (!WriteAtomically(wanted)) return false;
 

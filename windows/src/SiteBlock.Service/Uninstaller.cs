@@ -57,7 +57,9 @@ public static class Uninstaller
 
         // Step 3: take SiteBlock's lines out of the hosts file, every owned browser policy value and list out of the registry, and put the original DNS servers back.
         // A failure here is logged by the enforcer and does not stop the uninstall: a retry that can never succeed would leave SiteBlock installed for good.
-        Attempt(log, "hosts file", () => services.Hosts.Enforce([], causedByCommand: true));
+        // The hosts pass gives up when another program keeps saving the file while it works (see HostsEnforcer), and nothing runs after the uninstall to try again, so it
+        // is tried a few more times here; otherwise SiteBlock's lines could stay in the hosts file for good.
+        Attempt(log, "hosts file", () => Retry(() => services.Hosts.Enforce([], causedByCommand: true), HostsAttempts, HostsRetryDelay));
         Attempt(log, "browser policy", () => services.Browsers.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true));
         // The saved record is not cleared on disk: the state folder is deleted a moment later, and a retry after a crash restores the same servers again.
         Attempt(log, "DNS restore", () => services.Dns.Enforce(adultFilterActive: false, savedDNS, _ => true) is null);
@@ -91,6 +93,21 @@ public static class Uninstaller
         }
         log.Write("uninstall: files removed; cleanup step started");
         return UninstallOutcome.WaitForStop;
+    }
+
+    // How many times the uninstaller tries to take SiteBlock's lines out of the hosts file, and how long it waits between tries.
+    private const int HostsAttempts = 5;
+    private static readonly TimeSpan HostsRetryDelay = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Runs a step until it reports success or has run the given number of times, waiting between tries, and returns whether it succeeded. An exception ends the tries at once.</summary>
+    private static bool Retry(Func<bool> step, int attempts, TimeSpan delay)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            if (step()) return true;
+            if (attempt >= attempts) return false;
+            Thread.Sleep(delay);
+        }
     }
 
     /// <summary>Runs one step, logging (by exception type only) when it throws or reports failure, and carries on either way.</summary>

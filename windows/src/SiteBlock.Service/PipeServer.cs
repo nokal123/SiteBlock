@@ -22,6 +22,11 @@ public sealed class PipeServer
     public const int MaxRequestBytes = 64 * 1024;
     /// <summary>How long the server waits for the whole request line before giving up on a client.</summary>
     public const int ClientTimeoutSeconds = 2;
+    // The shortest read a connection gets for its request, even when the hand-off to its worker took most of the 2 seconds.
+    private const long MinimumFirstReadMs = 250;
+    // How many connections of one account may wait for their client to hang up at once. These waits hold a pipe instance but no limiter slot, so without a cap one
+    // account that never hangs up could use up every pipe instance, including those the limiter keeps for administrators.
+    private const int MaxHangUpWaitsPerUser = 4;
     /// <summary>How many pipe instances may exist at once, which is how many connections can be open at once.</summary>
     public const int MaxInstances = 32;
     /// <summary>The identity every sandbox caller gets, so admin-only commands are refused in tests as they are for a normal user on the Mac.</summary>
@@ -41,6 +46,9 @@ public sealed class PipeServer
     private readonly Log _log;
     // At most 4 connections at a time per non-admin caller and 32 in all, the last 4 kept for administrators.
     private readonly ConnectionLimiter _limiter = new();
+    // How many hang-up waits each account has running, by user ID.
+    private readonly Dictionary<string, int> _hangUpWaits = new(StringComparer.Ordinal);
+    private readonly Lock _hangUpGate = new();
     private readonly CancellationTokenSource _stop = new();
     private Task? _acceptLoop;
 
@@ -295,7 +303,35 @@ public sealed class PipeServer
             }
             // On Windows, closing the server end throws away bytes the client has not read yet. The client hangs up as soon as it has read its line, so the server waits for that
             // hang-up (a read that ends), for at most 2 seconds; it is a cancellable read, so a client that never reads cannot hold the instance.
-            if (answered) await DrainAsync(pipe).ConfigureAwait(false);
+            // An account already at its cap of waits gets no wait: its connection is closed at once, which can cost a client that never hangs up its reply.
+            if (answered && TryStartHangUpWait(peer))
+            {
+                try { await DrainAsync(pipe).ConfigureAwait(false); }
+                finally { EndHangUpWait(peer); }
+            }
+        }
+    }
+
+    /// <summary>Counts one more hang-up wait for the caller's account and returns true, or returns false when the account already has <see cref="MaxHangUpWaitsPerUser"/> running.</summary>
+    private bool TryStartHangUpWait(Peer peer)
+    {
+        lock (_hangUpGate)
+        {
+            int running = _hangUpWaits.GetValueOrDefault(peer.UserId);
+            if (running >= MaxHangUpWaitsPerUser) return false;
+            _hangUpWaits[peer.UserId] = running + 1;
+            return true;
+        }
+    }
+
+    /// <summary>Counts one hang-up wait of the caller's account as finished; an account with none left has no entry.</summary>
+    private void EndHangUpWait(Peer peer)
+    {
+        lock (_hangUpGate)
+        {
+            int running = _hangUpWaits.GetValueOrDefault(peer.UserId) - 1;
+            if (running <= 0) _hangUpWaits.Remove(peer.UserId);
+            else _hangUpWaits[peer.UserId] = running;
         }
     }
 
@@ -349,7 +385,8 @@ public sealed class PipeServer
     private static async Task<(ReadKind Kind, byte[] Line)> ReadRequestLineAsync(PipeStream pipe, long acceptedTick)
     {
         // The limit counts from when the connection was accepted, not from when this read starts; time already spent (identity, limits, a busy thread pool) is taken off.
-        long remainingMs = Math.Max(0, ClientTimeoutSeconds * 1000L - (Environment.TickCount64 - acceptedTick));
+        // A request that is already waiting still gets a short read when the hand-off to this worker was slow, so a busy service never refuses a request it has in hand.
+        long remainingMs = Math.Max(MinimumFirstReadMs, ClientTimeoutSeconds * 1000L - (Environment.TickCount64 - acceptedTick));
         using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(remainingMs));
         var collected = new MemoryStream();
         byte[] chunk = new byte[4096];

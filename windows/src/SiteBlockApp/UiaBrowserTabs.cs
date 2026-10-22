@@ -50,8 +50,10 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
     private int _passRead, _passNotFound, _passFocused;
     // The last summary line written, so a line is written only when something changed.
     private string _lastSummary = "";
-    // When a failed address bar search was last described in the log (milliseconds since Windows started); one description a minute is enough.
-    private long _lastSearchReport = long.MinValue;
+    // When each kind of report ("search", "read", "press") was last written (milliseconds since Windows started); one of each kind a minute is enough, and kinds do not silence each other.
+    private readonly Dictionary<string, long> _lastReport = new(StringComparer.Ordinal);
+    // How long one press may take before the reader gives up on it, so a browser that stopped answering cannot stall the tab watcher.
+    private static readonly TimeSpan PressTimeout = TimeSpan.FromSeconds(3);
 
     /// <summary>Creates the reader. <paramref name="log"/> receives a line when what the reader sees changes, and a description of a failed address bar search at most once a minute.</summary>
     public UiaBrowserTabs(IAppLog log) => _log = log;
@@ -122,7 +124,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             {
                 // This window closed or stopped answering; forget its elements and skip it this tick.
                 Forget(hwnd);
-                ReportOncePerMinute($"tab reader: reading a window failed ({error.GetType().Name})");
+                ReportOncePerMinute("read", $"tab reader: reading a window failed ({error.GetType().Name})");
             }
         }
         return result;
@@ -151,13 +153,19 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         AutomationElement button = Element(hwnd, reloadButton: true) ?? throw new InvalidOperationException("The window has no reload button.");
         try
         {
-            Press(hwnd, button);
+            // The press runs on its own task with a time limit; a press still running after it is abandoned, and its late result is ignored.
+            var press = Task.Run(() => Press(hwnd, button));
+            if (!press.Wait(PressTimeout)) throw new TimeoutException("The browser did not answer the press within 3 seconds.");
         }
-        catch (Exception error)
+        catch (Exception thrown)
         {
-            Forget(hwnd);
-            if (ShouldReport()) _log.Info($"tab reader: pressing the reload button failed ({error.GetType().Name}); {DescribeElement(button)}");
-            throw;
+            Exception error = thrown is AggregateException { InnerException: { } inner } ? inner : thrown;
+            // Only a button that no longer exists is searched for again; the remembered address bar and button stay for an ordinary failed press.
+            if (error is ElementNotAvailableException) Forget(hwnd);
+            // The reader's own failure sentences hold no address, so the message is written; for other errors only the type is.
+            string detail = error is InvalidOperationException or TimeoutException ? $"{error.GetType().Name}: {error.Message}" : error.GetType().Name;
+            if (ShouldReport("press")) _log.Info($"tab reader: pressing the reload button failed ({detail}); {DescribeElement(button)}");
+            throw error;
         }
     }
 
@@ -195,7 +203,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
 
         AutomationElement window = AutomationElement.FromHandle(hwnd);
         found = reloadButton ? Find(window, ReloadButtonClass, ControlType.Button) : Find(window, AddressBarClass, ControlType.Edit);
-        if (found is null && ShouldReport()) _log.Info(DescribeSearch(window, reloadButton));
+        if (found is null && ShouldReport("search")) _log.Info(DescribeSearch(window, reloadButton));
         lock (_gate)
         {
             // Chrome builds its accessibility tree only once a reader asks, so the first search can come up empty; the window is searched again later.
@@ -237,14 +245,14 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         return null;
     }
 
-    /// <summary>True at most once a minute, for a description of a failed address bar search.</summary>
-    private bool ShouldReport()
+    /// <summary>True at most once a minute for each kind of report, so a lasting problem of one kind writes one line a minute and never hides a problem of another kind.</summary>
+    private bool ShouldReport(string kind)
     {
         lock (_gate)
         {
             long now = Environment.TickCount64;
-            if (_lastSearchReport != long.MinValue && now - _lastSearchReport < 60_000) return false;
-            _lastSearchReport = now;
+            if (_lastReport.TryGetValue(kind, out long last) && now - last < 60_000) return false;
+            _lastReport[kind] = now;
             return true;
         }
     }
@@ -262,27 +270,48 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             ((InvokePattern)invoke).Invoke();
             return;
         }
+        // A toolbar that is hidden (a fullscreen window) or off screen has no button to press; pressing at its old position could hit the page instead.
+        AutomationElement.AutomationElementInformation info = button.Current;
+        if (info.IsOffscreen) throw new InvalidOperationException("The reload button is off screen.");
         // UI Automation and MSAA both give screen positions in physical pixels here, because the app is per-monitor DPI aware.
-        System.Windows.Rect bounds = button.Current.BoundingRectangle;
+        System.Windows.Rect bounds = info.BoundingRectangle;
         if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0) throw new InvalidOperationException("The reload button has no position on screen.");
         int x = (int)(bounds.Left + bounds.Width / 2);
         int y = (int)(bounds.Top + bounds.Height / 2);
 
-        Guid accessibleId = AccessibleInterfaceId;
-        int result = AccessibleObjectFromWindow(hwnd, ObjectIdClient, ref accessibleId, out object rootObject);
-        if (result != 0 || rootObject is not IAccessible root) throw new InvalidOperationException($"The window's accessibility object could not be read (0x{result:X8}).");
-        // accHitTest answers with the object at the point, or with a child number of the object it was asked on, or with nothing.
-        object hit = root.accHitTest(x, y);
-        (IAccessible target, object child) = hit switch
+        object? rootObject = null;
+        object? hit = null;
+        try
         {
-            IAccessible element => (element, (object)ChildSelf),
-            int childNumber when childNumber != ChildSelf => (root, childNumber),
-            _ => throw new InvalidOperationException("Nothing in the window lies at the reload button's position."),
-        };
-        int role = Convert.ToInt32(target.get_accRole(child), System.Globalization.CultureInfo.InvariantCulture);
-        if (!ButtonRoles.Contains(role)) throw new InvalidOperationException($"The object at the reload button's position is not a button (MSAA role {role}).");
-        target.accDoDefaultAction(child);
+            Guid accessibleId = AccessibleInterfaceId;
+            int result = AccessibleObjectFromWindow(hwnd, ObjectIdClient, ref accessibleId, out rootObject);
+            if (result != 0 || rootObject is not IAccessible root) throw new InvalidOperationException($"The window's accessibility object could not be read (0x{result:X8}).");
+            // accHitTest answers with the object at the point, or with a child number of the object it was asked on, or with nothing.
+            hit = root.accHitTest(x, y);
+            (IAccessible target, object child) = hit switch
+            {
+                IAccessible element => (element, (object)ChildSelf),
+                int childNumber when childNumber != ChildSelf => (root, childNumber),
+                _ => throw new InvalidOperationException("Nothing in the window lies at the reload button's position."),
+            };
+            int role = Convert.ToInt32(target.get_accRole(child), System.Globalization.CultureInfo.InvariantCulture);
+            if (!ButtonRoles.Contains(role)) throw new InvalidOperationException($"The object at the reload button's position is not a button (MSAA role {role}).");
+            // The object must be the reload button itself, not some other button that happens to cover its centre: its own position must match the button's to a few pixels.
+            target.accLocation(out int left, out int top, out int width, out int height, child);
+            if (Math.Abs(left - bounds.Left) > PositionTolerance || Math.Abs(top - bounds.Top) > PositionTolerance || Math.Abs(width - bounds.Width) > PositionTolerance || Math.Abs(height - bounds.Height) > PositionTolerance)
+                throw new InvalidOperationException($"The button at the reload button's position has a different size or place (MSAA role {role}).");
+            target.accDoDefaultAction(child);
+        }
+        finally
+        {
+            // The MSAA objects are Chrome's; they are given back at once rather than when the garbage collector gets round to it.
+            if (hit is not null && Marshal.IsComObject(hit) && !ReferenceEquals(hit, rootObject)) Marshal.FinalReleaseComObject(hit);
+            if (rootObject is not null && Marshal.IsComObject(rootObject)) Marshal.FinalReleaseComObject(rootObject);
+        }
     }
+
+    // How far, in pixels, the MSAA position of the pressed object may differ from the reload button's UI Automation position.
+    private const double PositionTolerance = 4;
 
     // IID_IAccessible, the MSAA interface asked for from the window.
     private static readonly Guid AccessibleInterfaceId = new("618736E0-3C3D-11CF-810C-00AA00389B71");
@@ -311,10 +340,10 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         }
     }
 
-    /// <summary>Writes a line at most once a minute (shared with the search description).</summary>
-    private void ReportOncePerMinute(string line)
+    /// <summary>Writes a line at most once a minute for its kind.</summary>
+    private void ReportOncePerMinute(string kind, string line)
     {
-        if (ShouldReport()) _log.Info(line);
+        if (ShouldReport(kind)) _log.Info(line);
     }
 
     /// <summary>

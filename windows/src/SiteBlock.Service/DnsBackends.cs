@@ -163,10 +163,11 @@ public sealed class WindowsDnsBackend : IDnsSettingsBackend
             };
             if (type is not ("Ethernet" or "Wireless80211" or "Tunnel" or "Ppp")) continue;
             string id = adapter.Id;
-            // Only an adapter with TCP/IP settings of its own (a key under the IPv4 interfaces key) can hold DNS servers. Windows also reports network filters, such as
-            // "Ethernet 3-WFP Native MAC Layer LightWeight Filter-0000", and virtual switch ports as Ethernet adapters; they have no such key and are left out.
-            if (!HasIpv4Settings(id)) continue;
+            // Only an adapter with TCP/IP settings of its own (a key under the IPv4 or the IPv6 interfaces key) can hold DNS servers. Windows also reports network filters,
+            // such as "Ethernet 3-WFP Native MAC Layer LightWeight Filter-0000", and virtual switch ports as Ethernet adapters; they have no such key and are left out. An
+            // adapter with IPv6 settings only is kept, or its IPv6 servers would be a way around the family filter.
             bool hasIpv6 = HasIpv6(id);
+            if (!HasIpv4Settings(id) && !hasIpv6) continue;
             adapters.Add(new DnsAdapter(id, adapter.Name, type, adapter.Description, true, [.. ReadServers(Ipv4InterfacesKey, id), .. (hasIpv6 ? ReadServers(Ipv6InterfacesKey, id) : [])], hasIpv6));
         }
         return adapters;
@@ -206,8 +207,8 @@ public sealed class WindowsDnsBackend : IDnsSettingsBackend
             // IPv6 addresses contain colons, IPv4 addresses never do.
             string ipv4 = string.Join(',', list.Where(server => !server.Contains(':')));
             string ipv6 = string.Join(',', list.Where(server => server.Contains(':')));
-            SetServers(guid, ipv4, ipv6: false);
-            // An adapter without IPv6 settings gets no IPv6 write, which would fail and undo the IPv4 change on every pass.
+            // Each address family is written only when the adapter has settings for it; a write for a family it lacks would fail and undo the other family's change on every pass.
+            if (HasIpv4Settings(id)) SetServers(guid, ipv4, ipv6: false);
             if (HasIpv6(id)) SetServers(guid, ipv6, ipv6: true);
         }
     }

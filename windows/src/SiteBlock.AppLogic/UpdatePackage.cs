@@ -115,7 +115,8 @@ public static class UpdatePackage
         // Windows PowerShell 5.1 loads commands written in PowerShell, such as Get-FileHash, from the folders in PSModulePath. A process started from PowerShell 7 (or
         // from a program it started) carries 7's folders there, and 5.1 then cannot find those commands, so the path is put back to Windows PowerShell's own before anything runs.
         // install.ps1, started below, inherits the corrected path.
-        script.AppendLine("$env:PSModulePath = (@([Environment]::GetEnvironmentVariable('PSModulePath', 'Machine'), (Join-Path $PSHOME 'Modules')) | Where-Object { $_ }) -join ';'");
+        // The list is fixed (Windows PowerShell's own two folders) rather than read from the machine's setting, which an installer of PowerShell 7 or an administrator may have changed.
+        script.AppendLine("$env:PSModulePath = (Join-Path $env:ProgramFiles 'WindowsPowerShell\\Modules') + ';' + (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\Modules')");
         script.AppendLine("$code = 1");
         script.AppendLine("$root = $null");
         script.AppendLine($"$source = {PowerShellQuoted(zipPath)}");
