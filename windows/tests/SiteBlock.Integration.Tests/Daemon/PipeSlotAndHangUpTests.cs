@@ -7,7 +7,7 @@ namespace SiteBlock.Integration.Tests.Daemon;
 // (06-windows.md § PipeServer, identity in sandbox mode), so the per-user limit of 4 connections applies to every connection a test opens.
 // Expected values come from 06-windows.md § PipeServer step 4: the slot is given back just before the reply is written, so a client that has read its reply and opens
 // its next connection at once never finds the finished one still counted; the wait of up to 2 seconds for the client to hang up holds no slot; each account may have at
-// most 4 such waits at once, and a further connection of that account is closed right after its reply; and the 2-second request limit counts from the moment the
+// most 4 such waits at once, and a further connection of that account waits at most 250 ms for its client to hang up and is then closed; and the 2-second request limit counts from the moment the
 // connection was accepted. 02-core-components.md § ConnectionLimiter gives the limit of 4 per user.
 //
 // Three rules of § PipeServer step 4 are NOT tested here, because a client outside the server cannot see them:
@@ -103,7 +103,7 @@ public sealed class PipeSlotAndHangUpTests
                 // The fifth still gets its reply: the cap only skips the wait, and the slot it used was free.
                 Assert.True(AnswersStatus(fifth), "the fifth client did not get its reply");
                 double repliedAt = clock.Elapsed.TotalSeconds;
-                // ...and then the server closes it right away instead of waiting for it to hang up.
+                // ...and then the server closes it after a short wait (250 ms) instead of the full 2-second hang-up wait.
                 var closeClock = Stopwatch.StartNew();
                 string? afterReply = fifth.ReadLine(1.5);
                 double closedAfter = closeClock.Elapsed.TotalSeconds;
@@ -117,7 +117,7 @@ public sealed class PipeSlotAndHangUpTests
                     continue;
                 }
                 Assert.True(repliedAt + closedAfter <= windowSeconds, $"no attempt finished inside the first waits (last: replies done at {repliedAt:0.00} s, fifth closed {closedAfter:0.00} s later)");
-                Assert.True(afterReply == "", $"the fifth connection should be closed right after its reply, but {(afterReply is null ? "it was still open 1.5 s later" : $"more text arrived: \"{afterReply}\"")}");
+                Assert.True(afterReply == "", $"the fifth connection should be closed within 250 ms of its reply, but {(afterReply is null ? "it was still open 1.5 s later" : $"more text arrived: \"{afterReply}\"")}");
                 Assert.True(firstStillOpen is null, $"the first client's connection should still be in its hang-up wait, but the read returned \"{firstStillOpen}\"");
 
                 // Each wait lasts up to 2 seconds from its reply, then the server closes the connection. The bound is 4 s from the moment this client read its reply: the

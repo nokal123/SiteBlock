@@ -27,6 +27,8 @@ public sealed class PipeServer
     // How many connections of one account may wait for their client to hang up at once. These waits hold a pipe instance but no limiter slot, so without a cap one
     // account that never hangs up could use up every pipe instance, including those the limiter keeps for administrators.
     private const int MaxHangUpWaitsPerUser = 4;
+    // How long a connection over that cap waits for its client to hang up before it is closed, so a reply the client is about to read is not thrown away.
+    private static readonly TimeSpan OverCapHangUpWait = TimeSpan.FromMilliseconds(250);
     /// <summary>How many pipe instances may exist at once, which is how many connections can be open at once.</summary>
     public const int MaxInstances = 32;
     /// <summary>The identity every sandbox caller gets, so admin-only commands are refused in tests as they are for a normal user on the Mac.</summary>
@@ -303,11 +305,19 @@ public sealed class PipeServer
             }
             // On Windows, closing the server end throws away bytes the client has not read yet. The client hangs up as soon as it has read its line, so the server waits for that
             // hang-up (a read that ends), for at most 2 seconds; it is a cancellable read, so a client that never reads cannot hold the instance.
-            // An account already at its cap of waits gets no wait: its connection is closed at once, which can cost a client that never hangs up its reply.
-            if (answered && TryStartHangUpWait(peer))
+            // An account already at its cap of waits gets only a short wait (OverCapHangUpWait): enough for a client that reads its reply at once (a person running several
+            // commands in quick succession, whose earlier hang-ups the server has not noticed yet) never to lose it, while a client that never reads holds the instance only briefly.
+            if (answered)
             {
-                try { await DrainAsync(pipe).ConfigureAwait(false); }
-                finally { EndHangUpWait(peer); }
+                if (TryStartHangUpWait(peer))
+                {
+                    try { await DrainAsync(pipe).ConfigureAwait(false); }
+                    finally { EndHangUpWait(peer); }
+                }
+                else
+                {
+                    await DrainAsync(pipe, OverCapHangUpWait).ConfigureAwait(false);
+                }
             }
         }
     }
@@ -420,10 +430,13 @@ public sealed class PipeServer
         }
     }
 
-    /// <summary>Reads and throws away what a client is still sending after an oversized request, for at most 2 seconds and 8 MB, so the client's own write finishes and it can read the reply.</summary>
-    private static async Task DrainAsync(PipeStream pipe)
+    /// <summary>
+    /// Reads and throws away what a client is still sending, until it hangs up, for at most <paramref name="limit"/> (2 seconds when not given) and 8 MB. After an oversized request this
+    /// lets the client's own write finish so it can read the reply; after a reply it is the wait for the client to hang up.
+    /// </summary>
+    private static async Task DrainAsync(PipeStream pipe, TimeSpan? limit = null)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(ClientTimeoutSeconds));
+        using var deadline = new CancellationTokenSource(limit ?? TimeSpan.FromSeconds(ClientTimeoutSeconds));
         byte[] buffer = new byte[16 * 1024];
         long total = 0;
         try

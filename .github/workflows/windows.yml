@@ -73,7 +73,8 @@ jobs:
             function Escape([string]$text) { return $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A') }
             try {
               $failed = @(foreach ($trx in (Get-ChildItem -Path windows/TestResults -Recurse -Filter *.trx -ErrorAction SilentlyContinue)) {
-                Select-Xml -Path $trx.FullName -XPath "//*[local-name()='UnitTestResult'][@outcome='Failed']" | ForEach-Object { $_.Node }
+                # -LiteralPath, because a result file's name holds "[1]", which -Path would read as a wildcard and then match no file at all.
+                Select-Xml -LiteralPath $trx.FullName -XPath "//*[local-name()='UnitTestResult'][@outcome='Failed']" | ForEach-Object { $_.Node }
               })
               foreach ($result in ($failed | Select-Object -First 20)) {
                 $message = ''
