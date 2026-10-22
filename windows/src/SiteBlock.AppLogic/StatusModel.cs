@@ -175,7 +175,9 @@ public sealed class StatusModel : ObservableModel, IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            await RefreshAsync().ConfigureAwait(false);
+            // One failed refresh (an exception from the window thread, say) must not end polling for good; the next interval tries again.
+            try { await RefreshAsync().ConfigureAwait(false); }
+            catch (Exception error) when (error is not OperationCanceledException) { }
             try
             {
                 await _clock.Delay(_pollFast ? VisiblePollInterval : HiddenPollInterval, token).ConfigureAwait(false);

@@ -181,6 +181,10 @@ public sealed class DaemonRuntime
     private readonly bool _loadedState;
 
     private PipeServer? _server;
+    // Tries to open the pipe again after it could not be created; true while that is going on, so the failure is logged once.
+    private Timer? _pipeRetryTimer;
+    private bool _pipeRetrying;
+    private static readonly TimeSpan PipeRetryInterval = TimeSpan.FromSeconds(5);
     private Timer? _tickTimer;
     private Timer? _guardTimer;
     // 1 while a tick is queued on the engine thread and has not started, so a slow tick never lets timer callbacks pile up behind it.
@@ -316,22 +320,8 @@ public sealed class DaemonRuntime
         // If the state came from the backup, or the backup does not exist yet, write both files now.
         if (!_store.MatchesLastSave() && SaveState()) _log.Write("state file repaired");
 
-        // Startup step 6: open the pipe (its availability was checked first thing).
-        try
-        {
-            server.Start();
-        }
-        catch (PipeServerException error)
-        {
-            _log.Write($"cannot start the pipe server: {error.Message}");
-            StopEverything();
-            _exit.TrySetResult(1);
-            return;
-        }
-        _server = server;
-        _rejections.Start();
-
-        // Startup step 7: the tick timer. Its callback only queues a tick, so every tick runs on the engine thread.
+        // Startup step 6, on Windows taken before the pipe: the tick timer. Its callback only queues a tick, so every tick runs on the engine thread. The timers start before the pipe,
+        // so blocks are enforced and repaired even while the pipe cannot be created.
         _lastTick = Environment.TickCount64;
         _lastSave = _lastTick;
         _tickTimer = new Timer(_ => QueueTick(), null, _tickInterval, _tickInterval);
@@ -339,6 +329,32 @@ public sealed class DaemonRuntime
         // The guard timer keeps the watchdog service running (production), the folders' access lists right and the tray app in place. It runs on the thread pool, never on the engine thread, so a slow service call cannot delay ticks or commands.
         _guardTimer = new Timer(_ => GuardPass(), null, TimeSpan.FromSeconds(1), GuardInterval);
 
+        // Startup step 7: open the pipe (whether another service answers was checked first thing).
+        _rejections.Start();
+        TryStartServer(server);
+    }
+
+    /// <summary>
+    /// Opens the pipe. When it cannot be created (for example another program created a pipe of the same name while the service was restarting), the service keeps enforcing and tries
+    /// again every 5 seconds instead of exiting, because exiting would leave the blocks without their tick and the restart would meet the same pipe. Runs on the engine thread.
+    /// </summary>
+    private void TryStartServer(PipeServer server)
+    {
+        if (IsUninstalling || _exit.Task.IsCompleted) return;
+        try
+        {
+            server.Start();
+        }
+        catch (PipeServerException error)
+        {
+            if (!_pipeRetrying) _log.Write($"cannot start the pipe server: {error.Message}; trying again every 5 seconds");
+            _pipeRetrying = true;
+            _pipeRetryTimer?.Dispose();
+            _pipeRetryTimer = new Timer(_ => _thread.Post(() => TryStartServer(server)), null, PipeRetryInterval, Timeout.InfiniteTimeSpan);
+            return;
+        }
+        _server = server;
+        _pipeRetrying = false;
         _log.Write($"siteblockd ready; pipe {(_paths.IsSandbox ? _paths.PipeName : @"\\.\pipe\" + _paths.PipeName)}");
     }
 
@@ -640,6 +656,8 @@ public sealed class DaemonRuntime
         _tickTimer = null;
         _guardTimer?.Dispose();
         _guardTimer = null;
+        _pipeRetryTimer?.Dispose();
+        _pipeRetryTimer = null;
         try { _services.Dns.StopMonitoring(); } catch (Exception error) { _log.Write($"stopping the DNS watch failed: {error.GetType().Name}"); }
         _server?.Stop();
         _rejections.Stop();

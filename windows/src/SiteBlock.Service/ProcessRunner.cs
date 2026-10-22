@@ -66,8 +66,9 @@ public static class ProcessRunner
                 process.WaitForExit(2000);
                 return new ProcessResult(124, SafeResult(output), SafeResult(errors));
             }
-            // The outputs are read only after the readers finish, so a grandchild that keeps a pipe open cannot leave half-read text.
-            process.WaitForExit();
+            // The outputs are read only after the readers finish, so a grandchild that keeps a pipe open cannot leave half-read text. The wait for the streams is capped at 2 seconds,
+            // because such a grandchild could otherwise hold this thread for as long as it lives.
+            process.WaitForExit(2000);
             return new ProcessResult(process.ExitCode, SafeResult(output), SafeResult(errors));
         }
     }

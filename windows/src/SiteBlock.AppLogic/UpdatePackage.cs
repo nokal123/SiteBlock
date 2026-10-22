@@ -97,14 +97,14 @@ public static class UpdatePackage
 
     /// <summary>
     /// The PowerShell script the UAC prompt runs. Nothing the person's account can write is trusted after the prompt: the script copies the zip into a new folder <c>C:\ProgramData\SiteBlock\update-&lt;random&gt;</c> that only SYSTEM and Administrators may change,
-    /// deletes the download folder, checks the SHA-256 again there, unzips it there, checks the layout again, and runs that copy's install.ps1. Everything it does goes to <see cref="UpdateLogPath"/>.
+    /// checks the SHA-256 again there, unzips it there, checks the layout again, and runs that copy's install.ps1. It deletes nothing outside its own update folder: the download folder in the
+    /// person's temp folder is deleted by the app, because a recursive delete running as administrator in a folder the person can change could be led through a planted link to other files. Everything it does goes to <see cref="UpdateLogPath"/>.
     /// It exits with install.ps1's exit code, with <see cref="ChecksFailedExitCode"/> when its own checks fail, and with 1 for any other problem. The update folder is deleted at the end.
     /// Throws <see cref="ArgumentException"/> when the checksum is not 64 lowercase hex characters or the processor folder is not x64 or arm64, because both are written into the script.
     /// </summary>
-    public static string ElevatedScript(string zipPath, string downloadFolder, string expectedSha256, string architectureFolder)
+    public static string ElevatedScript(string zipPath, string expectedSha256, string architectureFolder)
     {
         ArgumentNullException.ThrowIfNull(zipPath);
-        ArgumentNullException.ThrowIfNull(downloadFolder);
         if (expectedSha256 is not { Length: 64 } || !expectedSha256.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')) throw new ArgumentException("The checksum must be 64 lowercase hex characters.", nameof(expectedSha256));
         if (architectureFolder is not ("x64" or "arm64")) throw new ArgumentException("The processor folder must be x64 or arm64.", nameof(architectureFolder));
 
@@ -115,7 +115,6 @@ public static class UpdatePackage
         script.AppendLine("$code = 1");
         script.AppendLine("$root = $null");
         script.AppendLine($"$source = {PowerShellQuoted(zipPath)}");
-        script.AppendLine($"$downloadFolder = {PowerShellQuoted(downloadFolder)}");
         script.AppendLine($"$expected = '{expectedSha256}'");
         script.AppendLine("$dataDir = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'SiteBlock'");
         script.AppendLine("$logDir = Join-Path $dataDir 'Logs'");
@@ -136,7 +135,6 @@ public static class UpdatePackage
         script.AppendLine("    if ($LASTEXITCODE -ne 0) { throw 'The update folder could not be protected.' }");
         script.AppendLine("    $zip = Join-Path $root 'SiteBlock-Windows.zip'");
         script.AppendLine("    Copy-Item -LiteralPath $source -Destination $zip");
-        script.AppendLine("    Remove-Item -LiteralPath $downloadFolder -Recurse -Force -ErrorAction SilentlyContinue");
         // The checksum is computed again on the protected copy, so a file swapped in the temp folder after the app's check is never run.
         script.AppendLine("    $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()");
         script.AppendLine("    if ($actual -ne $expected) {");

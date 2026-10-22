@@ -35,12 +35,9 @@ public sealed class Log
         {
             try { Console.Error.Write(line); } catch { }
             if (_file is null) return;
-            try
-            {
-                RotateIfNeeded();
-                File.AppendAllText(_file, line, new UTF8Encoding(false));
-            }
-            catch { }
+            // Rotation and the append are tried separately: an old copy that cannot be moved (another program has it open) must not cost every later line.
+            try { RotateIfNeeded(); } catch { }
+            try { File.AppendAllText(_file, line, new UTF8Encoding(false)); } catch { }
         }
     }
 

@@ -213,7 +213,16 @@ public sealed class WindowsDnsBackend : IDnsSettingsBackend
                 Flags = DnsSettingNameServer | (ipv6 ? DnsSettingIpv6 : 0),
                 NameServer = text,
             };
-            uint result = SetInterfaceDnsSettings(adapter, ref settings);
+            uint result;
+            try
+            {
+                result = SetInterfaceDnsSettings(adapter, ref settings);
+            }
+            catch (EntryPointNotFoundException error)
+            {
+                // Windows before version 2004 (build 19041) has no SetInterfaceDnsSettings; that is reported like any other failed write, never as a crash.
+                throw new IOException("this version of Windows cannot change DNS servers (it needs Windows 10 version 2004 or newer)", error);
+            }
             // ERROR_NOT_FOUND (1168) and ERROR_FILE_NOT_FOUND (2): the adapter disappeared since it was listed, which is skipped like the Mac skips a deleted service.
             if (result is 0 or 2 or 1168) return;
             throw new IOException($"SetInterfaceDnsSettings failed with error {result}");

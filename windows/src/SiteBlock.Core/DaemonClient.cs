@@ -72,6 +72,8 @@ public sealed class DaemonClient
 
         await using NamedPipeClientStream pipe = OpenPipe(_pipeName);
         await ConnectAsync(pipe, ct).ConfigureAwait(false);
+        // Nothing is sent, and above all no password, until the installed service's pipe is known to be served by SYSTEM.
+        if (_pipeName == PipeNames.Production && OperatingSystem.IsWindows() && !PipeServerIdentity.IsSystem(pipe)) throw new DaemonClientException(ClientError.NotRunning);
 
         // The reply timer starts once connected. Cancelling it by timeout is told apart from the caller's own cancel below.
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -179,4 +181,47 @@ public sealed class DaemonClient
         int newline = collected.IndexOf((byte)'\n');
         return (newline >= 0 ? collected.GetRange(0, newline) : collected).ToArray();
     }
+}
+
+/// <summary>
+/// Checks who serves a pipe, on Windows. The installed SiteBlock service runs as SYSTEM, and only it can create the pipe once it is running; but while the service restarts another program
+/// could create a pipe of the same name and wait for a typed password. Reading the server process's account before sending anything closes that gap.
+/// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
+internal static class PipeServerIdentity
+{
+    // PROCESS_QUERY_LIMITED_INFORMATION and TOKEN_QUERY | TOKEN_DUPLICATE.
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const uint TokenQueryDuplicate = 0x0008 | 0x0002;
+
+    /// <summary>True only when the process serving the connected pipe runs as SYSTEM; any failure to find out counts as false.</summary>
+    public static bool IsSystem(NamedPipeClientStream pipe)
+    {
+        try
+        {
+            if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint processId)) return false;
+            using var process = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+            if (process.IsInvalid || !OpenProcessToken(process, TokenQueryDuplicate, out var token)) return false;
+            using (token)
+            {
+                using var identity = new System.Security.Principal.WindowsIdentity(token.DangerousGetHandle());
+                return identity.IsSystem;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeProcessHandle OpenProcess(uint access, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] bool inherit, uint processId);
+
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(Microsoft.Win32.SafeHandles.SafeProcessHandle process, uint access, out Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token);
 }

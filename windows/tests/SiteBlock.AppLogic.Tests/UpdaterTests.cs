@@ -372,7 +372,7 @@ public sealed class UpdatePackageTests : IDisposable
     [Fact]
     public void ElevatedScript_DownloadPathWithApostrophe_IsQuotedSafely()
     {
-        string script = UpdatePackage.ElevatedScript(@"C:\Users\O'Brien\Temp\SiteBlockUpdate-1\SiteBlock-Windows.zip", @"C:\Users\O'Brien\Temp\SiteBlockUpdate-1", new string('c', 64), "x64");
+        string script = UpdatePackage.ElevatedScript(@"C:\Users\O'Brien\Temp\SiteBlockUpdate-1\SiteBlock-Windows.zip", new string('c', 64), "x64");
         Assert.Contains(@"'C:\Users\O''Brien\Temp\SiteBlockUpdate-1\SiteBlock-Windows.zip'", script, StringComparison.Ordinal);
         Assert.DoesNotContain(@"O'Brien", script, StringComparison.Ordinal);
     }

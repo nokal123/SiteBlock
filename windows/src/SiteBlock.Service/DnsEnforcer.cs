@@ -226,17 +226,31 @@ public sealed class DnsEnforcer : IDnsEnforcer
             return;
         }
         var back = overridden.ToDictionary(adapter => adapter.Id, adapter => (IReadOnlyList<string>)saved[adapter.Id], StringComparer.OrdinalIgnoreCase);
-        try
+        var failed = ApplyEach(back, "DNS settings could not be put back while the family servers are unreachable");
+        if (failed.Count == 0) _lastFailure = null;
+        if (failed.Count < back.Count && !_sandbox) DnsCache.Flush();
+    }
+
+    /// <summary>
+    /// Writes each adapter's servers on its own, so one adapter that refuses never stops the others, and returns the IDs of those that failed. Each failure is logged (at most once a minute
+    /// for the same message) with the given lead sentence.
+    /// </summary>
+    private List<string> ApplyEach(IReadOnlyDictionary<string, IReadOnlyList<string>> changes, string failureLead)
+    {
+        var failed = new List<string>();
+        foreach (var (id, servers) in changes)
         {
-            _backend.Apply(back);
+            try
+            {
+                _backend.Apply(new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase) { [id] = servers });
+            }
+            catch (IOException error)
+            {
+                LogFailure($"{failureLead}: {error.Message}");
+                failed.Add(id);
+            }
         }
-        catch (IOException error)
-        {
-            LogFailure($"DNS settings could not be put back while the family servers are unreachable: {error.Message}");
-            return;
-        }
-        _lastFailure = null;
-        if (!_sandbox) DnsCache.Flush();
+        return failed;
     }
 
     /// <summary>The uninstall half of a pass: every recorded adapter that still exists gets its original servers back, then the record is cleared through <paramref name="persist"/>. A failed restore keeps the record.</summary>
@@ -261,17 +275,16 @@ public sealed class DnsEnforcer : IDnsEnforcer
         }
         if (changes.Count > 0)
         {
-            try
+            // Every adapter is tried, so one that refuses does not keep the others on the family servers after the uninstall.
+            var failed = ApplyEach(changes, "DNS settings could not be restored");
+            int restored = changes.Count - failed.Count;
+            if (restored > 0)
             {
-                _backend.Apply(changes);
+                if (!_sandbox) DnsCache.Flush();
+                _log.Write($"DNS settings restored for {restored} network {(restored == 1 ? "service" : "services")}");
             }
-            catch (IOException error)
-            {
-                LogFailure($"DNS settings could not be restored: {error.Message}");
-                return saved;
-            }
-            if (!_sandbox) DnsCache.Flush();
-            _log.Write($"DNS settings restored for {changes.Count} network {(changes.Count == 1 ? "service" : "services")}");
+            // The record stays while any adapter still lacks its originals, so a retry can restore it.
+            if (failed.Count > 0) return saved;
         }
         _lastFailure = null;
         if (!persist(null)) LogFailure("DNS settings restored, but the saved record could not be cleared");

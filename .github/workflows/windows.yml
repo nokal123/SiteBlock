@@ -22,10 +22,12 @@ on:
 permissions:
   contents: write
 
-# A newer push cancels a run still in progress, so the newest code always wins.
+# A newer push to the same branch cancels a run still in progress there, so the newest code always wins. Each branch has its own group, so a push to
+# windows never cancels a master run, and a master run is never cancelled at all, because stopping it between the two release steps would leave
+# windows-latest out of step with the newest windows-v release.
 concurrency:
-  group: windows-package
-  cancel-in-progress: true
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   package:

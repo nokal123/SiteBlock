@@ -9,7 +9,16 @@ rem The same file works in two places. Inside the package from GitHub, the progr
 rem repository (where SiteBlock.sln sits next to this file), it first builds the programs with scripts\build.ps1,
 rem which needs the .NET 10 SDK.
 setlocal
-cd /d "%~dp0"
+rem pushd works for a network folder too (it gives the folder a temporary drive letter), where cd cannot. When it fails, nothing
+rem below may run, because the window would still be in C:\Windows\System32.
+pushd "%~dp0"
+if errorlevel 1 (
+    echo SiteBlock cannot open its own folder: %~dp0
+    echo Copy the SiteBlock folder to this PC, for example to Downloads, and run it from there.
+    pause
+    exit /b 1
+)
+set "SB_DIR=%CD%"
 
 rem The first argument says whether this copy was started again by the part below: --elevated, or --elevated-built
 rem when the programs were already built before asking for administrator rights.
@@ -42,7 +51,7 @@ exit /b 0
 
 :elevated
 echo === Step 1 of 3: preparing the SiteBlock folder ===
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Recurse | Unblock-File"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath $env:SB_DIR -Recurse | Unblock-File"
 if not exist "%~dp0SiteBlock.sln" goto :install
 if /i "%SB_ARG%"=="--elevated-built" goto :install
 call :build

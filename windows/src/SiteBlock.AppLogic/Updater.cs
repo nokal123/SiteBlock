@@ -198,7 +198,9 @@ public sealed class Updater : ObservableModel, IDisposable
                 await _clock.Delay(_options.FirstCheckDelay, token).ConfigureAwait(false);
                 while (!token.IsCancellationRequested)
                 {
-                    await CheckAsync(manual: false).ConfigureAwait(false);
+                    // One failed check must not end the daily schedule for good; the next one runs 24 hours later as usual.
+                    try { await CheckAsync(manual: false).ConfigureAwait(false); }
+                    catch (Exception error) when (error is not OperationCanceledException) { }
                     await _clock.Delay(_options.CheckInterval, token).ConfigureAwait(false);
                 }
             }
@@ -379,7 +381,7 @@ public sealed class Updater : ObservableModel, IDisposable
             }
 
             await SetPhaseAsync(new UpdatePhase(UpdatePhaseKind.WaitingForPassword)).ConfigureAwait(false);
-            string script = UpdatePackage.ElevatedScript(zip, folder, info.Sha256, _options.ArchitectureFolder);
+            string script = UpdatePackage.ElevatedScript(zip, info.Sha256, _options.ArchitectureFolder);
             string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             ElevatedRunResult result;
             try

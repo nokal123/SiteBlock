@@ -17,7 +17,20 @@ public sealed class ElevatedScriptStructureTests
 
     // The script's lines with their indentation removed, so a test can pin a whole line.
     private static List<string> Lines(string architecture = "x64") =>
-        [.. UpdatePackage.ElevatedScript(DownloadedZip, DownloadFolder, Sha, architecture).Split('\n').Select(line => line.TrimEnd('\r').Trim())];
+        [.. UpdatePackage.ElevatedScript(DownloadedZip, Sha, architecture).Split('\n').Select(line => line.TrimEnd('\r').Trim())];
+
+    // A recursive delete running as administrator in a folder the person can change (the download folder in their temp folder) could be led through a planted link to other files,
+    // so the only thing the elevated script may delete is its own protected update folder ($root), and the person's download folder never appears in it.
+    [Theory]
+    [InlineData("x64")]
+    [InlineData("arm64")]
+    public void ElevatedScript_DeletesOnlyItsOwnUpdateFolder(string architecture)
+    {
+        var lines = Lines(architecture);
+        var deletes = lines.Where(line => line.Contains("Remove-Item", StringComparison.OrdinalIgnoreCase) || line.Contains("Delete(", StringComparison.Ordinal)).ToList();
+        Assert.All(deletes, line => Assert.Contains("-LiteralPath $root ", line));
+        Assert.DoesNotContain(lines, line => line.Contains(DownloadFolder + "'", StringComparison.OrdinalIgnoreCase));
+    }
 
     // The index of the one line exactly equal to the text; fails when there is none or more than one.
     private static int Single(List<string> lines, string text)

@@ -33,20 +33,29 @@ public sealed class StateStore
 
     /// <summary>
     /// Returns the primary file's state when it decodes. When the primary is missing or unusable, returns the backup's state if that decodes, otherwise null, so the service starts fresh instead of crashing in a restart loop.
-    /// A primary that exists but cannot be read or decoded is renamed to state.json.corrupt-&lt;unix time&gt; so it is kept for inspection.
+    /// A primary that exists but holds content that cannot be decoded (or cannot be read for any reason other than another program holding it open) is renamed to state.json.corrupt-&lt;unix time&gt; so it is kept for inspection.
+    /// A file that another program holds open without sharing (Windows sharing or lock violation, as an antivirus scan causes) is read again for a few seconds; when it stays locked, Load throws
+    /// <see cref="StateStoreException"/> instead of treating it as damaged, because starting fresh would let the next save overwrite the real blocks and password.
     /// </summary>
     public PersistedState? Load()
     {
         // A folder sitting at the file's path also counts as "exists", as Foundation's fileExists does; it cannot be read, so it is moved aside like a damaged file.
-        if (File.Exists(Path) || Directory.Exists(Path))
+        if (Directory.Exists(Path))
+        {
+            MoveAsideCorruptFile();
+        }
+        else if (File.Exists(Path))
         {
             try
             {
-                byte[] data = File.ReadAllBytes(Path);
-                PersistedState state = JsonCoding.Decode<PersistedState>(data);
-                // Remember what the primary held, so MatchesLastSave can tell later whether either file drifted from it (for example a backup that does not exist yet).
-                _lastKnownBytes = data;
-                return state;
+                byte[]? data = ReadShared(Path);
+                if (data is not null)
+                {
+                    PersistedState state = JsonCoding.Decode<PersistedState>(data);
+                    // Remember what the primary held, so MatchesLastSave can tell later whether either file drifted from it (for example a backup that does not exist yet).
+                    _lastKnownBytes = data;
+                    return state;
+                }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
             {
@@ -55,19 +64,53 @@ public sealed class StateStore
         }
         // The backup is only a fallback: it is never renamed, because the next save overwrites it anyway.
         if (BackupPath is null) return null;
-        byte[] backup;
+        byte[]? backup;
         try
         {
-            backup = File.ReadAllBytes(BackupPath);
+            backup = ReadShared(BackupPath);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException)
         {
             return null;
         }
-        if (JsonCoding.TryDecode<PersistedState>(backup) is not PersistedState fromBackup) return null;
+        if (backup is null || JsonCoding.TryDecode<PersistedState>(backup) is not PersistedState fromBackup) return null;
         // The primary is missing or was just moved aside, so the next MatchesLastSave reports a mismatch and the caller writes the primary back.
         _lastKnownBytes = backup;
         return fromBackup;
+    }
+
+    // How often, and how far apart, a file held open by another program is tried again (about 3 seconds in all).
+    private const int LockedRetries = 10;
+    private static readonly TimeSpan LockedRetryDelay = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>True for a Windows sharing violation (32) or lock violation (33): another program has the file open and is not sharing it, which passes on its own.</summary>
+    private static bool IsLocked(IOException error) => (error.HResult & 0xFFFF) is 32 or 33;
+
+    /// <summary>
+    /// Reads a whole file while letting other programs read, write, rename or delete it at the same time, so this read never blocks the service's own save. Returns null when the file is not there.
+    /// A sharing or lock violation is tried again for about 3 seconds and then reported as <see cref="StateStoreException"/>; any other failure is thrown as it is.
+    /// </summary>
+    private static byte[]? ReadShared(string path)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var copy = new MemoryStream();
+                stream.CopyTo(copy);
+                return copy.ToArray();
+            }
+            catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+            {
+                return null;
+            }
+            catch (IOException error) when (IsLocked(error))
+            {
+                if (attempt >= LockedRetries) throw new StateStoreException($"{path} is held open by another program", error);
+                Thread.Sleep(LockedRetryDelay);
+            }
+        }
     }
 
     /// <summary>Renames the unusable state file so it is kept for inspection but no longer in the way. A failed rename is ignored; the next successful save replaces the file anyway.</summary>
@@ -130,7 +173,10 @@ public sealed class StateStore
             // A missing or unreadable file counts as a mismatch.
             try
             {
-                if (!File.ReadAllBytes(path).AsSpan().SequenceEqual(expected)) return false;
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var copy = new MemoryStream();
+                stream.CopyTo(copy);
+                if (!copy.ToArray().AsSpan().SequenceEqual(expected)) return false;
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException)
             {
@@ -184,14 +230,23 @@ public sealed class StateStore
             TryDelete(tempPath);
             throw new StateStoreException($"could not write {tempPath}: {error.Message}", error);
         }
-        try
+        // The rename is tried again for a moment when another program (such as an antivirus scan) holds the old file open without letting it be replaced.
+        for (int attempt = 1; ; attempt++)
         {
-            File.Move(tempPath, path, overwrite: true);
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            TryDelete(tempPath);
-            throw new StateStoreException($"could not replace {path}: {error.Message}", error);
+            try
+            {
+                File.Move(tempPath, path, overwrite: true);
+                break;
+            }
+            catch (IOException error) when (IsLocked(error) && attempt < 5)
+            {
+                Thread.Sleep(TimeSpan.FromMilliseconds(100));
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                TryDelete(tempPath);
+                throw new StateStoreException($"could not replace {path}: {error.Message}", error);
+            }
         }
     }
 
