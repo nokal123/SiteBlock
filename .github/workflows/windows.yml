@@ -118,6 +118,17 @@ jobs:
             exit $code
           }
 
+      # A build numbered 0 means the commit count could not be read; it would look older than every install, so the updater would never offer it.
+      # write-build-number.ps1 already stops on GitHub when the count is 0; this checks the packaged file itself, so a 0 can never reach a release.
+      - name: Check the build number
+        run: |
+          $info = Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json
+          if ([int]$info.build -le 0) {
+            Write-Host "::error title=Build number is 0::version-windows.json says build $($info.build); the commit count could not be read, so nothing is published."
+            exit 1
+          }
+          Write-Host "Build $($info.build), version $($info.displayVersion)."
+
       - name: Keep the zip as a run artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -145,6 +156,21 @@ jobs:
       # Creates a release for this version, tagged windows-v<version> (for example windows-v1.0.3), not marked latest.
       # A release that already exists for this version is left alone. Older releases are kept, so GitHub keeps each
       # version's download counts (scripts/stats.sh adds them up).
+      # The first Windows release must be 1.0.0. When no windows-v release exists yet and this build would publish as anything else, version.props'
+      # WindowsSeriesFirstBuild does not match master's commit count, and the run stops here, naming the number to set, instead of publishing a wrong first version.
+      - name: Check the first release is 1.0.0
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $info = Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json
+          $existing = @(gh release list --limit 200 --json tagName --jq '.[].tagName' | Where-Object { $_ -like 'windows-v*' })
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error title=Release list failed::gh release list exited $LASTEXITCODE"; exit 1 }
+          if ($existing.Count -eq 0 -and $info.displayVersion -ne '1.0.0') {
+            Write-Host "::error title=First Windows release is not 1.0.0::This build would publish as $($info.displayVersion). Set WindowsSeriesFirstBuild in windows/version.props to $($info.build) and push again."
+            exit 1
+          }
+
       - name: Publish this version as a release
         if: github.ref == 'refs/heads/master'
         env:
