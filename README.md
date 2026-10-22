@@ -1,6 +1,13 @@
 # SiteBlock
 
-SiteBlock blocks websites on your Mac for every browser at once, including Safari and Chrome, with no browser extension. It keeps a site blocked until you unblock it. Unblocking needs the SiteBlock password, and even then the site stays blocked for a waiting period (30 minutes by default) before it opens.
+SiteBlock blocks websites on your Mac or Windows PC for every browser at once, including Safari, Chrome, Edge and Firefox, with no browser extension. It keeps a site blocked until you unblock it. Unblocking needs the SiteBlock password, and even then the site stays blocked for a waiting period (30 minutes by default) before it opens.
+
+## Download
+
+- **Mac** (Apple chip, M1 or newer, macOS 14 or newer): **https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip**. See [Installing on another Mac](#installing-on-another-mac).
+- **Windows** (Windows 11, or Windows 10 version 2004 or newer, on an Intel, AMD or Arm PC): **https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip**. See [SiteBlock for Windows](#siteblock-for-windows).
+
+Both links always give the newest version, and the app updates itself after that. The first Windows release is [version 1.0.0](https://github.com/nokal123/SiteBlock/releases/tag/windows-v1.0.0); every Windows version is listed on the [releases page](https://github.com/nokal123/SiteBlock/releases) under tags that start with `windows-v`.
 
 ## How it works
 
@@ -94,13 +101,58 @@ The service writes to `/Library/Logs/SiteBlock/siteblockd.log` and the watchdog 
 
 ## SiteBlock for Windows
 
-SiteBlock also runs on Windows. It does the same job as the Mac version: it blocks the sites you choose in every browser and app at once, unblocking needs the SiteBlock password and a waiting period (30 minutes by default), and it always blocks adult websites. It needs Windows 10 version 2004 or newer, or Windows 11, on an Intel, AMD or Arm PC. The Windows version lives in the `windows/` folder; its design is in `Design Plans/06-windows.md`.
+SiteBlock for Windows does the same job as the Mac version. It blocks the sites you choose in every browser and app on the PC, for everyone who uses it. Unblocking needs the SiteBlock password and then the waiting period, and it always blocks adult websites. It works the same way underneath: it writes the blocked sites into the Windows hosts file (`C:\Windows\System32\drivers\etc\hosts`, the file Windows checks before looking a site up on the internet), puts them in the block lists of Chrome, Edge, Brave and Firefox, and sets every network connection's DNS servers to Cloudflare for Families.
 
-The newest package is always at **https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip**.
+**Requirements:** Windows 11, or Windows 10 version 2004 or newer, on an Intel, AMD or Arm PC, and an administrator account (or someone who knows an administrator password). One download serves every PC: the package holds the programs for both Intel/AMD and Arm processors, and the installer picks the right ones.
 
-To install it, unzip the package, right-click **`Install SiteBlock.cmd`** and choose "Run as administrator". Windows SmartScreen (the check that warns about programs few people have run) may say it protected your PC, because SiteBlock is not signed with a code-signing certificate. Click "More info", then "Run anyway". The installer sets up the two background services, adds the shield icon to the taskbar's notification area, and checks that everything runs. You choose your SiteBlock password the first time you block a site, as on the Mac.
+### Install on Windows
 
-The `siteblock` command works in any new terminal (Command Prompt or PowerShell) after the install, with the same commands as the Mac. `siteblock recover` must be run from a terminal opened with "Run as administrator". The tray app checks GitHub once a day for a newer version and asks Windows for permission (the UAC prompt) before it updates.
+1. Download **https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip**.
+2. Unzip it: right-click the zip, choose "Extract All...", then click Extract. Keep the `SiteBlock` folder together, because the installer needs everything in it.
+3. Open the `SiteBlock` folder, right-click **`Install SiteBlock.cmd`** and choose "Run as administrator". Double-clicking it also works; it then asks for administrator rights itself.
+4. Windows may show a blue box that says "Windows protected your PC". This is Windows SmartScreen, which warns about programs that few people have downloaded and that are not signed with a paid code-signing certificate, which is true of SiteBlock. Click "More info", then "Run anyway".
+5. Windows asks "Do you want to allow this app to make changes to your device?" (the UAC prompt, User Account Control). Click Yes. On an account that is not an administrator, type an administrator's password here.
+6. A window shows the installer working. It copies SiteBlock into `C:\Program Files\SiteBlock`, sets up the two background services that keep the block in place, makes SiteBlock start every time someone signs in, and checks that everything works. Lines that start with SKIP are normal before you have blocked a site. When it says "SiteBlock is installed", press any key to close the window.
+
+The same steps are in `INSTALL.txt` inside the zip, for the person installing it on another PC. Only install SiteBlock on a PC whose user wants it, because it is deliberately hard to remove.
+
+### Using it on Windows
+
+SiteBlock lives in a shield icon by the clock, at the right end of the taskbar. Click it, type a site (for example `youtube.com`) and press Block. The first time, SiteBlock asks you to choose your SiteBlock password; keep it safe, because it cannot be shown again. Blocking part of a site, unblocking, "Keep blocked", the "For a while" temporary unblock and the waiting period in Settings all work as on the Mac (see [Everyday use](#everyday-use)).
+
+Windows often hides new tray icons. If you cannot see the shield, click the small ^ arrow by the clock; the shield is in the box that opens. Drag it onto the taskbar next to the clock to keep it visible, or on Windows 11 turn SiteBlock on under Settings > Personalization > Taskbar > Other system tray icons.
+
+The `siteblock` command works in any new terminal (Command Prompt, PowerShell or Windows Terminal) after the install, with the same commands as on the Mac, such as `siteblock status` and `siteblock add youtube.com`. While any site is blocked, Chrome's and Edge's menus say "Managed by your organization"; that only refers to SiteBlock's block list.
+
+### Updating on Windows
+
+The tray app checks GitHub once a day. When a newer version exists, the panel shows a banner with an Update button; click it, then click Yes when Windows asks for permission. To update by hand instead, download the zip again and run `Install SiteBlock.cmd` again. Either way, your blocked sites, the SiteBlock password, the waiting period and every running countdown are kept. Settings shows the installed version.
+
+### Forgotten password on Windows
+
+Open the Start menu, type "Terminal" (or "PowerShell"), right-click it and choose "Run as administrator", then run:
+
+```
+siteblock recover
+```
+
+After 48 hours the SiteBlock password is cleared and you choose a new one the next time you block a site. Your blocked sites stay blocked the whole time, and `siteblock recover --cancel` stops the reset.
+
+### Uninstall on Windows
+
+Click the shield icon, open Settings and press "Uninstall SiteBlock…", or run `siteblock uninstall`. Both ask for the SiteBlock password and then wait 48 hours (or your unblock delay, if that is longer) before removing SiteBlock. Every site stays blocked during the wait. When it ends, SiteBlock removes its services, the tray app, its lines in the hosts file and its browser settings, and puts your original DNS servers back.
+
+### What SiteBlock can and cannot stop on Windows
+
+SiteBlock undoes changes made to get around it, usually within seconds. It puts back its lines in the hosts file, including when the file is made read-only, locked against Windows' own SYSTEM account, or moved by changing the `DataBasePath` registry setting. It restarts a service that is stopped, re-enables a service that is set to Disabled, and recreates a service that is deleted. It restores its program files from a protected backup, rewrites its saved state if that file is deleted, restarts the tray app if it is closed, and resets browser and DNS settings that are changed by hand. Countdowns use a clock that cannot be changed, and five wrong passwords lock password checks for 15 minutes.
+
+It cannot stop a determined administrator, who can stop both services within the same few seconds and then delete SiteBlock's files, or start Windows in Safe Mode, where the services do not run. It also does not stop a VPN or a proxy that looks up site names remotely, although the browsers' own block lists still apply in Chrome, Edge, Brave and Firefox. For the strongest protection, use a standard (non-administrator) Windows account day to day and let someone else keep the administrator password.
+
+### Logs on Windows
+
+The service writes to `C:\ProgramData\SiteBlock\Logs\siteblockd.log` and the watchdog to `watchdog.log` in the same folder; the update log is `update.log` there too. The logs never contain your sites or your password. Running `Install SiteBlock.cmd` again repairs a broken install and keeps your blocked sites, the password and every countdown.
+
+The Windows source code is in the `windows/` folder and its design is in `Design Plans/06-windows.md`.
 
 ## For developers
 
@@ -112,4 +164,4 @@ To see what SiteBlock finds on each network connection and what it would do abou
 
 If an install breaks, run `sudo scripts/install.sh` again. It replaces the programs and restarts the background jobs, and it keeps every block, the password and every countdown.
 
-To see how often SiteBlock has been downloaded (per version, plus update checks, which roughly count copies in use), run `scripts/stats.sh`.
+To see how often SiteBlock has been downloaded (per version, plus update checks, which roughly count copies in use), run `scripts/stats.sh` for the Mac and `windows/scripts/stats.sh` for Windows.
