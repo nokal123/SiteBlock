@@ -83,13 +83,17 @@ jobs:
                 Write-Host "::error title=Failed test::$(Escape "$($result.testName): $message")"
               }
               if ($failed.Count -eq 0) {
-                # No test failed, so the run itself broke (a build error, or a test host that crashed or was aborted). The lines that say so, and the end of the output, become annotations.
+                # No test failed, so the run itself broke (a build error, or a test host that crashed, hung or was aborted). GitHub shows at most 10 error annotations per
+                # step, so the end of the output goes first, then each test project's summary line as one notice, then up to 8 telling lines; passing tests' lines are
+                # left out, because test names such as "...ThrowsTheDesignError" would otherwise fill the 10.
                 $console = @(Get-Content -LiteralPath windows/TestResults/console.txt -ErrorAction SilentlyContinue)
-                $telling = @($console | Where-Object { $_ -match 'error|abort|crash|Unhandled|Exception|Fatal|Stack overflow|timed out' } | Select-Object -First 15)
-                foreach ($line in $telling) { Write-Host "::error title=Test run problem::$(Escape $line.Trim())" }
-                $tail = ($console | Select-Object -Last 25 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ' | '
-                if ($tail.Length -gt 3000) { $tail = $tail.Substring($tail.Length - 3000) }
+                $tail = ($console | Select-Object -Last 40 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and $_ -notmatch '^(Passed|Skipped) ' }) -join ' | '
+                if ($tail.Length -gt 4000) { $tail = $tail.Substring($tail.Length - 4000) }
                 Write-Host "::error title=End of the test output::$(Escape $tail)"
+                $summaries = ($console | Where-Object { $_ -match '(Passed|Failed)!\s+-|error CS|error MSB|Test Run Aborted|The active test run was aborted|exited with error' } | ForEach-Object { $_.Trim() } | Select-Object -First 12) -join ' | '
+                if ($summaries) { Write-Host "::notice title=Test project results::$(Escape $summaries)" }
+                $telling = @($console | Where-Object { $_ -notmatch '^\s*(Passed|Skipped) ' -and $_ -match 'error|abort|crash|Unhandled|Exception|Fatal|Stack overflow|timed out|hang' } | Select-Object -First 8)
+                foreach ($line in $telling) { Write-Host "::error title=Test run problem::$(Escape $line.Trim())" }
               }
             } catch {
               Write-Host "::error title=Test report failed::$(Escape $_.Exception.Message)"
