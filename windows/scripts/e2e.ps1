@@ -800,14 +800,16 @@ function Test-LiveTabWatcher {
         $moving = $tabs | Where-Object { $_.url -eq 'https://example.com/' } | Select-Object -First 1
         $staying = $tabs | Where-Object { $_.url -like '*example.com/?stay*' } | Select-Object -First 1
         if ($null -eq $moving) { throw 'the first window is not on https://example.com/' }
-        # The pages must have finished loading before they are marked, or the load would wipe the mark.
+        # The pages must have finished loading before they are marked, or the load would wipe the mark. Chrome lists a tab under the address it is loading while
+        # the document is still the empty about:blank page, which already counts as loaded, so the check waits for the real page: loaded and at example.com.
         foreach ($tab in @($moving, $staying)) {
-            if ((Wait-Until 20000 { (Invoke-TabScript $tab.webSocketDebuggerUrl 'document.readyState') -eq 'complete' }) -lt 0) { throw "a page did not finish loading within 20 seconds ($($tab.url))" }
+            if ((Wait-Until 20000 { (Invoke-TabScript $tab.webSocketDebuggerUrl "document.readyState + ' ' + location.href") -match '^complete https://example\.com/' }) -lt 0) { throw "a page did not finish loading example.com within 20 seconds ($($tab.url))" }
             [void](Invoke-TabScript $tab.webSocketDebuggerUrl "window.__siteblockMark = 'marked'; 'ok'")
         }
         $before = Get-TabReloadCount
         # The tray app reads the rule list on its next status poll, every 30 seconds while its panel is closed, so the wait allows for that.
         $pushed = Invoke-TabScript $moving.webSocketDebuggerUrl "history.pushState({}, '', '/sbtabtest/clip'); location.href"
+        if ($pushed -notlike 'https://example.com/sbtabtest/clip*') { throw "history.pushState did not move the tab onto the blocked path (the tab says '$pushed')" }
         # What the tab does after the move, every half second for the first few seconds, so a failure shows who moved or reloaded it (Chrome itself or the tray app).
         $timeline = New-Object System.Collections.Generic.List[string]
         $timeline.Add("after pushState: $pushed")
