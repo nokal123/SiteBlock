@@ -151,9 +151,10 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         {
             ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }
-        catch (Exception)
+        catch (Exception error)
         {
             Forget(hwnd);
+            ReportOncePerMinute($"tab reader: pressing the reload button failed ({error.GetType().Name})");
             throw;
         }
     }
@@ -192,7 +193,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
 
         AutomationElement window = AutomationElement.FromHandle(hwnd);
         found = reloadButton ? Find(window, ReloadButtonClass, ControlType.Button) : Find(window, AddressBarClass, ControlType.Edit);
-        if (found is null && !reloadButton && ShouldReport()) _log.Info(DescribeSearch(window));
+        if (found is null && ShouldReport()) _log.Info(DescribeSearch(window, reloadButton));
         lock (_gate)
         {
             // Chrome builds its accessibility tree only once a reader asks, so the first search can come up empty; the window is searched again later.
@@ -253,11 +254,13 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
     }
 
     /// <summary>
-    /// Describes what a failed address bar search saw, for the log: how many elements the browser's own controls hold (up to 400), the class names of its first-level
-    /// children and of every edit control found, outside web page content. These are the browser's control names, never page text or an address.
+    /// Describes what a failed search for the address bar or the reload button saw, for the log: how many elements the browser's own controls hold (up to 400), the
+    /// class names of its first-level children, and those of every edit control (for the address bar) or every button-like control (for the reload button), outside web
+    /// page content. These are the browser's control names, never page text or an address.
     /// </summary>
-    private static string DescribeSearch(AutomationElement root)
+    private static string DescribeSearch(AutomationElement root, bool reloadButton)
     {
+        string what = reloadButton ? "reload button" : "address bar";
         TreeWalker walker = TreeWalker.ControlViewWalker;
         var top = new List<string>();
         var edits = new List<string>();
@@ -276,7 +279,10 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
                     AutomationElement.AutomationElementInformation info = child.Current;
                     string label = $"{info.ClassName}/{info.ControlType.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal)}";
                     if (depth == 0 && top.Count < 10) top.Add(label);
-                    if (info.ControlType == ControlType.Edit && edits.Count < 10) edits.Add(label);
+                    bool wanted = reloadButton
+                        ? info.ControlType == ControlType.Button || info.ControlType == ControlType.SplitButton || info.ControlType == ControlType.MenuItem
+                        : info.ControlType == ControlType.Edit;
+                    if (wanted && edits.Count < 15) edits.Add(label);
                     if (info.ControlType != ControlType.Document) queue.Enqueue((child, depth + 1));
                     child = walker.GetNextSibling(child);
                 }
@@ -284,9 +290,9 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         }
         catch (Exception error)
         {
-            return $"tab reader: no address bar found; describing the window failed after {visited} elements ({error.GetType().Name})";
+            return $"tab reader: no {what} found; describing the window failed after {visited} elements ({error.GetType().Name})";
         }
-        return $"tab reader: no address bar found among {visited} elements; top level: [{string.Join(", ", top)}]; edit controls: [{string.Join(", ", edits)}]";
+        return $"tab reader: no {what} found among {visited} elements; top level: [{string.Join(", ", top)}]; {(reloadButton ? "buttons" : "edit controls")}: [{string.Join(", ", edits)}]";
     }
 
     /// <summary>The display name of a supported browser process, or null for any other process. Names are cached by process id and start time.</summary>

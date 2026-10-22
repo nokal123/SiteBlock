@@ -169,7 +169,12 @@ public sealed class TabWatcher : IDisposable
     {
         try
         {
-            if (_tabs.CurrentUrl(browser.ProcessId, windowId) is not { } current) return;
+            // An address that cannot be read again right now (the person clicked into the address bar, say) is not a decision to leave the tab alone, so it is tried again next tick.
+            if (_tabs.CurrentUrl(browser.ProcessId, windowId) is not { } current)
+            {
+                _decider.Forget(browser.ProcessId, windowId);
+                return;
+            }
             if (TabRuleMatcher.MatchingRule(current, rules) is null) return;
             _tabs.Reload(browser.ProcessId, windowId);
             // The line names the browser only: the log never holds an address, a domain or a path rule.
@@ -177,7 +182,9 @@ public sealed class TabWatcher : IDisposable
         }
         catch (Exception)
         {
-            // The window closed or stopped answering; the next tick looks again.
+            // The reload did not happen (the window closed, stopped answering, or its reload button could not be pressed). The decider already counted this tab as handled at
+            // this address, so it is forgotten, and the next tick tries again rather than leaving the tab on the blocked part for as long as it stays there.
+            _decider.Forget(browser.ProcessId, windowId);
         }
     }
 }

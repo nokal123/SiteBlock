@@ -54,6 +54,15 @@ public sealed class TabReloadDecider
         }
     }
 
+    /// <summary>Drops what is remembered about one tab, so the next list that shows it on a matching address returns it again. Used when a reload the decider asked for did not happen.</summary>
+    public void Forget(int processId, string tabId)
+    {
+        ArgumentNullException.ThrowIfNull(tabId);
+        if (!_memory.TryGetValue(processId, out var tabs)) return;
+        tabs.Remove(tabId);
+        if (tabs.Count == 0) _memory.Remove(processId);
+    }
+
     /// <summary>Drops everything that is remembered.</summary>
     public void ForgetAll() => _memory.Clear();
 
