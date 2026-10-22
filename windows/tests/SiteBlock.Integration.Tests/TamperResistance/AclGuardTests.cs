@@ -1,3 +1,4 @@
+using SiteBlock.Integration.Tests.Support;
 using SiteBlock.Service;
 
 namespace SiteBlock.Integration.Tests.TamperResistance;
@@ -20,7 +21,9 @@ public sealed class AclGuardTests
         Assert.Empty(s.LogMessages());
     }
 
-    [Fact]
+    // On Windows a non-sandbox Ensure really applies the access lists to the temp folders and logs the repairs, so this
+    // "no access-list work" assertion is true only off Windows. The Windows path is covered positively in SiteBlock.Windows.Tests.
+    [UnixFact("AclGuard applies real access lists on Windows, so the non-Windows no-write assertion runs only on macOS and Linux")]
     public void Ensure_NonWindows_CreatesFoldersAndSkipsAccessLists()
     {
         // A non-sandbox Paths whose folders live under the temp dir reaches the Windows-only branch, which is skipped off Windows: the folders are still created and no access-list log line appears.

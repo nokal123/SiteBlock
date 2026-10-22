@@ -101,4 +101,32 @@ public sealed class WatchdogTests
 
         Assert.Equal([ServiceJob.Daemon], guard.EnsureCalls);
     }
+
+    [Fact]
+    public void RunLoop_WhenACheckThrows_LogsOnceAndReturnsWithoutThrowing()
+    {
+        using var s = new TempSandbox();
+        var cts = new CancellationTokenSource();
+        // The guard cancels the loop and then throws, so the single pass logs the failure and the WaitOne sees the token already
+        // cancelled and returns at once: the catch and the type-only message are pinned with no 5-second wait. The "keeps looping
+        // over many passes" property and the once-a-minute throttle need a real 5 s WaitOne, so they are left to the e2e run.
+        var guard = new CancelThenThrowServiceGuard(cts);
+
+        var error = Record.Exception(() => Watchdog.RunLoop(s.Paths, guard, s.Log, cts.Token));
+
+        Assert.Null(error);
+        Assert.Equal(["watchdog started", "watchdog check failed (InvalidOperationException)"], s.LogMessages());
+    }
+
+    // A guard that cancels the loop's token and then throws on its one and only call.
+    private sealed class CancelThenThrowServiceGuard(CancellationTokenSource cts) : IServiceGuard
+    {
+        public void EnsureRunning(ServiceJob job)
+        {
+            cts.Cancel();
+            throw new InvalidOperationException("simulated check failure");
+        }
+
+        public bool StopAndDelete(ServiceJob job, TimeSpan timeout) => true;
+    }
 }
