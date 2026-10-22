@@ -216,7 +216,7 @@ public sealed class TabWatcherRetryTests
     }
 
     [Fact]
-    public async Task WindowMissingFromTheListJustWhenItsRetryFallsDue_IsStillRetriedOnItsReturn()
+    public async Task WindowMissingFromTheListJustWhenItsRetryFallsDue_ReturnsLaterAndIsHandledFresh()
     {
         var rig = new Rig();
         rig.Tabs.ReloadThrows = true;
@@ -226,14 +226,13 @@ public sealed class TabWatcherRetryTests
         // The address bar has keyboard focus at 5 s, so the window is left out of the list (IBrowserTabs.ReadWindows), then it is back on the same blocked address.
         rig.Tabs.SetWindows(Chrome);
         await rig.TickUntil(5_000);
+        Assert.Equal([0L], rig.AttemptTimes);
         rig.Tabs.SetWindows(Chrome, ("1", Blocked));
         await rig.TickUntil(60_000);
 
-        // The design does not say whether one look without the window restarts the count, so only what it does say is pinned: the due retry is not lost (it happens on the
-        // window's return at 5.5 s), and the attempts stay capped (at most three from the return on, so at most four in all).
-        Assert.Equal(0L, rig.AttemptTimes[0]);
-        Assert.Equal(5_500L, rig.AttemptTimes[1]);
-        Assert.InRange(rig.AttemptTimes.Count, 3, 4);
+        // § TabWatcher step 6: a tab missing from a look has left, so its count is dropped and its return at 5.5 s starts with all 3 tries, 5 seconds apart. The first
+        // failure at 0 s is not counted against the return, so there are four attempts in all, not three.
+        Assert.Equal([0L, 5_500L, 10_500L, 15_500L], rig.AttemptTimes);
     }
 
     [Fact]
@@ -305,6 +304,26 @@ public sealed class TabWatcherRetryTests
 
         // The browser that quit dropped its state, so the returning one gets three attempts again.
         Assert.Equal([0L, 5_000L, 10_000L, 21_500L, 26_500L, 31_500L], rig.AttemptTimes);
+    }
+
+    [Fact]
+    public async Task EveryRuleIsRemovedForOneLook_TheCountIsDroppedAndTheRestoredRuleGivesThreeFreshAttempts()
+    {
+        var rig = new Rig();
+        rig.Tabs.ReloadThrows = true;
+        await rig.Tick();
+        await rig.TickUntil(20_000);
+        Assert.Equal(3, rig.Attempts);
+
+        // No path rule exists for the look at 20.5 s; the tab stays on the same blocked address the whole time.
+        rig.Watcher.SetRules([]);
+        await rig.TickUntil(20_500);
+        rig.Watcher.SetRules([Shorts]);
+        await rig.TickUntil(80_000);
+
+        // § TabWatcher step 6: the count of every tab is dropped when no rule exists, so the restored rule finds the tab at 21 s and tries it 3 times, 5 seconds apart.
+        Assert.Equal([0L, 5_000L, 10_000L, 21_000L, 26_000L, 31_000L], rig.AttemptTimes);
+        Assert.Empty(rig.Tabs.Reloads);
     }
 
     [Fact]

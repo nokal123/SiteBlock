@@ -9,8 +9,8 @@ using SiteBlock.Service;
 namespace SiteBlock.Integration.Tests.TamperResistance;
 
 // A person (or an editor) saving the hosts file while a pass is working on it. Expected values come from 06-windows.md § HostsEnforcer step 4: before writing, the
-// enforcer reads the file once more; when someone saved it since the first read, the pass starts over from the new text, up to three times, and only then leaves the
-// file for the next pass, so a concurrent save is never replaced by text built from the older copy. HostsFileEditor.Render (the specified renderer) gives the wanted text.
+// enforcer reads the file once more; when someone saved it since the first read, the pass starts over from the new text, with at most three attempts in all, and only then
+// leaves the file for the next pass, so a concurrent save is never replaced by text built from the older copy. HostsFileEditor.Render (the specified renderer) gives the wanted text.
 //
 // The in-process tests make the save land exactly between the enforcer's first read and its write. The hosts path is a named pipe (a FIFO, a Unix file that hands each
 // reader whatever a writer puts in), so the test decides what each read returns: the first read gets the old text and the next reads get the person's saved text. A real
@@ -57,8 +57,9 @@ public sealed class HostsConcurrentSaveTests
                 }
                 byte[] bytes = Encoding.UTF8.GetBytes(text);
                 _ = Write(fd, bytes, bytes.Length);
-                _ = Close(fd);
+                // Counted before the close: the reader sees the end of the text only on the close, so the count is always up to date by the time its read returns.
                 Interlocked.Increment(ref _delivered);
+                _ = Close(fd);
                 // Give the reader time to see the end of this text and close, so the next text never runs on into the same read.
                 Thread.Sleep(30);
             }
@@ -153,8 +154,9 @@ public sealed class HostsConcurrentSaveTests
         Assert.True(IsFifo(s.Paths.HostsFile), "the pass wrote text built from a copy that had already been replaced");
         Assert.False(result, "a pass that left the file without its section must not report the file as correct");
         Assert.DoesNotContain(s.LogMessages(), line => line.Contains("repaired", StringComparison.Ordinal) || line.Contains("removed", StringComparison.Ordinal));
-        // "Up to three times": three attempts of two reads each, or, if the design's words mean three fresh starts after the first, four. Never fewer, never endless.
-        Assert.InRange(delivered, 6, 8);
+        // § HostsEnforcer step 4 allows "at most three attempts in all", and each attempt reads the file twice (once to build the text, once more just before the write),
+        // so the pass reads exactly six times before it gives up. The feeder holds eight texts, so a seventh read would be fed and counted.
+        Assert.Equal(6, delivered);
     }
 
     // A running daemon repairing while the person keeps saving. Each save puts the same text in place (the person's line, without SiteBlock's section), at random moments

@@ -9,6 +9,14 @@ namespace SiteBlock.Integration.Tests.Daemon;
 // its next connection at once never finds the finished one still counted; the wait of up to 2 seconds for the client to hang up holds no slot; each account may have at
 // most 4 such waits at once, and a further connection of that account is closed right after its reply; and the 2-second request limit counts from the moment the
 // connection was accepted. 02-core-components.md § ConnectionLimiter gives the limit of 4 per user.
+//
+// Three rules of § PipeServer step 4 are NOT tested here, because a client outside the server cannot see them:
+// 1. The slot is given back just BEFORE the reply is written, not merely after it. A client only learns about the slot by reading its reply, and by then both orders
+//    look the same, so the tests below only prove the slot is free by the time the reply has been read.
+// 2. A request already waiting always gets at least 250 milliseconds to be read, even when the 2-second limit has nearly run out. Hitting that moment needs a request
+//    to arrive within the last 250 ms before the limit while the server is still busy with something else, which cannot be timed from a client.
+// 3. The cap of 4 hang-up waits is per account, not one cap for everyone. Every sandbox caller is the same user ("sandbox-user"), so a cap shared by all accounts
+//    and a cap per account give the same results in these tests.
 public sealed class PipeSlotAndHangUpTests
 {
     private const string StatusLine = "{\"command\":\"status\"}\n";
@@ -83,11 +91,13 @@ public sealed class PipeSlotAndHangUpTests
             {
                 var clock = Stopwatch.StartNew();
                 // Four clients read their reply and then just stay connected; each holds one of the account's four hang-up waits but no slot.
+                var repliedAtEach = new List<double>();
                 for (int i = 0; i < 4; i++)
                 {
                     var connection = RawConnection.Open(daemon.PipePath);
                     lingering.Add(connection);
                     Assert.True(AnswersStatus(connection), $"lingering client {i + 1} was not answered");
+                    repliedAtEach.Add(clock.Elapsed.TotalSeconds);
                 }
                 using var fifth = RawConnection.Open(daemon.PipePath);
                 // The fifth still gets its reply: the cap only skips the wait, and the slot it used was free.
@@ -110,8 +120,17 @@ public sealed class PipeSlotAndHangUpTests
                 Assert.True(afterReply == "", $"the fifth connection should be closed right after its reply, but {(afterReply is null ? "it was still open 1.5 s later" : $"more text arrived: \"{afterReply}\"")}");
                 Assert.True(firstStillOpen is null, $"the first client's connection should still be in its hang-up wait, but the read returned \"{firstStillOpen}\"");
 
-                // The four waits end on their own within the 2-second limit (well within 8 s on a loaded machine), each closing its connection.
-                foreach (var connection in lingering) Assert.Equal("", connection.ReadLine(8));
+                // Each wait lasts up to 2 seconds from its reply, then the server closes the connection. The bound is 4 s from the moment this client read its reply: the
+                // extra 2 s cover the scheduling delay of GitHub's shared Windows machine (up to a few seconds under load), and 4 s is the tightest bound that still tells a
+                // 2-second wait apart from a wait with no limit, which would leave the connection open for as long as the client stays.
+                const double closeBoundSeconds = 4.0;
+                for (int i = 0; i < lingering.Count; i++)
+                {
+                    double remaining = Math.Max(0.05, repliedAtEach[i] + closeBoundSeconds - clock.Elapsed.TotalSeconds);
+                    string? end = lingering[i].ReadLine(remaining);
+                    double closedAt = clock.Elapsed.TotalSeconds - repliedAtEach[i];
+                    Assert.True(end == "", $"lingering client {i + 1}: the server should close the connection within {closeBoundSeconds} s of the reply (2 s wait plus scheduling margin), but {(end is null ? $"it was still open {closedAt:0.00} s after the reply" : $"more text arrived: \"{end}\"")}");
+                }
                 break;
             }
             finally

@@ -61,9 +61,22 @@ public sealed class SharedFileTests : IDisposable
     }
 
     [WindowsFact("deleting and renaming a file another handle has open depends on Windows sharing modes")]
-    public void ReadAllText_HandleIsClosedAfterReading_SoDeleteAndRenameSucceedAtOnce()
+    public void ReadAllText_HandleIsClosedAfterReading_SoAnExclusiveOpenRenameAndDeleteSucceedAtOnce()
     {
+        // Control: while a handle that shares everything is open, an open that shares nothing is refused, so the exclusive open below really detects a leaked handle.
+        using (new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            Assert.Throws<IOException>(() => new FileStream(_path, FileMode.Open, FileAccess.ReadWrite, FileShare.None).Dispose());
+        }
+
         Assert.Equal(Text, SharedFile.ReadAllText(_path));
+
+        // An open that shares nothing (FileShare.None) is refused while any other handle to the file is open, even one that shares read, write and delete, so this
+        // succeeds only when SharedFile closed its handle. The rename and delete below alone would pass with a leaked handle that shares delete.
+        using (var exclusive = new FileStream(_path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Equal(Encoding.UTF8.GetByteCount(Text), exclusive.Length);
+        }
 
         // Nothing stays open after the read: the file can be replaced by a rename and then deleted straight away.
         string replacement = Path.Combine(_folder, "state.json.tmp");
