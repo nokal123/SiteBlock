@@ -59,31 +59,54 @@ public sealed class UnblockTests
     [Fact]
     public void WrongPasswords_CountDownToOneTryThenLockOutAndRefuseEvenTheRightPassword()
     {
-        using var daemon = SandboxDaemon.Start(tickSeconds: 60);
-        daemon.SetupAndAdd("reddit.com");
+        // The test policy's lockout lasts only 2 seconds, so on a busy machine it can end before the right password is even sent, and the service then rightly accepts it.
+        // An attempt counts only when the fifth wrong password and the right one were both answered within LockoutWindow; otherwise it is repeated with a fresh service.
+        for (int attempt = 1; ; attempt++)
+        {
+            using var daemon = SandboxDaemon.Start(tickSeconds: 60);
+            daemon.SetupAndAdd("reddit.com");
 
-        var messages = Enumerable.Range(0, 5).Select(_ => Unblock(daemon, WrongPassword)).ToList();
+            var messages = Enumerable.Range(0, 4).Select(_ => Unblock(daemon, WrongPassword)).ToList();
+            var clock = Stopwatch.StartNew();
+            messages.Add(Unblock(daemon, WrongPassword));
+            var locked = Unblock(daemon, Defaults.Password);
+            if (clock.Elapsed > LockoutWindow && attempt < 3) continue;
 
-        Assert.All(messages, message => Assert.Equal(ErrorCode.WrongPassword, message.ErrorCode));
-        Assert.Contains("4 tries left", messages[0].Error);
-        Assert.Contains("1 try left", messages[3].Error);
-        var locked = Unblock(daemon, Defaults.Password);
-        Assert.Equal(ErrorCode.LockedOut, locked.ErrorCode);
-        Assert.NotNull(daemon.Status().LockoutSecondsRemaining);
-        Assert.Null(Assert.Single(daemon.Status().Blocked).UnblockSecondsRemaining);
+            Assert.All(messages, message => Assert.Equal(ErrorCode.WrongPassword, message.ErrorCode));
+            Assert.Contains("4 tries left", messages[0].Error);
+            Assert.Contains("1 try left", messages[3].Error);
+            Assert.True(clock.Elapsed <= LockoutWindow, $"no attempt sent the right password while the 2-second lockout was surely still running (last took {clock.Elapsed.TotalSeconds:0.00} s)");
+            Assert.Equal(ErrorCode.LockedOut, locked.ErrorCode);
+            Assert.NotNull(daemon.Status().LockoutSecondsRemaining);
+            Assert.Null(Assert.Single(daemon.Status().Blocked).UnblockSecondsRemaining);
+            return;
+        }
     }
+
+    // How long the fifth wrong password and the next request may take together for the 2-second test lockout to be certainly still running when the next request is checked.
+    private static readonly TimeSpan LockoutWindow = TimeSpan.FromSeconds(1.5);
 
     [Fact]
     public void Lockout_EndsAfterItsTimeAndTheRightPasswordWorksAgain()
     {
-        using var daemon = SandboxDaemon.Start();
-        daemon.SetupAndAdd("reddit.com");
-        for (int i = 0; i < 5; i++) Unblock(daemon, WrongPassword);
-        Assert.Equal(ErrorCode.LockedOut, Unblock(daemon, Defaults.Password).ErrorCode);
+        // As above, the refusal during the lockout is judged only on an attempt that reached it within LockoutWindow; a slower attempt is repeated with a fresh service.
+        for (int attempt = 1; ; attempt++)
+        {
+            using var daemon = SandboxDaemon.Start();
+            daemon.SetupAndAdd("reddit.com");
+            for (int i = 0; i < 4; i++) Unblock(daemon, WrongPassword);
+            var clock = Stopwatch.StartNew();
+            Unblock(daemon, WrongPassword);
+            var duringLockout = Unblock(daemon, Defaults.Password);
+            if (clock.Elapsed > LockoutWindow && attempt < 3) continue;
+            Assert.True(clock.Elapsed <= LockoutWindow, $"no attempt reached the lockout while it was surely still running (last took {clock.Elapsed.TotalSeconds:0.00} s)");
+            Assert.Equal(ErrorCode.LockedOut, duringLockout.ErrorCode);
 
-        Thread.Sleep(2500);
+            Thread.Sleep(2500);
 
-        Assert.True(Unblock(daemon, Defaults.Password).Ok);
+            Assert.True(Unblock(daemon, Defaults.Password).Ok);
+            return;
+        }
     }
 
     [Fact]
