@@ -169,3 +169,24 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-10-22 — Windows: guard hardening, and the Windows workflow green end to end
+
+**Implemented:**
+- Guards (`windows/src/SiteBlock.Service`): hosts takeover with the take-ownership privilege and owner-then-access-list order; an unreadable hosts file is never treated as empty; a byte-preserving read and write of the hosts file; a re-read before each write so a concurrent save is not lost; a whole-folder program restore; service type, account and dependency repair read from the registry; folder owners and per-file access lists of the state files; a capped, path-checked tray app restart.
+- Service and pipe: a connection slot is freed before the reply is written; the 2-second request limit counts from accept; at most 4 hang-up waits per account; the DNS guard takes only adapters with TCP/IP settings of their own; sandbox reads with full file sharing.
+- Updater: the elevated script sets PSModulePath to Windows PowerShell's own folders (it failed with "Get-FileHash not recognized").
+- Tray app: Chrome 155's reload button offers no UI Automation Invoke, so it is pressed through MSAA (hit test at its centre, role and position checks, default action); a failed reload is retried 5 s later, at most 3 tries per address; the tab reader logs counts and control names only.
+- Tests and CI: the e2e checks were corrected (lockout wording, lookup rule on Windows, tray app found by session and path, real page instead of about:blank) and report raw details on the public run page; flaky timing bounds were replaced with order checks or design-based margins; 98 new tests, audited (20 mutants, 17 killed, none a source bug) and tightened in one fix round.
+- Result: GitHub's Windows run green four times in a row (109f00e, 0773b54, 368c397, b726562): all test projects, the package, and 27/27 end-to-end checks.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---
