@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds the three SiteBlock programs in release mode and assembles the results in build/:
-# build/siteblockd, build/siteblock and build/SiteBlock.app. Runs as the normal user (no sudo).
+# build/siteblockd, build/siteblock and build/SiteBlock.app. Each program is universal: it holds a copy for Apple chips
+# (arm64) and one for Intel processors (x86_64), and macOS runs the one that matches the Mac. Runs as the normal user (no sudo).
 set -euo pipefail
 
 # Work from the repository root, wherever the script is started from.
@@ -16,19 +17,39 @@ if ! command -v swift >/dev/null 2>&1; then
     exit 1
 fi
 
-# Compile each program. Building one product at a time keeps the error output readable.
-for product in siteblockd siteblock SiteBlockApp; do
-    echo "==> Building $product (release)"
-    swift build -c release --scratch-path "$SCRATCH" --product "$product"
+# The two processor families every program is built for, and the oldest macOS they run on (the same as Package.swift's platform).
+ARCHS=(arm64 x86_64)
+MIN_MACOS="14.0"
+
+# Compile each program once per processor family. Building one product at a time keeps the error output readable.
+# SwiftPM keeps each family's build in its own folder under the scratch folder, named after the target (for example x86_64-apple-macosx).
+for arch in "${ARCHS[@]}"; do
+    for product in siteblockd siteblock SiteBlockApp; do
+        echo "==> Building $product for $arch (release)"
+        swift build -c release --scratch-path "$SCRATCH" --product "$product" --triple "$arch-apple-macosx$MIN_MACOS"
+    done
 done
 
-# Find the folder SwiftPM put the release programs in.
-BIN_DIR="$(swift build -c release --scratch-path "$SCRATCH" --show-bin-path)"
+# Join each program's two copies into one universal file in a staging folder. A copy that is missing, or that is not
+# built for the family it was asked for, stops the build, so a package can never ship without one of the two.
+BIN_DIR="$SCRATCH/universal"
+rm -rf "$BIN_DIR"
+mkdir -p "$BIN_DIR"
 for product in siteblockd siteblock SiteBlockApp; do
-    if [[ ! -x "$BIN_DIR/$product" ]]; then
-        echo "error: expected program not found: $BIN_DIR/$product" >&2
-        exit 1
-    fi
+    parts=()
+    for arch in "${ARCHS[@]}"; do
+        part="$(swift build -c release --scratch-path "$SCRATCH" --triple "$arch-apple-macosx$MIN_MACOS" --show-bin-path)/$product"
+        if [[ ! -x "$part" ]]; then
+            echo "error: expected program not found: $part" >&2
+            exit 1
+        fi
+        if [[ "$(lipo -archs "$part")" != "$arch" ]]; then
+            echo "error: $part should hold only $arch code but holds: $(lipo -archs "$part")" >&2
+            exit 1
+        fi
+        parts+=("$part")
+    done
+    lipo -create "${parts[@]}" -output "$BIN_DIR/$product"
 done
 
 # The version (set by hand in Models.swift, for example 1.2.0) and the build number (the release number in Models.swift) come from the
@@ -59,8 +80,8 @@ plutil -lint "$OUT/SiteBlock.app/Contents/Info.plist" >/dev/null
 cp "$BIN_DIR/siteblockd" "$OUT/siteblockd"
 cp "$BIN_DIR/siteblock" "$OUT/siteblock"
 
-# Sign everything with an ad-hoc signature (the "-" identity). Apple Silicon Macs refuse to run unsigned programs,
-# and an ad-hoc signature needs no Apple developer account. The app bundle is signed last, after its contents are final.
+# Sign everything with an ad-hoc signature (the "-" identity). Macs with Apple chips refuse to run unsigned programs,
+# and an ad-hoc signature needs no Apple developer account. codesign signs both copies inside each universal file. The app bundle is signed last, after its contents are final.
 codesign --force --sign - "$OUT/siteblockd"
 codesign --force --sign - "$OUT/siteblock"
 codesign --force --sign - "$OUT/SiteBlock.app"
@@ -69,6 +90,16 @@ codesign --force --sign - "$OUT/SiteBlock.app"
 codesign --verify --strict "$OUT/siteblockd"
 codesign --verify --strict "$OUT/siteblock"
 codesign --verify --strict "$OUT/SiteBlock.app"
+
+# Check that every finished program still holds both copies, so an Intel Mac and a Mac with an Apple chip can both run it.
+for program in "$OUT/siteblockd" "$OUT/siteblock" "$OUT/SiteBlock.app/Contents/MacOS/SiteBlock"; do
+    for arch in "${ARCHS[@]}"; do
+        if ! lipo "$program" -verify_arch "$arch"; then
+            echo "error: $program has no $arch copy" >&2
+            exit 1
+        fi
+    done
+done
 
 echo
 echo "Built SiteBlock $VERSION:"

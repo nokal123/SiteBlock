@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds SiteBlock and packs everything another Apple Silicon Mac needs into two files in dist/:
+# Builds SiteBlock and packs everything another Mac (with an Apple chip or an Intel processor) needs into two files in dist/:
 #   SiteBlock.zip   the package, always under this one name so the download link never changes
 #   version.json    describes the package (version, build number, commit, file name and SHA-256 checksum),
 #                   so the app can tell whether a newer build exists and check its download
@@ -99,8 +99,8 @@ SiteBlock removes this.
 Unblocking a site needs the SiteBlock password and then a waiting period, and uninstalling needs the
 password and then a 48-hour wait. Only install it if the person who uses this Mac wants it.
 
-Requirements: a Mac with an Apple chip (M1 or newer), macOS 14 (Sonoma) or newer, and this Mac's
-administrator password.
+Requirements: a Mac with an Apple chip or an Intel processor, macOS 14 (Sonoma) or newer, and this
+Mac's administrator password.
 
 Install:
 1. Unzip SiteBlock.zip. Keep the SiteBlock folder together; the installer needs everything in it.
@@ -126,12 +126,14 @@ Forgotten password: run "sudo siteblock recover" in Terminal; the password is cl
 Removing SiteBlock: Settings in the menu bar panel > Uninstall, or "siteblock uninstall".
 EOF
 
-# Check the copies before zipping: every program still passes its signature check and runs on Apple chips.
+# Check the copies before zipping: every program still passes its signature check and holds a copy for Apple chips
+# (arm64) and one for Intel processors (x86_64).
 for program in "$STAGE/build/siteblockd" "$STAGE/build/siteblock" "$STAGE/build/SiteBlock.app"; do
     codesign --verify --strict "$program"
 done
 for binary in "$STAGE/build/siteblockd" "$STAGE/build/siteblock" "$STAGE/build/SiteBlock.app/Contents/MacOS/SiteBlock"; do
-    lipo -archs "$binary" | grep -qw arm64 || { echo "$binary is not built for Apple chips (arm64)" >&2; exit 1; }
+    lipo "$binary" -verify_arch arm64 || { echo "$binary is not built for Apple chips (arm64)" >&2; exit 1; }
+    lipo "$binary" -verify_arch x86_64 || { echo "$binary is not built for Intel processors (x86_64)" >&2; exit 1; }
 done
 
 # ditto -c -k makes a standard zip that keeps the app bundle's signature and the scripts' permissions.

@@ -190,6 +190,55 @@ else
     echo "found $BUILD_DIR/siteblockd, $BUILD_DIR/siteblock and $BUILD_DIR/SiteBlock.app"
 fi
 
+# Prints this Mac's processor family as the programs name it: arm64 for an Apple chip, x86_64 for an Intel processor.
+# hw.optional.arm64 is 1 on an Apple chip even when this script runs translated by Rosetta, and does not exist on Intel.
+# A dry run may name another family in SITEBLOCK_TEST_MAC_ARCH, so the tests can act out an Intel Mac; a real install never reads it.
+mac_arch() {
+    if [[ $DRY_RUN -eq 1 && -n "${SITEBLOCK_TEST_MAC_ARCH:-}" ]]; then
+        echo "$SITEBLOCK_TEST_MAC_ARCH"
+    elif [[ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+        echo arm64
+    else
+        echo x86_64
+    fi
+}
+
+# Prints this Mac's macOS version, such as 15.4. A dry run may give another in SITEBLOCK_TEST_MACOS_VERSION, for the tests.
+mac_version() {
+    if [[ $DRY_RUN -eq 1 && -n "${SITEBLOCK_TEST_MACOS_VERSION:-}" ]]; then
+        echo "$SITEBLOCK_TEST_MACOS_VERSION"
+    else
+        sw_vers -productVersion
+    fi
+}
+
+# Succeeds when a program holds a copy for the given processor family. It reads the file's description with macOS's own
+# file command, because lipo is a developer tool: on a Mac without them, running it opens an "install developer tools" window.
+# "executable arm64" must not match "executable arm64e", so the family name has to end there.
+has_copy_for() {
+    file -b "$1" | grep -Eq "executable $2([^[:alnum:]_]|$)"
+}
+
+# Stop now, before anything is copied, when this Mac cannot run SiteBlock: macOS older than 14, or programs without a copy
+# for this Mac's processor. Run later, either problem only shows up as a confusing "Bad CPU type" or a crash halfway through.
+ARCH="$(mac_arch)"
+MACOS_VERSION="$(mac_version)"
+if [[ "$ARCH" == "arm64" ]]; then CHIP_NAME="an Apple chip"; else CHIP_NAME="an Intel processor"; fi
+echo "this Mac: $CHIP_NAME ($ARCH), macOS $MACOS_VERSION"
+if [[ ! "$MACOS_VERSION" =~ ^([0-9]+) ]] || (( 10#${BASH_REMATCH[1]} < 14 )); then
+    echo "error: SiteBlock needs macOS 14 (Sonoma) or newer, and this Mac has macOS $MACOS_VERSION. Update macOS in System Settings > General > Software Update, then run the installer again." >&2
+    exit 1
+fi
+if [[ $missing -eq 0 ]]; then
+    for program in "$BUILD_DIR/siteblockd" "$BUILD_DIR/siteblock" "$BUILD_DIR/SiteBlock.app/Contents/MacOS/SiteBlock"; do
+        if ! has_copy_for "$program" "$ARCH"; then
+            echo "error: this Mac has $CHIP_NAME, but $program has no copy for it ($(file -b "$program" | head -1)). Download the newest SiteBlock.zip from https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip and run its installer." >&2
+            exit 1
+        fi
+    done
+    echo "the programs have a copy for this Mac's processor"
+fi
+
 # Work out which user to start the menu bar app for: the person who ran sudo, or, when the script runs
 # as real root without sudo (for example from a macOS administrator password window), the person
 # logged in at the screen, who owns /dev/console. Nobody at the screen (owner root) means no user.
@@ -211,7 +260,7 @@ make_dir 0700 "$APP_SUPPORT_DIR"
 make_dir 0755 "$APP_SUPPORT_DIR/bin"
 make_dir 0755 "$BACKUP_DIR"
 make_dir 0755 "$LOG_DIR"
-# /usr/local/bin may not exist on a new Apple Silicon Mac. It is only created when missing; an existing one is left alone,
+# /usr/local/bin may not exist on a new Mac with an Apple chip. It is only created when missing; an existing one is left alone,
 # because on an Intel Mac it can belong to Homebrew and changing its owner or mode would break Homebrew.
 act mkdir -p "$CLI_DIR"
 

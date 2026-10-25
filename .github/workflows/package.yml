@@ -2,8 +2,9 @@
 # when the release number (siteBlockBuildNumber in Sources/SiteBlockCore/Models.swift) is higher than the published one, as a
 # new GitHub Release for that version, marked latest, so the newest version is always at one fixed download link:
 #   https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip
-# Steps: build on a fresh Apple Silicon Mac, run every test (a failing test stops the run, so a broken package is never
-# published), run scripts/package.sh, compare the build with the published one (scripts/release-check.sh), then, for a new
+# Steps: build on a fresh Mac with an Apple chip, run every test, then run every test again built for Intel processors under
+# Rosetta (a failing test stops the run, so a broken package is never published), run scripts/package.sh, run the packaged
+# Intel copies under Rosetta, compare the build with the published one (scripts/release-check.sh), then, for a new
 # release only, publish SiteBlock.zip and version.json (the file the app reads to learn the newest version and the zip's
 # checksum) as a new release v<version>, keeping the older releases and their download counts.
 name: Build and publish package
@@ -35,7 +36,8 @@ concurrency:
 
 jobs:
   package:
-    # macos-26 runs on Apple Silicon (arm64), which is what SiteBlock is built for, and has the macOS 26 SDK. The SDK an app is
+    # macos-26 runs on Apple chips (arm64) and has the macOS 26 SDK. The programs are universal (arm64 and x86_64); the Intel copies are
+    # tested under Rosetta, Apple's translator for Intel code, because GitHub has no Intel Mac with the macOS 26 SDK. The SDK an app is
     # built with decides its look and layout on newer macOS, so building with an older SDK makes the panel look and behave differently.
     runs-on: macos-26
     timeout-minutes: 30
@@ -68,9 +70,39 @@ jobs:
             exit 1
           }
 
+      # Rosetta runs Intel code on a Mac with an Apple chip. GitHub's Mac may not have it yet, and installing it again is harmless.
+      - name: Install Rosetta
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      # The same tests built for Intel processors (x86_64) and run under Rosetta. The integration tests start the real daemon and
+      # command-line programs, so this runs SiteBlock's Intel code the way an Intel Mac would. The whole command runs under Rosetta
+      # (arch -x86_64), because SwiftPM's test runner can load only tests built for the processor it runs on. Failed test lines become annotations too.
+      - name: Run the tests on Intel under Rosetta
+        run: |
+          set -o pipefail
+          arch -x86_64 /bin/bash scripts/test.sh --triple x86_64-apple-macosx14.0 --scratch-path .build-x86 2>&1 | tee test-x86-output.log || {
+            grep '✘' test-x86-output.log | head -20 | while IFS= read -r line; do echo "::error title=Failed Intel test::$line"; done
+            exit 1
+          }
+
       # Builds the release programs, signs them ad hoc and writes dist/SiteBlock.zip and dist/version.json.
       - name: Build the package
         run: scripts/package.sh
+
+      # Runs the Intel copies inside the packaged programs under Rosetta: the version, the three launchd plists the installer writes
+      # with them (checked by plutil), and the installer's own step-1 check acting as an Intel Mac, which refuses a program without
+      # an Intel copy. This is what failed on an Intel Mac when the programs held only Apple-chip code ("Bad CPU type in executable").
+      - name: Run the packaged Intel programs under Rosetta
+        run: |
+          set -euo pipefail
+          for program in build/siteblockd build/siteblock build/SiteBlock.app/Contents/MacOS/SiteBlock; do
+            lipo "$program" -verify_arch arm64 x86_64
+          done
+          arch -x86_64 build/siteblockd --version
+          arch -x86_64 build/siteblock --version
+          for job in daemon watchdog app; do arch -x86_64 build/siteblockd --print-plist "$job" | plutil -lint -; done
+          SITEBLOCK_TEST_MAC_ARCH=x86_64 scripts/install.sh --dry-run > install-dry-run.log
+          grep -q "the programs have a copy for this Mac's processor" install-dry-run.log
 
       - name: Keep the zip as a run artifact
         uses: actions/upload-artifact@v6
@@ -120,4 +152,4 @@ jobs:
             --title "SiteBlock $VERSION" \
             --notes "Built automatically from commit ${{ github.sha }}.
 
-          To install on an Apple Silicon Mac with macOS 14 or newer: download SiteBlock.zip, unzip it, and follow INSTALL.txt inside (right-click \"Install SiteBlock.command\" and choose Open). version.json describes this build and is what the SiteBlock app reads to check for updates."
+          To install on a Mac (Apple chip or Intel) with macOS 14 or newer: download SiteBlock.zip, unzip it, and follow INSTALL.txt inside (right-click \"Install SiteBlock.command\" and choose Open). version.json describes this build and is what the SiteBlock app reads to check for updates."

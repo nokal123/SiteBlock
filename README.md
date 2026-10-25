@@ -20,7 +20,7 @@ SiteBlock is deliberately hard to remove. Only install it on a computer whose us
 
 ## Requirements
 
-**Mac:** a Mac with an Apple chip (M1 or newer), macOS 14 (Sonoma) or newer, and the Mac's administrator password.
+**Mac:** a Mac with an Apple chip or an Intel processor, macOS 14 (Sonoma) or newer, and the Mac's administrator password. One download serves both kinds of Mac, because each program holds a copy for Apple chips and one for Intel processors, and macOS runs the one that matches.
 
 **Windows:** Windows 11, or Windows 10 version 2004 or newer, on an Intel, AMD or Arm PC, and an administrator account (or someone who knows an administrator password). One download serves every PC, because the package holds the programs for both Intel/AMD and Arm processors and the installer picks the right ones.
 
