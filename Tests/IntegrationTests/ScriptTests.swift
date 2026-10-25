@@ -10,12 +10,13 @@ import Testing
 // for a lower one or for a file whose `build` is not a JSON whole number.
 //
 // scripts/package.sh builds release programs with scripts/build.sh, which takes minutes. The packaging tests therefore run package.sh on a COPY in a temporary folder and
-// replace ONLY scripts/build.sh in the copy with a stand-in that compiles a tiny daemon together with the copy's own Sources/SiteBlockCore/Models.swift, so the version the
+// replace ONLY scripts/build.sh in the copy with a stand-in that compiles a tiny daemon together with the copy's own Sources/SiteBlockCore/Models.swift, once for Apple chips
+// and once for Intel processors, and joins the two into one universal program as the real build does (package.sh refuses a program without both copies). The version the
 // stand-in daemon prints comes from that file exactly as the real daemon's does. The copy's Models.swift carries a release number of its own (for example 7), which proves that
 // version.json takes the number from the file in the tree that is packaged, not from the commit count and not from the build these tests were compiled with.
 
 // Where the repository is: the folder above Tests/, found by walking up from this file until Package.swift appears.
-private let repositoryRoot: String = {
+let repositoryRoot: String = {
     var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     while directory.path != "/" {
         if FileManager.default.fileExists(atPath: directory.appendingPathComponent("Package.swift").path) { return directory.path }
@@ -25,10 +26,10 @@ private let repositoryRoot: String = {
 }()
 
 // The environment every script and git call gets: a private git identity and no user or system git configuration, so the repository on the machine cannot change the result.
-private let gitEnvironment = ["GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "QA", "GIT_AUTHOR_EMAIL": "qa@example.invalid", "GIT_COMMITTER_NAME": "QA", "GIT_COMMITTER_EMAIL": "qa@example.invalid"]
+let gitEnvironment = ["GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "QA", "GIT_AUTHOR_EMAIL": "qa@example.invalid", "GIT_COMMITTER_NAME": "QA", "GIT_COMMITTER_EMAIL": "qa@example.invalid"]
 
 // One clang module cache shared by every stand-in compile, so Foundation's modules are built once per machine instead of once per test (a cold cache costs about 15 s).
-private let sharedModuleCache = "/tmp/sbs-module-cache"
+let sharedModuleCache = "/tmp/sbs-module-cache"
 
 // Runs git inside a folder and returns the trimmed standard output; throws when git fails.
 @discardableResult
@@ -39,7 +40,7 @@ private func git(_ directory: String, _ arguments: [String]) throws -> String {
 }
 
 // Makes an empty folder under /tmp that the exit hook deletes at the latest, and returns its path.
-private func makeTemporaryFolder(_ prefix: String = "/tmp/sbs-") throws -> String {
+func makeTemporaryFolder(_ prefix: String = "/tmp/sbs-") throws -> String {
     Registry.installOnce()
     let alphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
     let root = prefix + String((0..<8).map { _ in alphabet.randomElement()! })
@@ -71,7 +72,7 @@ private func declaredValue(_ name: String, in text: String) -> String? {
 private func repositoryModels() throws -> String { try #require(readText(repositoryRoot + "/Sources/SiteBlockCore/Models.swift"), "Models.swift is missing") }
 
 // A temporary folder laid out like the repository: the named real scripts copied into scripts/ and a Sources/SiteBlockCore/Models.swift whose release number is `buildNumber`.
-private struct ScriptTree {
+struct ScriptTree {
     let root: String
     var modelsFile: String { root + "/Sources/SiteBlockCore/Models.swift" }
 
@@ -270,15 +271,18 @@ struct ReleaseCheckScriptTests {
 }
 
 // The result of one real run of scripts/package.sh in a prepared copy.
-private struct PackageRun {
+struct PackageRun {
     let tree: ScriptTree
     let result: ProgramResult
     var dist: String { tree.root + "/dist" }
     var zip: String { dist + "/SiteBlock.zip" }
     var versionFile: String { dist + "/version.json" }
 
-    // The stand-in for scripts/build.sh: a tiny arm64 program per product in build/, signed ad hoc, laid out as the real build.sh does. The program is compiled together with THIS
-    // tree's Sources/SiteBlockCore/Models.swift and prints the line the real daemon prints, so its version and build number are the tree's own.
+    // The stand-in for scripts/build.sh, laid out as the real build.sh does: a tiny program compiled together with THIS tree's Sources/SiteBlockCore/Models.swift, so it prints
+    // the line the real daemon prints with the tree's own version and build number. Like the real build, it compiles the program once for Apple chips
+    // (arm64-apple-macosx14.0) and once for Intel processors (x86_64-apple-macosx14.0), joins the two with lipo into one universal program, uses that program for siteblockd,
+    // siteblock and the app's executable, and signs everything ad hoc. A test may set STANDIN_THIN to "<program under build/>:<family>" (for example
+    // "siteblock:arm64"): that one program then holds only that family's copy, as a single-family build would make it, so package.sh's own check is what has to refuse it.
     private static let standInBuild = """
     #!/bin/bash
     set -euo pipefail
@@ -287,9 +291,16 @@ private struct PackageRun {
     mkdir -p build/SiteBlock.app/Contents/MacOS
     mkdir -p "$TMPDIR_STANDIN"
     printf 'print("siteblockd \\(siteBlockVersion) (build \\(siteBlockBuildNumber))")\\n' > "$TMPDIR_STANDIN/main.swift"
-    swiftc -module-cache-path "$MODULE_CACHE_STANDIN" -o build/siteblockd "$TMPDIR_STANDIN/main.swift" Sources/SiteBlockCore/Models.swift
+    for arch in arm64 x86_64; do
+        swiftc -module-cache-path "$MODULE_CACHE_STANDIN" -target "$arch-apple-macosx14.0" -o "$TMPDIR_STANDIN/siteblockd-$arch" "$TMPDIR_STANDIN/main.swift" Sources/SiteBlockCore/Models.swift
+    done
+    lipo -create "$TMPDIR_STANDIN/siteblockd-arm64" "$TMPDIR_STANDIN/siteblockd-x86_64" -output build/siteblockd
     cp build/siteblockd build/siteblock
     cp build/siteblockd build/SiteBlock.app/Contents/MacOS/SiteBlock
+    if [[ -n "${STANDIN_THIN:-}" ]]; then
+        lipo "build/${STANDIN_THIN%%:*}" -thin "${STANDIN_THIN##*:}" -output "$TMPDIR_STANDIN/thin"
+        mv -f "$TMPDIR_STANDIN/thin" "build/${STANDIN_THIN%%:*}"
+    fi
     printf '<?xml version="1.0" encoding="UTF-8"?>\\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>SiteBlock</string><key>CFBundleIdentifier</key><string>com.example.standin</string></dict></plist>\\n' > build/SiteBlock.app/Contents/Info.plist
     codesign --force -s - build/siteblockd build/siteblock build/SiteBlock.app
     """
@@ -303,9 +314,10 @@ private struct PackageRun {
         return tree
     }
 
-    // Runs package.sh of the copy.
-    static func run(in tree: ScriptTree) throws -> PackageRun {
-        let environment = gitEnvironment.merging(["TMPDIR_STANDIN": tree.root + "/standin", "MODULE_CACHE_STANDIN": sharedModuleCache]) { _, new in new }
+    // Runs package.sh of the copy. `thin` ("<program under build/>:<family>") makes the stand-in leave that one program with only that family's copy.
+    static func run(in tree: ScriptTree, thin: String? = nil) throws -> PackageRun {
+        var environment = gitEnvironment.merging(["TMPDIR_STANDIN": tree.root + "/standin", "MODULE_CACHE_STANDIN": sharedModuleCache]) { _, new in new }
+        if let thin { environment["STANDIN_THIN"] = thin }
         let result = try runProgram("/bin/bash", [tree.root + "/scripts/package.sh"], environment: environment, timeout: 300)
         return PackageRun(tree: tree, result: result)
     }
@@ -330,7 +342,7 @@ private struct PackageRun {
 
 // One run in a git checkout with 3 commits whose Models.swift says 7, and one in a folder that is not a checkout whose Models.swift also says 7. The commit count (3) and the
 // number the tests themselves were built with differ from 7, so only a build number read from the packaged tree's Models.swift gives 7. Each run is made once and only read.
-private let gitPackage = Result { try PackageRun.make(commits: 3, buildNumber: 7) }
+let gitPackage = Result { try PackageRun.make(commits: 3, buildNumber: 7) }
 private let plainPackage = Result { try PackageRun.make(commits: nil, buildNumber: 7) }
 
 @Suite("Script tests: package.sh and version.json")

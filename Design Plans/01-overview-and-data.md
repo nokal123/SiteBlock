@@ -37,6 +37,7 @@ Blocking a site is always free and instant. Unblocking a site needs the SiteBloc
 7. Never lock the user out permanently. A forgotten password can be reset with the Mac admin password plus a 48-hour wait.
 8. Let a person open a blocked site, or a blocked part of a site, for a chosen window of time. It needs the password, it never opens sooner than the unblock delay, and it blocks itself again when the window ends.
 9. Tell the person when a newer version of SiteBlock exists, and install it only after the person clicks "Update" and types the Mac password. An update keeps every block, the SiteBlock password, the unblock delay and every countdown.
+10. Run on a Mac with an Apple chip (arm64) and on a Mac with an Intel processor (x86_64), on macOS 14 (Sonoma) or newer. Every program in the package holds a copy for each of the two processor families.
 
 ---
 

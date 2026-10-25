@@ -112,6 +112,8 @@ Tests:
 
 **Script tests** run the real scripts as child processes. Expected values come from [04-infrastructure.md](04-infrastructure.md) § Version Numbers and § Packaging for Another Mac.
 - `scripts/release-check.sh <new> <published>` given two version files prints `release` when the new `build` is higher, prints `skip` when the two are equal, and exits with code 1 with a message on standard error when the new build is lower. A build of 100 against 99 prints `release`, because the builds are compared as numbers. A `build` that is not a JSON whole number of 0 or more (the text `"95"`, a decimal such as `95.0`, a negative number, a missing field, the key spelled `Build`, a top-level array, a missing file) exits with code 1. `windows/scripts/release-check.ps1` follows the same rules.
+- `scripts/install.sh --dry-run` checks the Mac before it copies anything ([04-infrastructure.md](04-infrastructure.md) § Install Script). With `SITEBLOCK_TEST_MAC_ARCH=x86_64` and programs that hold only an Apple-chip copy it exits with code 1 and names the program and the download link; with programs that hold both copies it prints `the programs have a copy for this Mac's processor`. With `SITEBLOCK_TEST_MACOS_VERSION` set to a version below 14 (for example `13.6`) it exits with code 1 and names that version and Software Update, and with `14.0` or newer it passes. A program built for `arm64e` only does not count as an `arm64` copy.
+- Every program in `build/` holds both an `arm64` and an `x86_64` copy (`lipo -verify_arch arm64 x86_64`), and `scripts/package.sh` refuses a program missing either one.
 - The `version.json` that `scripts/package.sh` writes (checked after a real run, which writes into the git-ignored `dist/`, or by running that step on its own against a small stand-in zip in a temporary folder) is a file with the five fields `version`, `build`, `commit`, `asset` and `sha256`. Its `sha256` equals the SHA-256 of the zip it describes, as computed by `shasum -a 256`. `UpdateCheck.parse` accepts the file. Its `version` is `1.0.` followed by its `build`, and its `commit` is the full hash that `git rev-parse HEAD` reports.
 
 ---
@@ -183,6 +185,7 @@ The test passes when steps 4 to 7 behave as described.
 ## Success Criteria
 
 - [ ] All unit and integration tests pass with `scripts/test.sh`.
+- [ ] The same tests pass on Intel under Rosetta, and the packaged Intel programs run under Rosetta ([04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds).
 - [ ] After install, youtube.com fails to load in Safari and Chrome.
 - [ ] Editing `/etc/hosts` by hand is undone within 2 seconds.
 - [ ] `sudo launchctl bootout system/com.nokal.siteblock.daemon` is undone within 5 seconds.

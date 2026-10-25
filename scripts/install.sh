@@ -12,6 +12,10 @@ set -euo pipefail
 # Work from the repository root, wherever the script is started from.
 cd "$(dirname "$0")/.."
 
+# sysctl, chown and launchctl live in /usr/sbin and /sbin. They are added at the end of PATH so a run started with a short
+# PATH still finds them (without sysctl, step 1 would take an Apple chip for an Intel processor), while folders already on PATH keep their order.
+PATH="$PATH:/usr/sbin:/sbin"
+
 # Read the command line: no argument, or --dry-run.
 DRY_RUN=0
 case "${1:-}" in

@@ -17,7 +17,7 @@
 **Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, temporary unblock in the CLI and the panel, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission, the Updater (daily check, banner, download, checks, install with the Mac password)
 
 ### [04-infrastructure.md](04-infrastructure.md)
-**Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, version numbers, `SiteBlock.zip` and `version.json`, automatic package builds
+**Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, version numbers, universal Mac programs, the installer's Mac check, `SiteBlock.zip` and `version.json`, automatic package builds
 
 ### [05-testing-and-operations.md](05-testing-and-operations.md)
 **Open for:** unit and integration test lists, installed-system verification, live tab-watcher test, live update test, update check and script tests, security notes, logs, success criteria
@@ -198,6 +198,8 @@
 - Install and upgrade → [04-infrastructure.md](04-infrastructure.md) § Install Script
 - Running tests without Xcode → [04-infrastructure.md](04-infrastructure.md) § Package.swift
 - Version numbers, `SiteBlock.zip` and `version.json` → [04-infrastructure.md](04-infrastructure.md) § Version Numbers, § Packaging for Another Mac
+- Universal programs (Apple chip and Intel), the build, the packaging check and the installer's check of this Mac's processor and macOS version → [04-infrastructure.md](04-infrastructure.md) § Build Script, § Install Script, § Packaging for Another Mac
+- Testing the Intel programs under Rosetta in the GitHub workflow → [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds, [05-testing-and-operations.md](05-testing-and-operations.md) § Success Criteria
 - Failed test names on the public GitHub run page → [04-infrastructure.md](04-infrastructure.md) § Automatic Package Builds
 
 ### Windows
