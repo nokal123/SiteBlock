@@ -60,6 +60,8 @@ public sealed class FamilyDNSProviders
     {
         using JsonDocument document = JsonDocument.Parse(utf8.ToArray());
         JsonElement root = document.RootElement;
+        // TryGetProperty throws InvalidOperationException on an array or a number, which LoadBuiltIn would not catch, so a file that is not an object fails here as bad JSON.
+        if (root.ValueKind != JsonValueKind.Object) throw new JsonException("the file is not a JSON object");
         string active = RequiredString(root, "active");
         if (!root.TryGetProperty("providers", out JsonElement list) || list.ValueKind != JsonValueKind.Array) throw new JsonException("the file has no providers list");
         var providers = new List<FamilyDNSProvider>();
@@ -113,7 +115,11 @@ public sealed class FamilyDNSProviders
         return [.. value.EnumerateArray().Select(entry => entry.ValueKind == JsonValueKind.String ? entry.GetString()! : throw new JsonException($"{name} holds something other than text"))];
     }
 
-    /// <summary>The address rewritten in its standard form (for IPv6, lowercase with the longest run of zeros shortened to "::"), or null when it is not a valid address of that family.</summary>
+    /// <summary>
+    /// The address rewritten in its standard form (for IPv6, lowercase with the longest run of zeros shortened to "::"), or null when it is not a valid address of that
+    /// family. An address with a zone index such as "%5" counts as not valid: IPAddress.TryParse accepts one and prints it back, but the Mac parser rejects it and a DNS
+    /// server address read back from Windows never carries one.
+    /// </summary>
     private static string? StandardForm(string address, AddressFamily family) =>
-        IPAddress.TryParse(address, out IPAddress? parsed) && parsed.AddressFamily == family ? parsed.ToString() : null;
+        !address.Contains('%') && IPAddress.TryParse(address, out IPAddress? parsed) && parsed.AddressFamily == family ? parsed.ToString() : null;
 }
