@@ -227,3 +227,23 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-10-26 — Universal Mac programs for Apple chips and Intel, and an installer that refuses early
+
+**Implemented:**
+- Cause: a Mac with an Intel processor ran the installer for 1.2.43, whose programs held only Apple-chip code; step 5, the first step that runs siteblockd, failed with "Bad CPU type in executable". On an Apple chip the same programs run even from a Rosetta-translated shell and even with a newer minimum macOS, so no other cause on an M1 was found.
+- `scripts/build.sh` builds each program for arm64 and x86_64 (`--triple <arch>-apple-macosx14.0`), joins them with lipo, signs both copies ad hoc and checks both are present; `scripts/package.sh` refuses a program missing either copy. INSTALL.txt and the README say Apple chip or Intel, macOS 14 or newer.
+- `scripts/install.sh` step 1 prints the Mac's processor and macOS version, and stops before copying anything on macOS older than 14 or when a program has no copy for this Mac (read with `file -b`, never lipo). It adds /usr/sbin and /sbin to the end of PATH so a short PATH still finds sysctl.
+- `.github/workflows/package.yml` installs Rosetta, runs the whole Mac test suite again built for Intel under Rosetta, and runs the packaged Intel programs under Rosetta before publishing.
+- Tests: about 90 new cases, audited (19 mutants, 13 killed); the fix round closed the real gaps (no-lipo rule, short PATH, Rosetta, every entry of the packaged check), confirmed killed. 1424 Mac tests pass natively and built for Intel under Rosetta.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---
