@@ -14,12 +14,45 @@ public sealed class WindowsWorkflowTests
 
     private static int IndexOf(string name) => Steps.FindIndex(step => step.Name == name);
 
+    // True when a trimmed workflow line sets fetch-depth to 0 (the full history), quoted or not, with or without a trailing comment.
+    private static bool AsksForFullHistory(string line) => System.Text.RegularExpressions.Regex.IsMatch(line, "^fetch-depth:\\s*['\"]?0['\"]?\\s*(#.*)?$");
+
+    // The pattern also catches a quoted 0 and a 0 followed by a comment; the self-check proves it, so a narrower pattern cannot pass by matching nothing.
     [Fact]
     public void Checkout_DoesNotFetchTheFullHistory()
     {
         Assert.Contains(Steps, step => step.Keys.TryGetValue("uses", out string? uses) && uses.StartsWith("actions/checkout@", StringComparison.Ordinal));
-        var fullHistory = Text.Replace("\r\n", "\n").Split('\n').Select(line => line.Trim()).Where(line => System.Text.RegularExpressions.Regex.IsMatch(line, "^fetch-depth:\\s*['\"]?0['\"]?$")).ToList();
+        var fullHistory = Text.Replace("\r\n", "\n").Split('\n').Select(line => line.Trim()).Where(AsksForFullHistory).ToList();
         Assert.Empty(fullHistory);
+        Assert.All(["fetch-depth: 0", "fetch-depth: '0'", "fetch-depth: \"0\"", "fetch-depth: 0 # x", "fetch-depth:0#x"], spelling => Assert.True(AsksForFullHistory(spelling), "the pattern misses: " + spelling));
+        Assert.All(["fetch-depth: 1", "fetch-depth: 10", "fetch-depth: 1 # 0"], spelling => Assert.False(AsksForFullHistory(spelling), "the pattern wrongly matches: " + spelling));
+    }
+
+    // 06 step 6: no Windows release is ever marked latest (the Mac's updater reads releases/latest). Every `gh release create` and `gh release edit` line in the workflow,
+    // including the branches the step-run tests do not take, says --latest=false and nothing that marks it latest.
+    [Fact]
+    public void EveryReleaseCreateAndEditLine_SaysLatestFalse()
+    {
+        var lines = Text.Replace("\r\n", "\n").Split('\n').Where(line => line.Contains("gh release create", StringComparison.Ordinal) || line.Contains("gh release edit", StringComparison.Ordinal)).ToList();
+        Assert.True(lines.Count >= 3, "expected the windows-v create and the windows-latest create and edit: " + string.Join(" | ", lines));
+        foreach (string line in lines)
+        {
+            string[] words = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            Assert.True(words.Contains("--latest=false") && !words.Any(word => word == "--latest" || word.Equals("--latest=true", StringComparison.OrdinalIgnoreCase)), "this line must say --latest=false: " + line.Trim());
+        }
+    }
+
+    // 06 step 6: the new version's release is tagged windows-v<version>: the publish step's create names a tag that is either written as "windows-v..." or held in a
+    // variable the step sets to "windows-v...".
+    [Fact]
+    public void PublishStep_TagsTheReleaseWindowsV()
+    {
+        var publish = Named("Publish this version as a release");
+        string create = publish.Text.Split('\n').Select(line => line.Trim()).FirstOrDefault(line => line.StartsWith("gh release create ", StringComparison.Ordinal)) ?? throw new Xunit.Sdk.XunitException("no gh release create in:\n" + publish.Text);
+        string tag = create.Split(' ', StringSplitOptions.RemoveEmptyEntries)[3];
+        bool literal = tag.Trim('"').StartsWith("windows-v", StringComparison.Ordinal);
+        bool variable = tag.StartsWith('$') && publish.Text.Split('\n').Any(line => System.Text.RegularExpressions.Regex.IsMatch(line.Trim(), "^" + System.Text.RegularExpressions.Regex.Escape(tag) + "\\s*=\\s*\"windows-v\\$"));
+        Assert.True(literal || variable, $"the tag must be windows-v<version>; create: {create}");
     }
 
     // The decide step: id `decide`, only on master, runs release-check.ps1 with the new file first and the downloaded published file second, and writes `decision=` to
@@ -103,5 +136,9 @@ public sealed class WorkflowParserTests
         Assert.Equal("steps.one.outputs.x == 'y'", steps[1].Condition);
         Assert.DoesNotContain("b:", steps[1].Text, StringComparison.Ordinal);
         Assert.Equal("actions/checkout@v6", steps[2].Keys["uses"]);
+        // RunScript reads the block under `run: |` with its indentation removed, reads an inline `run:`, and finds none in a step without one.
+        Assert.Equal("echo \"if: inside the script\"\nid: also-inside\n", steps[0].RunScript);
+        Assert.Equal("gh release create x\n", steps[3].RunScript);
+        Assert.Null(steps[1].RunScript);
     }
 }

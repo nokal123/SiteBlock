@@ -221,10 +221,20 @@ struct ReleaseCheckScriptTests {
 
     // A `build` that is not a JSON whole number is refused in either file. The opposite file holds a valid 94, so the only fault is the one under test.
     // "95.0" comes from the draft 04 § Automatic Package Builds ("a decimal such as 95.0" is refused).
-    @Test(arguments: ["\"95\"", "95.5", "95.0", "-1", "null", "true", "false", "{}", "[95]", "\"\"", nil] as [String?], [true, false])
+    // 1e3 is the number 1000 written with an exponent: not a whole-number literal, so it is refused like 95.0.
+    @Test(arguments: ["\"95\"", "95.5", "95.0", "1e3", "-1", "null", "true", "false", "{}", "[95]", "\"\"", nil] as [String?], [true, false])
     func aBuildThatIsNotAJSONWholeNumberIsRefusedInEitherFile(fragment: String?, inNewFile: Bool) throws {
         let result = inNewFile ? try releaseCheck(new: fragment, published: "94") : try releaseCheck(new: "95", published: fragment)
         expectRefused(result, "build \(fragment ?? "<missing>") in the \(inNewFile ? "new" : "published") file")
+    }
+
+    // -0 is the JSON whole number 0 written with a sign, so it counts as 0 in either file: equal to a published 0 (skip), lower than a published 1 (refused), lower than a
+    // new 1 (release). A check that refused every minus sign, or read -0 as "below 0", would get the first and third rows wrong.
+    @Test(arguments: [("-0", "0", "skip"), ("0", "-0", "skip"), ("1", "-0", "release"), ("-0", "1", "refused")])
+    func minusZeroCountsAsZeroInEitherFile(new: String, published: String, expected: String) throws {
+        let result = try releaseCheck(new: new, published: published)
+        if expected == "refused" { expectRefused(result, "new \(new), published \(published)") }
+        else { #expect(decision(result) == expected, "new \(new), published \(published): exit \(result.status), stdout '\(result.stdout)', stderr '\(result.stderr)'") }
     }
 
     // A file that is missing, empty, not JSON, or JSON without a top-level `build` (an array holding the object, the field nested deeper, or the key spelled "Build") is refused,
@@ -487,11 +497,17 @@ struct PackageWorkflowTests {
     @Test func theWorkflowFileExists() { #expect(!Self.text.isEmpty && Self.steps.count > 3) }
 
     // 04 § Version Numbers: "the GitHub workflow checks out only the newest commit", so no step asks for the full history.
+    // The pattern also catches a quoted 0 and a 0 followed by a comment; the self-check below proves it, so a narrower pattern cannot pass this test by matching nothing.
     @Test func theCheckoutDoesNotFetchTheFullHistory() throws {
         let checkout = try #require(step(containing: "actions/checkout"), "no checkout step")
-        let fullHistory = Self.text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.range(of: #"^fetch-depth:\s*['"]?0['"]?$"#, options: .regularExpression) != nil }
+        let fullHistory = Self.text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter(Self.asksForFullHistory)
         #expect(fullHistory.isEmpty, "checkout step:\n\(checkout.text)")
+        #expect(["fetch-depth: 0", "fetch-depth: '0'", "fetch-depth: \"0\"", "fetch-depth: 0 # x", "fetch-depth:0#x"].allSatisfy(Self.asksForFullHistory), "the pattern misses a spelling of fetch-depth 0")
+        #expect(!["fetch-depth: 1", "fetch-depth: 10", "fetch-depth: 1 # 0"].contains(where: Self.asksForFullHistory), "the pattern matches a depth other than 0")
     }
+
+    // True when a trimmed workflow line sets fetch-depth to 0 (the full history), quoted or not, with or without a trailing comment.
+    private static func asksForFullHistory(_ line: some StringProtocol) -> Bool { String(line).range(of: #"^fetch-depth:\s*['"]?0['"]?\s*(#.*)?$"#, options: .regularExpression) != nil }
 
     @Test func theWorkflowRunsTheTestsAndThenThePackageScript() throws {
         let tests = try #require(Self.steps.firstIndex { $0.text.contains("scripts/test.sh") }, "no step runs scripts/test.sh")
@@ -539,6 +555,144 @@ struct PackageWorkflowTests {
     }
 }
 
+// The number of spaces a line starts with.
+private func leadingSpaces(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+
+// The script of a step's own `run:` key: for `run: |`, the block under it with its common indentation removed (as YAML reads a literal block); otherwise the inline value.
+// Nil when the step has no `run:` of its own. Comment lines are already gone from the step's text, which changes nothing a shell runs.
+func runScript(of step: WorkflowStep) -> String? {
+    let lines = step.text.components(separatedBy: "\n")
+    let keyColumn = leadingSpaces(lines[0]) + 2
+    guard let at = lines.indices.dropFirst().first(where: { leadingSpaces(lines[$0]) == keyColumn && lines[$0].trimmingCharacters(in: .whitespaces).hasPrefix("run:") }) else { return nil }
+    let value = lines[at].trimmingCharacters(in: .whitespaces).dropFirst(4).trimmingCharacters(in: .whitespaces)
+    guard value == "|" else { return value.isEmpty ? nil : value + "\n" }
+    var body: [String] = []
+    for line in lines[(at + 1)...] {
+        if !line.trimmingCharacters(in: .whitespaces).isEmpty && leadingSpaces(line) <= keyColumn { break }
+        body.append(line)
+    }
+    let indent = body.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(leadingSpaces).min() ?? 0
+    return body.map { String($0.dropFirst(min(indent, leadingSpaces($0)))) }.joined(separator: "\n").trimmingCharacters(in: .newlines) + "\n"
+}
+
+// A stand-in for the GitHub command line (`gh`), put first on the PATH. It records every call (one file per call, the words separated by NUL) in $STUB_CALLS. For
+// `gh release download` it copies $STUB_SOURCE into the --dir folder under the --pattern name, as the real download does, or fails like a missing release when
+// $STUB_FAIL is set. Any other command exits 97, so a step that did something besides downloading would show up.
+private let ghStub = """
+#!/bin/bash
+n=$(ls "$STUB_CALLS" | wc -l | tr -d ' ')
+printf '%s\\0' gh "$@" > "$STUB_CALLS/$(printf '%03d' "$n").args"
+[ "$1" = release ] && [ "$2" = download ] || exit 97
+if [ -n "${STUB_FAIL:-}" ]; then echo "release not found (stub)" >&2; exit 1; fi
+pattern=""; dir="."
+shift 2
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pattern|-p) pattern="$2"; shift ;;
+    --dir|-D) dir="$2"; shift ;;
+  esac
+  shift
+done
+[ -n "$pattern" ] || exit 98
+cp "$STUB_SOURCE" "$dir/$pattern"
+
+"""
+
+// What one real run of package.yml's decide step gave: the process result, the lines it wrote to $GITHUB_OUTPUT, and each recorded `gh` call's words (after "gh").
+private struct DecideStepRun {
+    let result: ProgramResult
+    let outputLines: [String]
+    let ghCalls: [[String]]
+    var stdoutLines: [String] { result.stdout.components(separatedBy: "\n") }
+    var errorLines: [String] { stdoutLines.filter { $0.hasPrefix("::error") } }
+
+    // Runs the step's real `run:` script with `bash -e`, as GitHub runs a step with no shell named, in a folder laid out as the checkout is at that point: dist/version.json
+    // with the new build, and scripts/release-check.sh as a link to the repository's real script. The stand-in gh "downloads" a version file whose build is `published`
+    // (or fails when `published` is nil). $GITHUB_OUTPUT is an empty temporary file, as on GitHub.
+    static func run(new: String, published: String?) throws -> DecideStepRun {
+        let steps = workflowSteps(readText(repositoryRoot + "/.github/workflows/package.yml") ?? "")
+        let decide = try #require(steps.first { $0.name == "Decide whether this is a release" }, "no step named 'Decide whether this is a release'")
+        let script = try #require(runScript(of: decide), "the decide step has no run: script")
+        try require(!script.contains("${{"), "the decide step's script holds a ${{ }} expression this test does not fill in:\n\(script)")
+        let tree = try makeTemporaryFolder()
+        let tools = try makeTemporaryFolder()
+        for folder in [tree + "/dist", tree + "/scripts", tools + "/bin", tools + "/calls"] { try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true) }
+        _ = try writeVersionFile(in: tree + "/dist", name: "version.json", build: new)
+        try FileManager.default.createSymbolicLink(atPath: tree + "/scripts/release-check.sh", withDestinationPath: repositoryRoot + "/scripts/release-check.sh")
+        let source = try writeVersionFile(in: tools, name: "published-source.json", build: published ?? "94")
+        try writeText(ghStub, to: tools + "/bin/gh")
+        try chmodPath(tools + "/bin/gh", 0o755)
+        try writeText(script, to: tools + "/step.sh")
+        try writeText("", to: tools + "/github-output")
+        var environment = ["PATH": tools + "/bin:/usr/bin:/bin", "GITHUB_OUTPUT": tools + "/github-output", "GH_TOKEN": "stub-token", "STUB_CALLS": tools + "/calls", "STUB_SOURCE": source]
+        if published == nil { environment["STUB_FAIL"] = "1" }
+        let result = try runProgram("/bin/bash", ["-c", "cd \"$1\" || exit 99; exec /bin/bash -e \"$2\"", "bash", tree, tools + "/step.sh"], environment: environment, timeout: 30)
+        let output = (readText(tools + "/github-output") ?? "").components(separatedBy: "\n").filter { !$0.isEmpty }
+        let callFiles = ((try? FileManager.default.contentsOfDirectory(atPath: tools + "/calls")) ?? []).sorted()
+        // Each file is "gh\0word\0...\0": the first word is the program and the empty piece after the last NUL is dropped.
+        let calls: [[String]] = callFiles.map { file in Array((readText(tools + "/calls/" + file) ?? "").components(separatedBy: "\0").dropFirst().dropLast()) }
+        return DecideStepRun(result: result, outputLines: output, ghCalls: calls)
+    }
+
+    // The words of a `gh release download` call that are not options or option values: the release tag, when one is named.
+    static func positionalArguments(ofDownload call: [String]) -> [String] {
+        var words = Array(call.dropFirst(2))
+        var positional: [String] = []
+        while !words.isEmpty {
+            let word = words.removeFirst()
+            if ["--pattern", "-p", "--dir", "-D", "--repo", "-R", "--output", "-O", "--archive", "-A"].contains(word) { if !words.isEmpty { words.removeFirst() } }
+            else if !word.hasPrefix("-") { positional.append(word) }
+        }
+        return positional
+    }
+}
+
+// package.yml's "Decide whether this is a release" step, run for real. Design: 04-infrastructure.md § Automatic Package Builds, step 5: the step downloads version.json from
+// the release marked latest (`gh release download --pattern version.json`, so no tag is named) and runs scripts/release-check.sh on the new and the published file. On
+// `release` the publishing step runs (it reads `decision=release` from the step's output); on `skip` a notice titled "Not a release" names the number to raise
+// (`siteBlockBuildNumber` in `Models.swift`) and nothing is published; a published file that cannot be downloaded, or a failed check (a lower build, a malformed file),
+// stops the run with an error annotation, so no decision may be written.
+@Suite("Script tests: package workflow decide step, run for real")
+struct PackageDecideStepRunTests {
+    // The checks for a download made as the design says: exactly one gh call, `release download` from the latest release (no tag) with the pattern version.json.
+    private func expectDownloadFromTheLatestRelease(_ run: DecideStepRun, _ context: String) {
+        #expect(run.ghCalls.count == 1, "\(context): gh calls \(run.ghCalls)")
+        guard let call = run.ghCalls.first else { return }
+        #expect(Array(call.prefix(2)) == ["release", "download"], "\(context): \(call)")
+        #expect(DecideStepRun.positionalArguments(ofDownload: call).isEmpty, "\(context): the download must come from the release marked latest, so no tag may be named: \(call)")
+        let pattern = call.firstIndex { $0 == "--pattern" || $0 == "-p" }.flatMap { $0 + 1 < call.count ? call[$0 + 1] : nil }
+        #expect(pattern == "version.json", "\(context): \(call)")
+    }
+
+    @Test func aHigherBuildWritesExactlyDecisionReleaseAndExitsZero() throws {
+        let run = try DecideStepRun.run(new: "95", published: "94")
+        #expect(run.result.status == 0 && !run.result.timedOut, "exit \(run.result.status), stdout '\(run.result.stdout)', stderr '\(run.result.stderr)'")
+        #expect(run.outputLines == ["decision=release"], "GITHUB_OUTPUT: \(run.outputLines)")
+        #expect(run.errorLines.isEmpty && !run.result.stdout.contains("Not a release"), "stdout: \(run.result.stdout)")
+        expectDownloadFromTheLatestRelease(run, "release")
+    }
+
+    @Test func anEqualBuildWritesDecisionSkipAndANoticeNamingTheNumberToRaise() throws {
+        let run = try DecideStepRun.run(new: "94", published: "94")
+        #expect(run.result.status == 0 && !run.result.timedOut, "exit \(run.result.status), stdout '\(run.result.stdout)', stderr '\(run.result.stderr)'")
+        #expect(run.outputLines == ["decision=skip"], "GITHUB_OUTPUT: \(run.outputLines)")
+        let notice = run.stdoutLines.first { $0.hasPrefix("::notice title=Not a release::") }
+        #expect(notice.map { $0.contains("siteBlockBuildNumber") && $0.contains("Models.swift") } == true, "the notice must name siteBlockBuildNumber in Models.swift; stdout: \(run.result.stdout)")
+        #expect(run.errorLines.isEmpty, "stdout: \(run.result.stdout)")
+        expectDownloadFromTheLatestRelease(run, "skip")
+    }
+
+    // A lower new build, a published build written as text, and a failed download each stop the step with an error annotation and write no decision, so nothing is published.
+    @Test(arguments: [("93", "94" as String?, "a lower build"), ("95", "\"94\"", "a malformed published file"), ("95", nil, "a failed download")])
+    func aLowerBuildAMalformedPublishedFileOrAFailedDownloadStopsTheRunWithoutADecision(new: String, published: String?, context: String) throws {
+        let run = try DecideStepRun.run(new: new, published: published)
+        #expect(run.result.status != 0 && !run.result.timedOut, "\(context): the step must fail; exit \(run.result.status), stdout '\(run.result.stdout)'")
+        #expect(!run.errorLines.isEmpty, "\(context): the step must write an ::error annotation; stdout '\(run.result.stdout)', stderr '\(run.result.stderr)'")
+        #expect(!run.outputLines.contains { $0.hasPrefix("decision=") }, "\(context): no decision may be written: \(run.outputLines)")
+        expectDownloadFromTheLatestRelease(run, context)
+    }
+}
+
 // A check of the step parser itself, so the workflow tests above cannot pass because the parser found nothing or read a key from inside a script.
 @Suite("Script tests: workflow step parser")
 struct WorkflowStepParserTests {
@@ -569,5 +723,8 @@ struct WorkflowStepParserTests {
         #expect(steps[0].keys["id"] == "one" && steps[0].keys["if"] == nil)
         #expect(bareCondition(steps[1].keys["if"]) == "steps.one.outputs.x == 'y'")
         #expect(!steps[1].text.contains("b:"), "the second step swallowed the next job: \(steps[1].text)")
+        // runScript reads the block under `run: |` with its indentation removed, reads an inline `run:`, and finds none in a step without one.
+        #expect(runScript(of: steps[0]) == "echo \"if: inside the script\"\nid: also-inside\n", "got: \(String(describing: runScript(of: steps[0])))")
+        #expect(runScript(of: steps[3]) == "gh release create x\n" && runScript(of: steps[1]) == nil)
     }
 }

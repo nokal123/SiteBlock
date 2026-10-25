@@ -78,6 +78,9 @@ public sealed class ReleaseCheckScriptTests
     [InlineData("95.5", false)]
     [InlineData("95.0", true)]
     [InlineData("95.0", false)]
+    // 1e3 is the number 1000 written with an exponent: not a whole-number literal, so it is refused like 95.0.
+    [InlineData("1e3", true)]
+    [InlineData("1e3", false)]
     // -1 in the new file is refused anyway as lower than the published 94, so that row cannot tell a rejected -1 from an accepted one; the published -1 row
     // (95 against -1, which a type-only check would call "release") is the one that can.
     [InlineData("-1", true)]
@@ -101,6 +104,20 @@ public sealed class ReleaseCheckScriptTests
         string? build = fragment == "NOBUILD" ? null : fragment;
         var result = inNewFile ? Check(build, "94") : Check("95", build);
         AssertRefused(result, $"build {fragment} in the {(inNewFile ? "new" : "published")} file");
+    }
+
+    // -0 is the JSON whole number 0 written with a sign, so it counts as 0 in either file, as on the Mac: equal to a published 0 (skip), lower than a published 1 (refused),
+    // lower than a new 1 (release). A check that refused every minus sign, or read -0 as "below 0", would get the first and third rows wrong.
+    [PwshTheory]
+    [InlineData("-0", "0", "skip")]
+    [InlineData("0", "-0", "skip")]
+    [InlineData("1", "-0", "release")]
+    [InlineData("-0", "1", "refused")]
+    public void MinusZero_CountsAsZeroInEitherFile(string newBuild, string publishedBuild, string expected)
+    {
+        var result = Check(newBuild, publishedBuild);
+        if (expected == "refused") AssertRefused(result, $"new {newBuild}, published {publishedBuild}");
+        else Assert.True(Decision(result) == expected, $"new {newBuild}, published {publishedBuild}: expected {expected}; {result}");
     }
 
     // A file that is missing, empty, not JSON, or JSON without a top-level `build` is refused, in either position: the field nested deeper, the key spelled `Build`

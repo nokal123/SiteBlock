@@ -80,12 +80,17 @@ internal static class Processes
         return null;
     }
 
-    // Runs a program to completion and returns its exit code and output. Fails the test when it runs longer than the limit.
-    public static ProcessResult Run(string program, IEnumerable<string> arguments, string? workingDirectory = null, double timeoutSeconds = 120)
+    // Runs a program to completion and returns its exit code and output. Fails the test when it runs longer than the limit. `environment` sets (or, with a null value,
+    // removes) variables on top of this process's own environment.
+    public static ProcessResult Run(string program, IEnumerable<string> arguments, string? workingDirectory = null, double timeoutSeconds = 120, IReadOnlyDictionary<string, string?>? environment = null)
     {
         var info = new ProcessStartInfo(program) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (string argument in arguments) info.ArgumentList.Add(argument);
         if (workingDirectory is not null) info.WorkingDirectory = workingDirectory;
+        foreach (var (name, value) in environment ?? new Dictionary<string, string?>())
+        {
+            if (value is null) info.Environment.Remove(name); else info.Environment[name] = value;
+        }
         info.StandardOutputEncoding = Encoding.UTF8;
         info.StandardErrorEncoding = Encoding.UTF8;
         using var process = Process.Start(info) ?? throw new InvalidOperationException("could not start " + program);
@@ -138,6 +143,127 @@ internal sealed record WorkflowStep(string Name, IReadOnlyDictionary<string, str
             if (value.StartsWith("${{", StringComparison.Ordinal) && value.EndsWith("}}", StringComparison.Ordinal)) value = value[3..^2];
             return value.Trim();
         }
+    }
+
+    // The script of the step's own `run:` key: for `run: |`, the block under it with its common indentation removed (as YAML reads a literal block); otherwise the inline
+    // value. Null when the step has no `run:` of its own. Comment lines are already gone from the step's text, which changes nothing a shell runs.
+    public string? RunScript
+    {
+        get
+        {
+            string[] lines = Text.Split('\n');
+            static int Spaces(string line) => line.Length - line.TrimStart(' ').Length;
+            int keyColumn = Spaces(lines[0]) + 2;
+            int at = Array.FindIndex(lines, 1, line => Spaces(line) == keyColumn && line.Trim().StartsWith("run:", StringComparison.Ordinal));
+            if (at < 0) return null;
+            string value = lines[at].Trim()[4..].Trim();
+            if (value != "|") return value.Length == 0 ? null : value + "\n";
+            var body = lines.Skip(at + 1).TakeWhile(line => line.Trim().Length == 0 || Spaces(line) > keyColumn).ToList();
+            int indent = body.Where(line => line.Trim().Length > 0).Select(Spaces).DefaultIfEmpty(0).Min();
+            return string.Join("\n", body.Select(line => line[Math.Min(indent, Spaces(line))..])).Trim('\n') + "\n";
+        }
+    }
+}
+
+// Runs one `run:` script of windows.yml for real with pwsh, the way GitHub runs a `shell: pwsh` step: the script is saved as a .ps1 file with
+// `$ErrorActionPreference = 'stop'` put before it and `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }` after it, and started with
+// `pwsh -command ". '<file>'"` in the checkout folder. Stand-ins for `gh` and `git` come first on the PATH; each records its call in a folder (one file per call, the words
+// separated by NUL). They are PowerShell scripts (gh.ps1, git.ps1), which pwsh finds on the PATH under the plain names on every system and runs before a real gh.exe or
+// git.exe further down the PATH, so the same stand-ins are tested on the Mac and on GitHub's Windows machine.
+internal sealed class WorkflowStepRun : IDisposable
+{
+    // The fixed commit hash put in place of ${{ github.sha }}.
+    public const string Sha = "0123456789abcdef0123456789abcdef01234567";
+
+    // The stand-in gh: records the call; `release download` copies $env:STUB_SOURCE into the --dir folder under the --pattern name (or fails like a missing release when
+    // $env:STUB_FAIL is set); `release view` succeeds only when $env:STUB_VIEW_EXISTS is 1 (the release exists); every other command succeeds and does nothing.
+    private const string GhStub = """
+        $n = @(Get-ChildItem -LiteralPath $env:STUB_CALLS).Count
+        [System.IO.File]::WriteAllText((Join-Path $env:STUB_CALLS ('{0:D3}.args' -f $n)), ((@('gh') + @($args | ForEach-Object { "$_" })) -join "`0"))
+        if ($args[0] -eq 'release' -and $args[1] -eq 'download') {
+          if ($env:STUB_FAIL) { [Console]::Error.WriteLine('release not found (stub)'); exit 1 }
+          $pattern = $null; $dir = '.'
+          for ($i = 2; $i -lt $args.Count; $i++) { if ($args[$i] -in '--pattern', '-p') { $pattern = $args[++$i] } elseif ($args[$i] -in '--dir', '-D') { $dir = $args[++$i] } }
+          if (-not $pattern) { exit 98 }
+          Copy-Item -LiteralPath $env:STUB_SOURCE -Destination (Join-Path $dir $pattern) -Force
+          exit 0
+        }
+        if ($args[0] -eq 'release' -and $args[1] -eq 'view') { if ($env:STUB_VIEW_EXISTS -eq '1') { exit 0 } else { exit 1 } }
+        exit 0
+        """;
+
+    // The stand-in git: records the call and succeeds.
+    private const string GitStub = """
+        $n = @(Get-ChildItem -LiteralPath $env:STUB_CALLS).Count
+        [System.IO.File]::WriteAllText((Join-Path $env:STUB_CALLS ('{0:D3}.args' -f $n)), ((@('git') + @($args | ForEach-Object { "$_" })) -join "`0"))
+        exit 0
+        """;
+
+    private readonly TempFolder tools = new();
+
+    // The checkout folder the step runs in. Tests put windows/scripts/... and windows/dist/... in it.
+    public TempFolder Tree { get; } = new();
+
+    public WorkflowStepRun()
+    {
+        Directory.CreateDirectory(tools.File("bin"));
+        Directory.CreateDirectory(tools.File("calls"));
+        File.WriteAllText(tools.File("bin/gh.ps1"), GhStub);
+        File.WriteAllText(tools.File("bin/git.ps1"), GitStub);
+        File.WriteAllText(tools.File("github-output"), "");
+    }
+
+    // Copies a real file of the repository (a path under windows/) into the same place in the checkout folder.
+    public void CopyFromRepository(string windowsRelative)
+    {
+        string target = Tree.File("windows/" + windowsRelative);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(target)!);
+        File.Copy(Repo.InWindows(windowsRelative), target, overwrite: true);
+    }
+
+    // Writes a file into the checkout folder, making its folder first.
+    public void WriteInTree(string relative, string text)
+    {
+        string target = Tree.File(relative);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, text);
+    }
+
+    // The file the stand-in gh copies on `release download`.
+    public void SetPublishedSource(string text) => File.WriteAllText(tools.File("published-source.json"), text);
+
+    // Runs the step's real script. `failDownload` makes `gh release download` fail; `releaseExists` makes `gh release view` succeed.
+    public ProcessResult Run(WorkflowStep step, bool failDownload = false, bool releaseExists = false)
+    {
+        string script = step.RunScript ?? throw new Xunit.Sdk.XunitException($"step '{step.Name}' has no run: script");
+        script = script.Replace("${{ github.sha }}", Sha, StringComparison.Ordinal).Replace("${{ github.token }}", "stub-token", StringComparison.Ordinal);
+        if (script.Contains("${{", StringComparison.Ordinal)) throw new Xunit.Sdk.XunitException($"step '{step.Name}' holds a ${{{{ }}}} expression this test does not fill in:\n{script}");
+        string file = tools.File("step.ps1");
+        File.WriteAllText(file, "$ErrorActionPreference = 'stop'\n" + script + "\nif ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) { exit $LASTEXITCODE }\n");
+        var environment = new Dictionary<string, string?>
+        {
+            ["PATH"] = tools.File("bin") + System.IO.Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
+            ["GITHUB_OUTPUT"] = tools.File("github-output"),
+            ["GH_TOKEN"] = "stub-token",
+            ["STUB_CALLS"] = tools.File("calls"),
+            ["STUB_SOURCE"] = tools.File("published-source.json"),
+            ["STUB_FAIL"] = failDownload ? "1" : null,
+            ["STUB_VIEW_EXISTS"] = releaseExists ? "1" : null,
+        };
+        string pwsh = Processes.Pwsh ?? throw new InvalidOperationException("pwsh is not on the PATH");
+        return Processes.Run(pwsh, ["-NoProfile", "-NonInteractive", "-Command", $". '{file}'"], Tree.Path, environment: environment);
+    }
+
+    // The non-empty lines the step wrote to $GITHUB_OUTPUT, with a leading byte-order mark removed (GitHub's reader skips one).
+    public List<string> OutputLines => System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(tools.File("github-output"))).TrimStart('﻿').Replace("\r\n", "\n").Split('\n').Where(line => line.Length > 0).ToList();
+
+    // Every recorded call, in order, each as its words with the program name first ("gh" or "git").
+    public List<string[]> Calls => Directory.GetFiles(tools.File("calls")).Order(StringComparer.Ordinal).Select(file => File.ReadAllText(file).Split('\0')).ToList();
+
+    public void Dispose()
+    {
+        Tree.Dispose();
+        tools.Dispose();
     }
 }
 
