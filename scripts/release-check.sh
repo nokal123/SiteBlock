@@ -29,7 +29,7 @@ build_of() {
 
 NEW="$(build_of "$1")"
 PUBLISHED="$(build_of "$2")"
-# Compared as numbers (10#) so a value such as 095 is not read as octal and 100 is above 99.
+# Compared as base-10 numbers (10#), so 100 is above 99.
 if (( 10#$NEW > 10#$PUBLISHED )); then
     echo "release"
 elif (( 10#$NEW == 10#$PUBLISHED )); then

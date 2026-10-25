@@ -110,10 +110,8 @@ Tests:
 - Family DNS (`DNSEnforcerTests`): the servers a service is expected to hold are the active provider's four servers read from `Sources/SiteBlockCore/FamilyDNSProviders.json`, never a copy typed into the test, so a provider switch needs no test edit. They cover setting the servers on a service, recording its original first, never replacing an existing record, and putting the originals back when the family servers do not answer or the filter ends.
 - Uninstall in sandbox mode: after the uninstall wait (2 seconds under `--policy-fast`, where both the minimum and the delay are 2), the hosts section is gone and the daemon exits with code 0.
 
-**Script tests** run the real scripts as child processes. The version-number script runs on a copy placed in a temporary folder laid out like the repository, so the repository's own generated file is never overwritten. Expected values come from [04-infrastructure.md](04-infrastructure.md) § Version Numbers and § Packaging for Another Mac.
-- `scripts/write-build-number.sh` in a temporary git repository with a known number of commits writes `Sources/SiteBlockCore/BuildNumber.swift` holding `public let siteBlockBuildNumber = <that number>`. After one more commit and a second run, the file holds the number plus one. Running it twice on the same commit gives the same file.
-- The same script in a folder that is not a git checkout writes `public let siteBlockBuildNumber = 0` and exits with code 0.
-- `git check-ignore Sources/SiteBlockCore/BuildNumber.swift` in the repository reports the file as ignored.
+**Script tests** run the real scripts as child processes. Expected values come from [04-infrastructure.md](04-infrastructure.md) § Version Numbers and § Packaging for Another Mac.
+- `scripts/release-check.sh <new> <published>` given two version files prints `release` when the new `build` is higher, prints `skip` when the two are equal, and exits with code 1 with a message on standard error when the new build is lower. A build of 100 against 99 prints `release`, because the builds are compared as numbers. A `build` that is not a JSON whole number of 0 or more (the text `"95"`, a decimal such as `95.0`, a negative number, a missing field, the key spelled `Build`, a top-level array, a missing file) exits with code 1. `windows/scripts/release-check.ps1` follows the same rules.
 - The `version.json` that `scripts/package.sh` writes (checked after a real run, which writes into the git-ignored `dist/`, or by running that step on its own against a small stand-in zip in a temporary folder) is a file with the five fields `version`, `build`, `commit`, `asset` and `sha256`. Its `sha256` equals the SHA-256 of the zip it describes, as computed by `shasum -a 256`. `UpdateCheck.parse` accepts the file. Its `version` is `1.0.` followed by its `build`, and its `commit` is the full hash that `git rev-parse HEAD` reports.
 
 ---
@@ -145,7 +143,7 @@ The test passes when the watcher reloads the first tab exactly once and leaves t
 
 The update path needs a real GitHub release, a real download and a real macOS password prompt, so it has a manual harness that the main session runs once against a scratch copy of the repository. The scratch copy is deleted afterwards and its changes are never committed.
 
-1. Build two packages from the scratch copy with `scripts/package.sh`: an older build N and a newer build N+1. The build number is the commit count, so the scratch copy gets one extra commit between the two builds.
+1. Build two packages from the scratch copy with `scripts/package.sh`: an older build N and a newer build N+1. The build number is `siteBlockBuildNumber` in `Models.swift`, so the scratch copy raises it by one between the two builds.
 2. Serve `SiteBlock.zip` and `version.json` of build N+1 from a local test server (for example `python3 -m http.server` in the folder that holds them). In the scratch copy only, `UpdateCheck.versionURL` and `UpdateCheck.packageURL` are changed to the local server's addresses before building build N, so the installed app asks the local server and not GitHub.
 3. Install build N with `sudo scripts/install.sh`. Add a site, set a password and start an unblock countdown, so there is state to keep.
 4. In Settings, press "Check for updates". The panel shows the banner "SiteBlock 1.0.<N+1> is available." with "Update" and "Not now". Press "Not now", restart the app, and see that the banner stays hidden for that build, then press "Check for updates" again.
@@ -199,7 +197,7 @@ The test passes when steps 4 to 7 behave as described.
 - [ ] `siteblock unblock <site> --for <duration> --in <duration>` and `siteblock status` work as described in [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI.
 - [ ] With a path rule whose temporary unblock is open, the tab watcher reloads no tab on that part of the site, and it watches the rule again after the window ends.
 - [ ] Rebooting keeps every block and countdown, including the remaining times of a temporary unblock.
-- [ ] Every program shows the version `<series>.<n> (build <build>)`, where `<build>` is the number of commits, and `scripts/write-build-number.sh` writes 0 outside a git checkout.
+- [ ] Every program shows the version `<series>.<n> (build <build>)`, where `<build>` is the release number in `Models.swift`.
 - [ ] `scripts/package.sh` writes `SiteBlock.zip` and a `version.json` whose `sha256` matches the zip and which `UpdateCheck.parse` accepts.
 - [ ] The menu bar app shows "SiteBlock <version> is available." with "Update" and "Not now" only when the published build is newer than the installed one, and "Not now" hides it for that build until a newer one appears.
 - [ ] "Update" downloads, checks the checksum and the signatures, and installs only after the Mac password is typed. A package that fails a check is never installed and no password prompt appears.

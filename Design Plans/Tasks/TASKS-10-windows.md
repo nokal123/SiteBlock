@@ -18,7 +18,7 @@
 **Sub-steps:**
 - 1a. Create the six source projects and four test projects with the target frameworks in § Solution Layout.
 - 1b. `Directory.Build.props`: `net10.0`, `LangVersion latest`, `Nullable enable`, `TreatWarningsAsErrors true`, `EnableWindowsTargeting true`, the version properties from `version.props`.
-- 1c. `scripts/write-build-number.sh` and `.ps1` write `windows/BuildNumber.props` (ignored by git) with the commit count.
+- 1c. `windows/version.props` holds `SiteBlockBuildNumber`, the release number kept by hand, next to `WindowsSeries` and `WindowsSeriesFirstBuild`.
 
 **Acceptance Criteria:**
 - [x] `dotnet build windows/SiteBlock.sln` succeeds on the Mac.
@@ -115,7 +115,7 @@
 - 6a. qa-engineer writes the tests in § Testing items 1–4; one test-rigor-auditor pass; one fix round.
 - 6b. code-review-expert review and `/simplify`, then fixes.
 - 6c. design-docs-updater brings `00-INDEX.md` and `06-windows.md` in line with what was built; README gets a Windows section.
-- 6d. Merge to `master`, which publishes `windows-v1.0.0` and `windows-latest`.
+- 6d. Merge to `master`; a push to `master` whose `SiteBlockBuildNumber` is higher than the published one publishes `windows-v<version>` and `windows-latest`.
 
 **Acceptance Criteria:**
 - [ ] Every test passes on the Mac and on GitHub's Windows machine.

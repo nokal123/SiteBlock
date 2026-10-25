@@ -28,13 +28,16 @@ public sealed class DaemonProcessTests
         File.Exists(file) ? XDocument.Load(file).Descendants(name).FirstOrDefault()?.Value.Trim() : null;
 
     [Fact]
-    public void Version_PrintsTheSeriesTheBuildsSinceTheSeriesStartAndTheBuildNumber()
+    public void Version_PrintsTheSeriesHowFarTheBuildIsPastTheSeriesStartAndTheBuildNumber()
     {
         string windows = WindowsFolder();
         string series = Property(Path.Combine(windows, "version.props"), "WindowsSeries")!;
         int firstBuild = int.Parse(Property(Path.Combine(windows, "version.props"), "WindowsSeriesFirstBuild")!, System.Globalization.CultureInfo.InvariantCulture);
-        // BuildNumber.props is generated; without it the build number is 0.
-        int build = int.Parse(Property(Path.Combine(windows, "BuildNumber.props"), "SiteBlockBuildNumber") ?? "0", System.Globalization.CultureInfo.InvariantCulture);
+        // The build number is the release number kept by hand in version.props (06 § Install, Package and Release); it must be there and above 0.
+        string? buildText = Property(Path.Combine(windows, "version.props"), "SiteBlockBuildNumber");
+        Assert.NotNull(buildText);
+        int build = int.Parse(buildText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture);
+        Assert.True(build > 0, $"SiteBlockBuildNumber is {build}");
 
         var result = Programs.Daemon("--version");
 

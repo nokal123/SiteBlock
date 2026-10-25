@@ -11,22 +11,20 @@
 
 ## Step 1: Build number and version
 
-**Files:** `scripts/write-build-number.sh`, `Sources/SiteBlockCore/BuildNumber.swift` (generated), `Sources/SiteBlockCore/Models.swift`, `.gitignore`, `scripts/build.sh`, `scripts/test.sh`, `Resources/Info.plist`
+**Files:** `Sources/SiteBlockCore/Models.swift`, `scripts/build.sh`, `Resources/Info.plist`
 **Reference:** [04-infrastructure.md](../04-infrastructure.md) § Version Numbers, § Build Script; [02-core-components.md](../02-core-components.md) § Models and Protocol Types (Version constants)
-**Purpose:** Give every build the version `1.0.<build>`, where `<build>` is the number of commits, with no stored counter.
+**Purpose:** Give every build the version `1.0.<build>`, where `<build>` is a release number kept by hand in `Models.swift`.
 
 **Sub-steps:**
-- 1a. `scripts/write-build-number.sh` runs from the repository root and writes `Sources/SiteBlockCore/BuildNumber.swift` holding `public let siteBlockBuildNumber = <build>`, where `<build>` is the output of `git rev-list --count HEAD`. When git is missing, the folder is not a checkout, or the answer is not a number, it writes `0`. It leaves the file untouched when the text would not change.
-- 1b. List `Sources/SiteBlockCore/BuildNumber.swift` in `.gitignore`.
-- 1c. `siteBlockVersion` in `Models.swift` is `"1.0.\(siteBlockBuildNumber)"`.
-- 1d. `scripts/build.sh` and `scripts/test.sh` run `scripts/write-build-number.sh` before they compile. `scripts/build.sh` reads the version from `siteblockd --version`, refuses a version that does not look like `1.0.<number>`, and writes `CFBundleShortVersionString` as `1.0.<build>` and `CFBundleVersion` as `<build>` into the built app's `Info.plist`. `Resources/Info.plist` keeps the placeholder values.
+- 1a. `Models.swift` declares `public let siteBlockBuildNumber = 94`, the release number, next to `siteBlockSeries` and `siteBlockSeriesFirstBuild`. To release, it is raised by one and pushed to `master`; it never goes down.
+- 1b. The version people see is `siteBlockSeries` plus `max(0, siteBlockBuildNumber - siteBlockSeriesFirstBuild)`, and `siteBlockVersion` is that text.
+- 1c. `scripts/build.sh` reads the version from `siteblockd --version`, refuses a version that does not look like `1.0.<number>`, and writes `CFBundleShortVersionString` as `1.0.<build>` and `CFBundleVersion` as `<build>` into the built app's `Info.plist`. `Resources/Info.plist` keeps the placeholder values.
 - 1e. `siteblockd --version`, `siteblock version` and the first line of `siteblock status` print `siteblockd` or `siteblock` and the version, or `SiteBlock <version>`, as described in [03-daemon-cli-app.md](../03-daemon-cli-app.md).
 
 **Dependencies:** none.
 
 **Acceptance Criteria:**
-- [ ] In a git checkout the generated file holds the commit count, and outside one it holds `0`.
-- [ ] `git status` does not list `BuildNumber.swift`.
+- [ ] `siteBlockBuildNumber` in `Models.swift` is the release number, and `siteblockd --version` prints it.
 - [ ] `build/siteblockd --version`, `siteblock version` and the built app's `CFBundleShortVersionString` show the same `1.0.<build>`, and `CFBundleVersion` is the build number alone.
 - [ ] `swift build` gives no warnings.
 
@@ -80,16 +78,16 @@
 **Purpose:** Publish the package under one fixed name together with the file that describes it.
 
 **Sub-steps:**
-- 4a. `scripts/package.sh` runs `scripts/write-build-number.sh`, then `scripts/build.sh`, and writes `dist/SiteBlock.zip`. It removes any older zip in `dist/` first.
+- 4a. `scripts/package.sh` runs `scripts/build.sh` and writes `dist/SiteBlock.zip`. It removes any older zip in `dist/` first.
 - 4b. It writes `dist/version.json` with the fields `version`, `build`, `commit`, `asset` and `sha256`. `commit` is the output of `git rev-parse HEAD`, or 40 zeros without git. `sha256` is the lowercase SHA-256 of `SiteBlock.zip`.
-- 4c. The workflow checks out the code with `fetch-depth: 0`, runs `scripts/package.sh`, and replaces the "latest" release with both `SiteBlock.zip` and `version.json`.
+- 4c. The workflow checks out the newest commit, runs `scripts/package.sh`, then downloads the published `version.json` and runs `scripts/release-check.sh <new> <published>`. Only when it prints `release` does the workflow create the new latest release with both `SiteBlock.zip` and `version.json`.
 - 4d. The README and the workflow's header comment give the fixed package link `https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip`.
 
 **Dependencies:** Steps 1 and 3.
 
 **Acceptance Criteria:**
 - [ ] `dist/version.json` passes `UpdateCheck.parse`, and its `sha256` equals `shasum -a 256 dist/SiteBlock.zip`.
-- [ ] The commit count on GitHub's build machine equals the count on a full local clone of the same commit.
+- [ ] A push that leaves `siteBlockBuildNumber` alone is built and tested but publishes nothing, and a push that raises it by one publishes a release.
 
 ---
 
@@ -146,7 +144,7 @@
 
 **Sub-steps:**
 - 7a. Run the `qa-engineer` agent to write `UpdateCheckTests` and the `saveIntervalSeconds` policy checks. Its expected values come from the design sections named above, not from the implementation. Include the adversarial cases: each broken field on its own, upper case and non-hexadecimal checksums, a build of 0 and below, an empty file and a file with one byte changed.
-- 7b. Run the `qa-engineer` agent to write the script tests: `write-build-number.sh` in a temporary git repository and outside one, the git-ignore check, and the `version.json` that `package.sh` writes.
+- 7b. Run the `qa-engineer` agent to write the script tests: `release-check.sh` with a higher, equal, lower and malformed `build`, and the `version.json` that `package.sh` writes.
 - 7c. Run the `test-rigor-auditor` agent in a fresh invocation on the new test files and the same design sections, passing no reasoning from the author. Send its findings back to a new `qa-engineer` invocation until the auditor is satisfied.
 
 **Dependencies:** Steps 1 to 4.

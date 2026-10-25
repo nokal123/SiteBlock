@@ -13,14 +13,24 @@ $ErrorActionPreference = 'Stop'
 
 # The "build" field of a version file as a number, or an error naming the file when it is missing or not a whole number.
 function Get-Build([string]$path) {
-    $build = $null
-    try { $build = (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).build } catch { $build = $null }
-    # Only a JSON whole number counts: ConvertFrom-Json gives an integer type for one, and a string such as "95" or a decimal such as 95.5 is refused.
-    if ($build -isnot [int] -and $build -isnot [long]) {
+    # System.Text.Json rather than ConvertFrom-Json, which matches "Build" as "build" and reads a field through an array of objects. Only a top-level
+    # object whose exact key "build" holds a JSON whole number of 0 or more counts; text such as "95", 95.5, 95.0 and 1e3 are refused.
+    [long]$build = -1
+    try {
+        $document = [System.Text.Json.JsonDocument]::Parse([System.IO.File]::ReadAllText($path))
+        try {
+            $root = $document.RootElement
+            $value = [System.Text.Json.JsonElement]::new()
+            $ok = $root.ValueKind -eq [System.Text.Json.JsonValueKind]::Object -and $root.TryGetProperty('build', [ref]$value) -and
+                $value.ValueKind -eq [System.Text.Json.JsonValueKind]::Number -and $value.GetRawText() -match '^\d+$' -and $value.TryGetInt64([ref]$build)
+            if (-not $ok) { $build = -1 }
+        } finally { $document.Dispose() }
+    } catch { $build = -1 }
+    if ($build -lt 0) {
         [Console]::Error.WriteLine("error: $path has no whole-number build field")
         exit 1
     }
-    return [long]$build
+    return $build
 }
 
 $new = Get-Build $NewFile

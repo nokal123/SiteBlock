@@ -43,7 +43,7 @@ The Windows version keeps every rule in [01-overview-and-data.md](01-overview-an
 5. **The browser block lists.** The same entries for Chrome, Edge, Brave and Firefox, including path rules, and the same adult-filter settings, written to the registry instead of property list files.
 6. **The adult filter.** The active family DNS provider, CleanBrowsing Family Filter, from the same providers file (`Sources/SiteBlockCore/FamilyDNSProviders.json`, built into the Windows programs too), on every network adapter except VPN adapters, with the same reachability check and the same fallback on sign-in Wi-Fi.
 7. **The logging rule.** No password, domain or path rule is ever written to a log.
-8. **The version scheme.** A build number equal to the commit count, and a version people see in the form `<series>.<n>`. The Windows series is `1.0` and starts counting at its own first build (see § Install, Package and Release).
+8. **The version scheme.** A build number that is a release number kept by hand in a checked-in file, and a version people see in the form `<series>.<n>`. The Windows series is `1.0` and starts counting at its own first build (see § Install, Package and Release).
 
 ---
 
@@ -76,8 +76,7 @@ Each item names the Mac piece, then what does the same job on Windows.
 windows/
 ├── SiteBlock.sln
 ├── Directory.Build.props         shared settings: .NET 10, C# latest, nullable on, warnings as errors
-├── version.props                 WindowsSeries, WindowsSeriesFirstBuild
-├── BuildNumber.props             the generated build number (ignored by git)
+├── version.props                 WindowsSeries, WindowsSeriesFirstBuild, SiteBlockBuildNumber
 ├── src/
 │   ├── SiteBlock.Core/           net10.0 class library: the port of SiteBlockCore, no Windows calls
 │   ├── SiteBlock.Service/        net10.0 class library: daemon runtime, pipe server, enforcers, guards,
@@ -94,7 +93,7 @@ windows/
 │   └── SiteBlock.UpdateProbe/        test-only console program that runs the tray app's real updater
 │                                     against addresses given on its command line (used by e2e.ps1)
 ├── scripts/
-│   ├── write-build-number.sh / .ps1
+│   ├── release-check.ps1         decides release or skip from the new and the published version file
 │   ├── build.ps1                 publishes the three programs into one self-contained folder
 │   ├── package.ps1               writes dist/SiteBlock-Windows.zip and dist/version-windows.json
 │   ├── install.ps1               the installer (run as administrator)
@@ -387,7 +386,7 @@ These lists stop ordinary users. An administrator keeps full control, as § Thre
 
 ## Install, Package and Release
 
-**build.ps1** runs `write-build-number`, then `dotnet publish` for `siteblockd`, `siteblock` and `SiteBlockApp` in Release mode, self-contained (the .NET runtime ships inside the folder, so the PC needs nothing installed), for one runtime (`win-x64` or `win-arm64`), into one shared output folder `windows/build/<rid>/`.
+**build.ps1** runs `dotnet publish` for `siteblockd`, `siteblock` and `SiteBlockApp` in Release mode, self-contained (the .NET runtime ships inside the folder, so the PC needs nothing installed), for one runtime (`win-x64` or `win-arm64`), into one shared output folder `windows/build/<rid>/`.
 
 **package.ps1** builds both runtimes and writes `windows/dist/SiteBlock-Windows.zip` holding:
 
@@ -413,14 +412,15 @@ and `windows/dist/version-windows.json` with the same fields as the Mac's `versi
 5. Create or update both services with `sc.exe` (start automatically, LocalSystem, recovery actions), add the program folder to the system `PATH`, write the `Run` value, and create the Start menu shortcut.
 6. Start `SiteBlock`, then `SiteBlockWatchdog`; wait up to 10 seconds for the pipe; run `siteblock status`; the service's AppGuard starts the tray app for the signed-in user.
 
-**Version numbers:** `version.props` holds `WindowsSeries` (`1.0`) and `WindowsSeriesFirstBuild` (the commit count of the first published Windows build), and the generated `BuildNumber`. The version people see is `<WindowsSeries>.<max(0, BuildNumber - WindowsSeriesFirstBuild)>`, so the first published Windows build is `1.0.0`. `WindowsSeriesFirstBuild` is `88`, the commit count of the commit that set it on the `windows` branch, which becomes `master`'s first Windows build and is published as `1.0.0`; `master` holds nothing `windows` lacks, so merging `windows` into `master` with a fast-forward right after makes that commit `master`'s first Windows build. If more commits land on `windows` before the merge, `WindowsSeriesFirstBuild` is raised to `master`'s commit count at the merge. On GitHub, `write-build-number` fails the build when it cannot read a commit count above 0, and the workflow's "Check the build number" step fails the run when the packaged `version-windows.json` says build 0, so a build 0 is never published. On `master`, the "Check the first release is 1.0.0" step stops the run before publishing when no `windows-v` release exists yet and this build would not be `1.0.0`, and names the number to set. The programs read these numbers from their assembly metadata, and `siteblockd.exe --version` prints `siteblockd <version> (build <n>)`.
+**Version numbers:** `version.props` holds `WindowsSeries` (`1.0`), `WindowsSeriesFirstBuild` (`88`, the build number of the first Windows release, `1.0.0`) and `SiteBlockBuildNumber` (the release number, which started at 94, the build already published). `SiteBlockBuildNumber` is kept by hand: to release, raise it by one and push to `master`. It never goes down, because an installed copy takes an update only when the update's build is higher than its own. The version people see is `<WindowsSeries>.<max(0, SiteBlockBuildNumber - WindowsSeriesFirstBuild)>`, so each release raises it by one. `package.ps1` reads the three values from `version.props` and refuses a series that does not look like `1.0`, a first build that is not a whole number, and a release number that is not a whole number above 0. The workflow's "Check the build number" step also fails the run when the packaged `version-windows.json` says build 0, so a build 0 is never published. The programs read these numbers from their assembly metadata, and `siteblockd.exe --version` prints `siteblockd <version> (build <n>)`.
 
 **GitHub workflow (`.github/workflows/windows.yml`):** runs on pushes to the `windows` and `master` branches that touch `windows/` or the workflow itself, on a `windows-2025` runner (a fresh Windows Server 2025 machine GitHub lends for each run, where the job has administrator rights). Each branch has its own concurrency group (a rule that lets only one run of the workflow go at a time for that group). A newer push cancels a run still in progress on the same branch, except on `master`, where a run is never cancelled, because stopping it between the two release steps would leave `windows-latest` out of step with the newest release:
-1. Check out with the full history and set up .NET 10.
+1. Check out the code (only the newest commit, because the release number is read from `version.props`) and set up .NET 10.
 2. Run every test project; failed tests become error annotations, as in the Mac workflow. Each annotation carries the whole failure message, with its lines joined with " | " and cut at 1,500 characters.
-3. Run `package.ps1`.
+3. Run `package.ps1`, then check that the packaged `version-windows.json` does not say build 0.
 4. Run `e2e.ps1`: a real install from the package on the runner, then the checks in § Testing.
-5. Only on `master`: create a release tagged `windows-v<version>`, not marked latest, with both files, and replace the files of the fixed release tagged `windows-latest` with the same two files, so the download link `https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip` always gives the newest build. Neither release is marked latest, so the Mac's `releases/latest` links keep pointing at the Mac package.
+5. Only on `master`, decide whether this is a release. The step downloads `version-windows.json` from the `windows-latest` release and runs `windows/scripts/release-check.ps1 <new> <published>`. The check prints `release` when the new build is higher than the published one and `skip` when the two are equal. It exits with code 1 when the new build is lower, or when either file's `build` is not a JSON whole number (text such as `"95"` and a decimal are refused). The step stops the run, with the reason as an error annotation, when the published file cannot be downloaded or the check fails. On `skip` it adds a notice titled "Not a release" that names the number to raise (`SiteBlockBuildNumber` in `windows/version.props`).
+6. Only when the decision is `release`: create a release tagged `windows-v<version>`, not marked latest, with both files, and replace the files of the fixed release tagged `windows-latest` with the same two files, so the download link `https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip` always gives the newest build. On a skipped push `windows-latest` keeps the last release's files. Neither release is marked latest, so the Mac's `releases/latest` links keep pointing at the Mac package.
 
 **Download counts:** `windows/scripts/stats.sh` reads GitHub's public release data (no login) and prints one line per release for both systems, Mac and Windows. Each line shows the release's downloads (`SiteBlock.zip` or `SiteBlock-Windows.zip`, which count installs and updates) and its update checks (`version.json` or `version-windows.json`). Windows rows start with "win", and "win latest" is the fixed `windows-latest` release. The script prints a total for each system. It lives under `windows/` because the Mac package workflow rebuilds and republishes the Mac app whenever anything under `scripts/` changes on `master`, while the Windows workflow reacts only to `windows/` and its own file, so a change to this script never starts a Mac build. `scripts/stats.sh` is the Mac-only report described in [04-infrastructure.md](04-infrastructure.md).
 
