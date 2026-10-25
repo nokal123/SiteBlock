@@ -1,9 +1,9 @@
 import Foundation
 
 /// The first two parts of the version people see. To start a new series (for example 1.3), change this and `siteBlockSeriesFirstBuild` together.
-public let siteBlockSeries = "1.2"
+public let siteBlockSeries = "1.3"
 /// The build number of the first build in the current series, which is released as <series>.0.
-public let siteBlockSeriesFirstBuild = 51
+public let siteBlockSeriesFirstBuild = 95
 /// The release number. To publish a Mac release, raise it by one and push to master: GitHub's package workflow publishes a build only when this number is
 /// higher than the published one, so a push that leaves it alone is built and tested but not released. Installed copies take an update only when its number is
 /// higher than their own, so this number never goes down.

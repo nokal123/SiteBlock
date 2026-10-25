@@ -91,7 +91,11 @@ private struct ScriptTree {
     }
 
     // Writes the tree's Models.swift: the repository's own file with only the release number changed.
-    func setBuildNumber(_ number: Int) throws { try writeText(try modelsSwift(replacing: ["siteBlockBuildNumber": String(number)]), to: modelsFile) }
+    // Writes the tree's Models.swift with this release number in the series 1.2 starting at build 51 (the design's example), so the expected versions below stay
+    // the same when the repository starts a new series.
+    func setBuildNumber(_ number: Int) throws {
+        try writeText(try modelsSwift(replacing: ["siteBlockSeries": "\"1.2\"", "siteBlockSeriesFirstBuild": "51", "siteBlockBuildNumber": String(number)]), to: modelsFile)
+    }
 
     func addCommit() throws { try git(root, ["commit", "-q", "--allow-empty", "-m", "another"]) }
 }
