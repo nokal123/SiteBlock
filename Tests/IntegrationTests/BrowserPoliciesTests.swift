@@ -81,14 +81,22 @@ private func damage(_ kind: BrowserDamage, file path: String, browser: BrowserUn
     case .symlinkToDecoy:
         let decoy = daemon.root + "/decoy-\(browser.name).plist"
         try writePlist(["Keep": "me"], to: decoy)
-        try FileManager.default.removeItem(atPath: path)
-        try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: decoy)
+        let link = daemon.root + "/link-\(browser.name).tmp"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: decoy)
+        try swapIn(link, over: path)
         return decoy
     case .namedPipe:
-        try FileManager.default.removeItem(atPath: path)
-        try require(mkfifo(path, 0o644) == 0, "mkfifo failed: \(String(cString: strerror(errno)))")
+        let pipe = daemon.root + "/pipe-\(browser.name).tmp"
+        try require(mkfifo(pipe, 0o644) == 0, "mkfifo failed: \(String(cString: strerror(errno)))")
+        try swapIn(pipe, over: path)
     }
     return nil
+}
+
+// Moves the prepared link or pipe over the policy file in one rename. Deleting the file first and then creating the link left a gap in which a fast daemon put the
+// right file back, so the create failed with "file already exists" (seen on GitHub's Mac runner); a rename replaces the file with no such gap, as an attacker would.
+private func swapIn(_ prepared: String, over path: String) throws {
+    try require(rename(prepared, path) == 0, "rename over \(path) failed: \(String(cString: strerror(errno)))")
 }
 
 @Suite("Browser policy files")
