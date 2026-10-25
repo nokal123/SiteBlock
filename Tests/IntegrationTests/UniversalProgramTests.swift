@@ -141,6 +141,13 @@ private struct InstallerRun {
         var environment = ["PATH": (stubs.isEmpty ? "" : try makeStubFolder(stubs) + ":") + systemPath]
         if let arch { environment["SITEBLOCK_TEST_MAC_ARCH"] = arch }
         if let version { environment["SITEBLOCK_TEST_MACOS_VERSION"] = version }
+        return try launch(root, environment: environment)
+    }
+
+    // Runs `scripts/install.sh --dry-run` of an already prepared package folder with exactly the given environment (runProgram passes nothing else). Normally the copied
+    // installer runs directly; `underRosetta` instead runs `arch -x86_64 /bin/bash scripts/install.sh --dry-run` from inside the folder, as the design's Rosetta case.
+    static func launch(_ root: String, environment: [String: String], underRosetta: Bool = false) throws -> InstallerRun {
+        if underRosetta { return InstallerRun(result: try runProgram("/bin/bash", ["-c", "cd \"$1\" || exit 99; exec /usr/bin/arch -x86_64 /bin/bash scripts/install.sh --dry-run", "bash", root], environment: environment, timeout: 120)) }
         return InstallerRun(result: try runProgram(root + "/scripts/install.sh", ["--dry-run"], environment: environment, timeout: 60))
     }
 
@@ -168,6 +175,22 @@ private struct InstallerRun {
         else { Issue.record("\(context): a step heading is missing; \(describe)", sourceLocation: sourceLocation) }
     }
 }
+
+// This Mac's processor family and macOS version as the design defines them, asked here directly: arm64 when `/usr/sbin/sysctl -n hw.optional.arm64` prints 1, else x86_64,
+// and `sw_vers -productVersion`. hw.optional.arm64 is 1 on an Apple chip even when this test process runs translated by Rosetta (the Intel test run), so the answer there
+// is still arm64, which is what the design wants the installer to say too.
+private func thisMac() throws -> (family: String, version: String) {
+    let sysctl = try runProgram("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"])
+    let family = sysctl.status == 0 && sysctl.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "1" ? "arm64" : "x86_64"
+    return (family, try runProgram("/usr/bin/sw_vers", ["-productVersion"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+// True on a Mac with an Apple chip where Rosetta can run an Intel program. The Rosetta installer test needs both: an Intel Mac has nothing to translate, and without
+// Rosetta `arch -x86_64` cannot start anything.
+private let appleChipWithRosetta: Bool = {
+    guard let mac = try? thisMac(), mac.family == "arm64" else { return false }
+    return (try? runProgram("/usr/bin/arch", ["-x86_64", "/usr/bin/true"]))?.status == 0
+}()
 
 // True when the text names the program path as a whole (so "build/siteblock" is not found inside "build/siteblockd").
 private func names(_ path: String, in text: String) -> Bool {
@@ -277,6 +300,73 @@ struct InstallerMacDetectionTests {
     }
 }
 
+// 04 § Install Script: the program check reads each program with `file -b` and not with `lipo`, because on a Mac without developer tools /usr/bin/lipo opens an "install
+// developer tools" window and fails. Stand-in `lipo` and `xcrun` commands first on the PATH act out that Mac: each records its call and exits 1. The installer must reach
+// the same verdict as on a Mac with developer tools, and call neither.
+@Suite("Universal programs: install.sh never runs lipo")
+struct InstallerWithoutDeveloperToolsTests {
+    // Writes the two failing stand-ins into a new folder and returns it with the log file every call is appended to ("<name> <arguments>" per line).
+    private static func failingDeveloperTools() throws -> (folder: String, log: String) {
+        let log = try makeTemporaryFolder("/tmp/sbs-devtools-") + "/calls.log"
+        let body = "printf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> '\(log)'\necho 'xcode-select: note: No developer tools were found, requesting install.' >&2\nexit 1"
+        return (try makeStubFolder(["lipo": body, "xcrun": body]), log)
+    }
+
+    // For each family: universal programs still pass, and a siteblock that holds only the other family's copy is still refused, by name, with what it is built for and the
+    // download link. Neither run may call lipo or xcrun.
+    @Test(arguments: ["arm64", "x86_64"])
+    func theProgramCheckGivesTheSameVerdictWithoutCallingLipoOrXcrun(family: String) throws {
+        let tools = try Self.failingDeveloperTools()
+        let path = tools.folder + ":" + systemPath
+        // Control: the stand-ins are what a bare `lipo` or `xcrun` finds on this PATH, and they do record, so an empty log below means they were never called.
+        let probe = try runProgram("/bin/bash", ["-c", "lipo -archs probe; xcrun --find lipo; exit 0"], environment: ["PATH": path])
+        try require(probe.status == 0 && readText(tools.log) == "lipo -archs probe\nxcrun --find lipo\n", "the stand-ins did not record: \(readText(tools.log) ?? "<no log>")")
+        try FileManager.default.removeItem(atPath: tools.log)
+
+        let environment = ["PATH": path, "SITEBLOCK_TEST_MAC_ARCH": family, "SITEBLOCK_TEST_MACOS_VERSION": "26.5"]
+        let passed = try InstallerRun.launch(try makePackageFolder([.universal, .universal, .universal]), environment: environment)
+        passed.expectPassed(family, "26.5", "universal programs, \(family), no developer tools")
+
+        let other: ProgramKind = family == "arm64" ? .x86_64Only : .arm64Only
+        let refused = try InstallerRun.launch(try makePackageFolder([.universal, other, .universal]), environment: environment)
+        refused.expectRefusedBeforeStep2("\(other.rawValue) siteblock, \(family), no developer tools")
+        let refusal = refused.errorLines.joined(separator: "\n")
+        #expect(names("build/siteblock", in: refusal) && !names("build/siteblockd", in: refusal), "the refusal must name build/siteblock alone; \(refused.describe)")
+        #expect(refusal.contains(other.families!.first!) && refusal.contains(downloadLink), "the refusal must say what siteblock is built for and give the link; \(refused.describe)")
+
+        #expect(readText(tools.log) == nil, "the installer called a developer tool:\n\(readText(tools.log) ?? "")")
+    }
+}
+
+// 04 § Install Script: "a run started with a short PATH still finds sysctl and does not take an Apple chip for an Intel processor", and the Rosetta note: the family is arm64
+// when hw.optional.arm64 is 1, "which is also true when the script itself runs translated by Rosetta". Both tests use the real sysctl and sw_vers and no test variables, and
+// programs that hold only this Mac's copy, so a wrong family would also turn the pass into a refusal.
+@Suite("Universal programs: install.sh finds this Mac's family with a short PATH and under Rosetta")
+struct InstallerRealMacTests {
+    // The environment is exactly PATH=/usr/bin:/bin. On an Intel Mac a missed sysctl gives the same answer (x86_64), so only an Apple-chip Mac can catch that mistake.
+    @Test func aDryRunWithOnlyUsrBinAndBinOnThePathStillNamesThisMacsFamily() throws {
+        // Control: sysctl really is outside /usr/bin and /bin, so the installer can only find it through the folders it adds itself.
+        try require(!FileManager.default.fileExists(atPath: "/usr/bin/sysctl") && !FileManager.default.fileExists(atPath: "/bin/sysctl"), "sysctl is in /usr/bin or /bin here, so this test proves nothing")
+        let mac = try thisMac()
+        let only: ProgramKind = mac.family == "arm64" ? .arm64Only : .x86_64Only
+        let run = try InstallerRun.launch(try makePackageFolder([only, only, only]), environment: ["PATH": "/usr/bin:/bin"])
+        run.expectPassed(mac.family, mac.version, "PATH=/usr/bin:/bin, real sysctl, \(only.rawValue) programs")
+    }
+
+    // `arch -x86_64 /bin/bash scripts/install.sh --dry-run` on an Apple chip: the installer runs as an Intel program, yet must still call this Mac an Apple chip and accept
+    // programs that hold only an arm64 copy. When this test process is itself translated (the Intel test run), everything it starts is translated as well, and the expected
+    // answer is the same.
+    @Test(.enabled(if: appleChipWithRosetta, "needs a Mac with an Apple chip and Rosetta: an Intel Mac has nothing to translate, and without Rosetta arch -x86_64 cannot run"))
+    func aDryRunTranslatedByRosettaStillCallsThisMacAnAppleChip() throws {
+        // Control: a shell started the same way really runs translated.
+        let translated = try runProgram("/usr/bin/arch", ["-x86_64", "/bin/bash", "-c", "/usr/sbin/sysctl -n sysctl.proc_translated"])
+        try require(translated.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "1", "arch -x86_64 /bin/bash did not run translated: \(translated.stdout) \(translated.stderr)")
+        let mac = try thisMac()
+        let run = try InstallerRun.launch(try makePackageFolder([.arm64Only, .arm64Only, .arm64Only]), environment: ["PATH": systemPath], underRosetta: true)
+        run.expectPassed("arm64", mac.version, "install.sh under arch -x86_64, arm64-only programs")
+    }
+}
+
 // "In --dry-run only, SITEBLOCK_TEST_MAC_ARCH and SITEBLOCK_TEST_MACOS_VERSION stand in; a real install never reads them." A real install needs root, so these tests run the
 // installer's own lookup code with the dry-run flag off and on, and check that nothing else in the script reads the variables.
 @Suite("Universal programs: a real install ignores the test variables")
@@ -315,9 +405,7 @@ struct InstallerTestVariableTests {
         let functions = Self.functionsReadingTheVariables()
         let lines = Self.script.components(separatedBy: "\n")
         let definitions = functions.map { lines[$0.lines].joined(separator: "\n") }.joined(separator: "\n")
-        let sysctl = try runProgram("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"])
-        let realFamily = sysctl.status == 0 && sysctl.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "1" ? "arm64" : "x86_64"
-        let realVersion = try runProgram("/usr/bin/sw_vers", ["-productVersion"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let (realFamily, realVersion) = try thisMac()
         let fakeFamily = realFamily == "arm64" ? "x86_64" : "arm64"
         let environment = ["PATH": systemPath, "SITEBLOCK_TEST_MAC_ARCH": fakeFamily, "SITEBLOCK_TEST_MACOS_VERSION": "13.0"]
         var answers: [Int: [String]] = [:]
@@ -451,15 +539,64 @@ struct RosettaWorkflowTests {
         #expect(versions == ["stand-in x86_64", "stand-in x86_64"], "the --version runs must use the Intel copies: \(versions)")
     }
 
-    // The same step stops the run when any of the three programs lacks either copy, and when any of the three plists the daemon prints is not a valid plist.
-    @Test(arguments: [("missing copy", 0, ""), ("missing copy", 1, ""), ("missing copy", 2, ""), ("bad plist", -1, "daemon"), ("bad plist", -1, "watchdog"), ("bad plist", -1, "app")] as [(String, Int, String)])
-    func thePackagedIntelStepFailsForAProgramWithoutBothCopiesOrABadPlist(problem: String, thinPosition: Int, badJob: String) throws {
+    // The same step stops the run when any of the three programs lacks either copy (each program once with only the Apple-chip copy and once with only the Intel copy, so
+    // every entry of the lipo check is needed), when any program is missing from build/, and when any of the three plists the daemon prints is not a valid plist.
+    // The design lists the lipo check first, so a program problem stops the step before any program runs; a bad plist stops it after both --version runs.
+    @Test(arguments: [0, 1, 2].flatMap { [IntelStepProblem.missingCopy(position: $0, kind: .arm64Only), .missingCopy(position: $0, kind: .x86_64Only), .missingProgram(position: $0)] } + ["daemon", "watchdog", "app"].map { IntelStepProblem.badPlist(job: $0) })
+    func thePackagedIntelStepFailsForAProgramWithoutBothCopiesOrABadPlist(problem: IntelStepProblem) throws {
         var kinds: [ProgramKind] = [.universal, .universal, .universal]
-        if thinPosition >= 0 { kinds[thinPosition] = thinPosition == 1 ? .x86_64Only : .arm64Only }
+        if case .missingCopy(let position, let kind) = problem { kinds[position] = kind }
         let tree = try makePackageFolder(kinds)
+        if case .missingProgram(let position) = problem { try FileManager.default.removeItem(atPath: tree + "/" + IntelStepProblem.buildItems[position]) }
         var environment = ["PATH": systemPath]
-        if !badJob.isEmpty { environment["STANDIN_BAD_PLIST"] = badJob }
+        if case .badPlist(let job) = problem { environment["STANDIN_BAD_PLIST"] = job }
         let result = try runWorkflowStep("Run the packaged Intel programs under Rosetta", in: tree, environment: environment)
-        #expect(result.status != 0 && !result.timedOut, "\(problem) \(thinPosition) \(badJob): the step must fail\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)")
+        let context = "\(problem.testDescription)\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)"
+        #expect(result.status != 0 && !result.timedOut, "the step must fail: \(context)")
+        let versions = result.stdout.components(separatedBy: "\n").filter { $0.hasPrefix("stand-in ") }
+        if case .badPlist = problem { #expect(versions == ["stand-in x86_64", "stand-in x86_64"], "the step should fail at the plist check, after both --version runs: \(context)") }
+        else { #expect(versions.isEmpty, "the lipo check must stop the step before any program runs: \(context)") }
+    }
+
+    // The dry run's pass line is a check of its own. A stand-in lipo that accepts every program acts out a lipo check that lets a problem through; with SiteBlock.app
+    // missing from build/, the step must still fail, because install.sh cannot print "the programs have a copy for this Mac's processor" without the app. With all three
+    // programs the same stand-in lets the step pass, so the failure comes from the missing pass line and not from the stand-in.
+    @Test(arguments: [true, false])
+    func thePackagedIntelStepNeedsTheDryRunsPassLineEvenWhenLipoLetsAProgramThrough(appPresent: Bool) throws {
+        let tree = try makePackageFolder([.universal, .universal, .universal])
+        if !appPresent { try FileManager.default.removeItem(atPath: tree + "/build/SiteBlock.app") }
+        let log = try makeTemporaryFolder("/tmp/sbs-calls-") + "/lipo.log"
+        let stubs = try makeStubFolder(["lipo": "printf '%s\\n' \"$*\" >> '\(log)'\nexit 0"])
+        let result = try runWorkflowStep("Run the packaged Intel programs under Rosetta", in: tree, environment: ["PATH": stubs + ":" + systemPath])
+        let context = "SiteBlock.app \(appPresent ? "present" : "missing")\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)"
+        // The stand-in really took the place of lipo for all three programs.
+        try require((readText(log) ?? "").split(separator: "\n").count == 3, "the stand-in lipo was not called for the three programs: \(readText(log) ?? "<no log>")\n\(context)")
+        let dryRun = readText(tree + "/install-dry-run.log") ?? ""
+        let passLine = dryRun.components(separatedBy: "\n").contains("the programs have a copy for this Mac's processor")
+        if appPresent {
+            #expect(result.status == 0 && passLine, "with all three programs the step must pass: \(context)\ndry run:\n\(dryRun)")
+        } else {
+            #expect(result.status != 0 && !result.timedOut, "without SiteBlock.app the step must fail: \(context)\ndry run:\n\(dryRun)")
+            #expect(!passLine, "the dry run printed the pass line without SiteBlock.app:\n\(dryRun)")
+        }
+    }
+}
+
+// What is wrong with the checkout in one run of the packaged Intel step: a program holding only one family's copy, a program missing from build/ (for the app, the whole
+// SiteBlock.app), or the daemon printing something that is not a plist for one job.
+enum IntelStepProblem: Sendable, CustomTestStringConvertible {
+    case missingCopy(position: Int, kind: ProgramKind)
+    case missingProgram(position: Int)
+    case badPlist(job: String)
+
+    // The items under the checkout that `missingProgram` removes, in the order siteblockd, siteblock, app.
+    static let buildItems = ["build/siteblockd", "build/siteblock", "build/SiteBlock.app"]
+
+    var testDescription: String {
+        switch self {
+        case .missingCopy(let position, let kind): "\(programPaths[position]) is \(kind.rawValue)"
+        case .missingProgram(let position): "\(Self.buildItems[position]) is missing"
+        case .badPlist(let job): "bad \(job) plist"
+        }
     }
 }
