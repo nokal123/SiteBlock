@@ -209,3 +209,21 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-10-25 — Releases numbered by hand, published only when the number goes up
+
+**Implemented:**
+- The build number is a checked-in release number: `siteBlockBuildNumber` in `Sources/SiteBlockCore/Models.swift` (Mac) and `SiteBlockBuildNumber` in `windows/version.props` (Windows), both starting at 94, the build already published. The commit-count scripts and generated files are gone, and the workflows check out only the newest commit.
+- `scripts/release-check.sh` and `windows/scripts/release-check.ps1` compare a new version file with the published one: `release` when higher, `skip` when equal, an error when lower or when either file has no top-level `build` holding a JSON whole number of 0 or more. Each workflow's "Decide whether this is a release" step downloads the published file and runs the check; every publishing step runs only on `release`, so an ordinary push is built and tested but not published, and windows-latest keeps the last release's files.
+- Tests: the commit-count tests were replaced; the release checks, package scripts, version formula and both workflows' decide and publish steps are tested, the steps run for real against a stand-in `gh`. Audited (20 mutants, 15 killed); the fix round closed the gaps, and the two fail-open mutants were confirmed killed. Mac 1403 tests pass; Windows release tests 99 pass.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---
