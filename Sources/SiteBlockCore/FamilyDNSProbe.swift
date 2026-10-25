@@ -20,7 +20,7 @@ public protocol FamilyDNSProbe {
     func check() -> FamilyDNSCheck
 }
 
-/// The real check: sends one DNS query for example.com (type A) by UDP to port 53 of `1.1.1.3` and of `1.0.0.3` at the same time, then waits up to 2 seconds in total for whichever answers first. A server counts as answering only when a packet comes back from it with that query's random ID and the QR (this is an answer) bit set. Because both are asked together, a check takes 2 seconds at the very most.
+/// The real check: sends one DNS query for example.com (type A) by UDP to port 53 of both IPv4 servers of the active family DNS provider (see `FamilyDNSProviders`) at the same time, then waits up to 2 seconds in total for whichever answers first. A server counts as answering only when a packet comes back from it with that query's random ID and the QR (this is an answer) bit set. Because both are asked together, a check takes 2 seconds at the very most.
 public final class UDPFamilyDNSProbe: FamilyDNSProbe {
     /// One place a query is sent: an IPv4 address and a UDP port.
     public struct Target: Sendable {
@@ -34,8 +34,8 @@ public final class UDPFamilyDNSProbe: FamilyDNSProbe {
         }
     }
 
-    /// The two IPv4 family servers that are asked, on the DNS port 53.
-    public static let familyTargets = [Target(host: "1.1.1.3", port: 53), Target(host: "1.0.0.3", port: 53)]
+    /// The two IPv4 servers of the active family DNS provider, on the DNS port 53. Empty when the built-in providers file cannot be read, which makes every check report the servers as unreachable.
+    public static let familyTargets = (FamilyDNSProviders.builtIn?.activeProvider.ipv4 ?? []).map { Target(host: $0, port: 53) }
     // How long the servers get to answer, counted from when both queries are sent.
     private static let timeoutSeconds = 2.0
 

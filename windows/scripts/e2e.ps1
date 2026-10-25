@@ -11,7 +11,7 @@
 # of siteblockd.log (the log never holds sites or passwords, by design), and exits 1 when any check failed.
 #
 # It changes this PC for real: it installs SiteBlock, blocks youtube.com, sets a password and points the network
-# adapters at Cloudflare for Families. So it refuses to run outside GitHub Actions unless -AllowOnThisPC is given.
+# adapters at the family DNS provider. So it refuses to run outside GitHub Actions unless -AllowOnThisPC is given.
 # It runs in Windows PowerShell 5.1 and in PowerShell 7 on Windows.
 [CmdletBinding()]
 param(
@@ -465,6 +465,11 @@ function Test-VerifyInstallScript {
 function Test-FamilyDns {
     $vpnWords = @('VPN', 'TAP-Windows', 'WireGuard', 'Wintun', 'OpenVPN', 'Tailscale', 'ZeroTier', 'AnyConnect', 'Fortinet', 'GlobalProtect', 'Cloudflare WARP')
     $script:DnsProblem = ''
+    # The active provider's two IPv4 servers, read from the same providers file the programs are built with.
+    $providersFile = Join-Path (Split-Path -Parent $WindowsRoot) 'Sources\SiteBlockCore\FamilyDNSProviders.json'
+    $providers = Get-Content -LiteralPath $providersFile -Raw | ConvertFrom-Json
+    $familyIpv4 = @(($providers.providers | Where-Object { $_.id -eq $providers.active }).ipv4)
+    if ($familyIpv4.Count -ne 2) { throw "the providers file has no active provider with two IPv4 servers ($providersFile)" }
     # Lists the adapters the service is meant to change, read fresh each time.
     $listAdapters = {
         @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
@@ -488,13 +493,13 @@ function Test-FamilyDns {
         $script:DnsWrongAdapters = @()
         foreach ($adapter in (& $listAdapters)) {
             $servers = @($adapter.GetIPProperties().DnsAddresses | ForEach-Object { $_.ToString() })
-            if (($servers -notcontains '1.1.1.3') -or ($servers -notcontains '1.0.0.3')) {
+            if (($servers -notcontains $familyIpv4[0]) -or ($servers -notcontains $familyIpv4[1])) {
                 $wrong += "$($adapter.Name) uses $($servers -join ', ')"
                 $script:DnsWrongAdapters += $adapter
             }
         }
         $script:DnsProblem = $wrong -join '; '
-        if ($wrong.Count -eq 0) { $script:DnsOutcome = 'every adapter uses 1.1.1.3 and 1.0.0.3' }
+        if ($wrong.Count -eq 0) { $script:DnsOutcome = "every adapter uses $($familyIpv4 -join ' and ')" }
         return ($wrong.Count -eq 0)
     }
     if ($elapsed -lt 0) {

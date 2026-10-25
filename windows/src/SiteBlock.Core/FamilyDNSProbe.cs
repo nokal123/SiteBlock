@@ -11,18 +11,18 @@ namespace SiteBlock.Core;
 public sealed record FamilyDNSCheck(bool Reachable, string Detail);
 
 /// <summary>
-/// The real network check: sends one DNS query for example.com (type A) by UDP to port 53 of <c>1.1.1.3</c> and of <c>1.0.0.3</c> at the same time, then waits up to 2 seconds in total for whichever answers first.
+/// The real network check: sends one DNS query for example.com (type A) by UDP to port 53 of both IPv4 servers of the active family DNS provider (see <see cref="FamilyDNSProviders"/>) at the same time, then waits up to 2 seconds in total for whichever answers first.
 /// A server counts as answering only when a packet comes back from it with that query's random ID and the QR (this is an answer) bit set. Because both are asked together, a check takes 2 seconds at the very most.
 /// </summary>
 public sealed class UdpFamilyDNSProbe
 {
     /// <summary>One place a query is sent: an IPv4 address and a UDP port.</summary>
-    /// <param name="Host">The IPv4 address as text, for example 1.1.1.3.</param>
+    /// <param name="Host">The IPv4 address as text, for example 185.228.168.168.</param>
     /// <param name="Port">The UDP port.</param>
     public sealed record Target(string Host, int Port);
 
-    /// <summary>The two IPv4 family servers that are asked, on the DNS port 53.</summary>
-    public static IReadOnlyList<Target> FamilyTargets { get; } = [new Target("1.1.1.3", 53), new Target("1.0.0.3", 53)];
+    /// <summary>The two IPv4 servers of the active family DNS provider, on the DNS port 53. Empty when the built-in providers file cannot be read, which makes every check report the servers as unreachable.</summary>
+    public static IReadOnlyList<Target> FamilyTargets { get; } = [.. (FamilyDNSProviders.BuiltIn?.ActiveProvider.Ipv4 ?? []).Select(host => new Target(host, 53))];
 
     /// <summary>How long the servers get to answer, counted from when both queries are sent.</summary>
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2);

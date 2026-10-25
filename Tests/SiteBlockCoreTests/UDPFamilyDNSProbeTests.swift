@@ -4,7 +4,7 @@ import SiteBlockCore
 
 // Expected values come from Design Plans/03-daemon-cli-app.md § 11 DNSEnforcer, "Reachability check": one DNS query for example.com (type A, UDP) is sent to
 // both family servers at the same time, the wait is up to 2 seconds in total for whichever answers first, and an answer counts only with the same random ID
-// and the QR bit set. The real servers are 1.1.1.3 and 1.0.0.3 on port 53; these tests aim the same check at stand-in servers on loopback ports, so no
+// and the QR bit set. The real servers are the active family DNS provider's two IPv4 addresses on port 53; these tests aim the same check at stand-in servers on loopback ports, so no
 // network is used. Each stand-in is a real UDP socket on 127.0.0.1 with its own thread.
 
 // How a stand-in server behaves.

@@ -7,7 +7,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         // All policy logic lives here so it can be unit-tested without root access.
-        .target(name: "SiteBlockCore", linkerSettings: [.linkedFramework("Security")]),
+        // FamilyDNSProviders.json (the family DNS services and the active one) is built into the library as bytes, so the installed programs need no file beside them.
+        .target(name: "SiteBlockCore", resources: [.embedInCode("FamilyDNSProviders.json")], linkerSettings: [.linkedFramework("Security")]),
         // siteblockd links SystemConfiguration so the adult content filter can read and set the Mac's DNS servers in-process.
         .executableTarget(name: "siteblockd", dependencies: ["SiteBlockCore"], linkerSettings: [.linkedFramework("SystemConfiguration")]),
         .executableTarget(name: "siteblock", dependencies: ["SiteBlockCore"]),

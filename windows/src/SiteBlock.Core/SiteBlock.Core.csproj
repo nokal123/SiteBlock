@@ -7,4 +7,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="SiteBlock.Core.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The family DNS providers file is shared with the Mac version and lives in its source; it is built into this library so the installed programs need no file beside them. -->
+    <EmbeddedResource Include="..\..\..\Sources\SiteBlockCore\FamilyDNSProviders.json" LogicalName="FamilyDNSProviders.json" />
+  </ItemGroup>
 </Project>

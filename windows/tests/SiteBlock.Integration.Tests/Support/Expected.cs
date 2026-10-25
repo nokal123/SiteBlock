@@ -83,8 +83,11 @@ internal static class Expected
         [FirefoxDnsKey] = [("Enabled", "dword", "0"), ("Locked", "dword", "1")],
     };
 
-    // The family DNS servers (01-overview-and-data.md § Fixed Policy Values): IPv4 first, then IPv6.
-    public static readonly string[] FamilyServers = ["1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"];
+    // The family DNS servers: the active provider's in the built-in providers file (01-overview-and-data.md § Fixed Policy Values), IPv4 first, then IPv6.
+    // Which provider is active, and its exact addresses, is pinned by the providers file's own tests.
+    public static readonly string[] FamilyServers = [.. SiteBlock.Core.FamilyDNSProviders.BuiltIn!.ActiveProvider.Servers];
+    // The active provider's two IPv4 servers, which an adapter without IPv6 settings gets.
+    public static readonly string[] FamilyIpv4Servers = [.. SiteBlock.Core.FamilyDNSProviders.BuiltIn!.ActiveProvider.Ipv4];
 
     // Finds a key in registry.json without regard to letter case, as the registry compares key names.
     public static JsonObject? Key(JsonObject registry, string keyPath)

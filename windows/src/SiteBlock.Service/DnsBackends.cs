@@ -15,7 +15,8 @@ namespace SiteBlock.Service;
 /// <param name="IsEnabled">False when the adapter is switched off (sandbox only; Windows lists only adapters it can use).</param>
 /// <param name="Servers">The DNS servers set by hand, IPv4 first, then IPv6; empty when the adapter takes its servers from the network.</param>
 /// <param name="HasIpv6">False when the adapter has no IPv6 settings, so only the IPv4 family servers are written to it and expected on it.</param>
-public sealed record DnsAdapter(string Id, string Name, string InterfaceType, string Description, bool IsEnabled, IReadOnlyList<string> Servers, bool HasIpv6 = true)
+/// <param name="HasIpv4">False when the adapter has no IPv4 settings (an IPv6-only adapter), so only the IPv6 family servers are written to it and expected on it.</param>
+public sealed record DnsAdapter(string Id, string Name, string InterfaceType, string Description, bool IsEnabled, IReadOnlyList<string> Servers, bool HasIpv6 = true, bool HasIpv4 = true)
 {
     /// <summary>Text in an adapter's description that marks it as a VPN, compared without regard to case. A VPN supplies its own DNS servers, so SiteBlock leaves it alone.</summary>
     public static readonly IReadOnlyList<string> VpnMarkers = ["VPN", "TAP-Windows", "WireGuard", "Wintun", "OpenVPN", "Tailscale", "ZeroTier", "AnyConnect", "Fortinet", "GlobalProtect", "Cloudflare WARP"];
@@ -167,8 +168,9 @@ public sealed class WindowsDnsBackend : IDnsSettingsBackend
             // such as "Ethernet 3-WFP Native MAC Layer LightWeight Filter-0000", and virtual switch ports as Ethernet adapters; they have no such key and are left out. An
             // adapter with IPv6 settings only is kept, or its IPv6 servers would be a way around the family filter.
             bool hasIpv6 = HasIpv6(id);
-            if (!HasIpv4Settings(id) && !hasIpv6) continue;
-            adapters.Add(new DnsAdapter(id, adapter.Name, type, adapter.Description, true, [.. ReadServers(Ipv4InterfacesKey, id), .. (hasIpv6 ? ReadServers(Ipv6InterfacesKey, id) : [])], hasIpv6));
+            bool hasIpv4 = HasIpv4Settings(id);
+            if (!hasIpv4 && !hasIpv6) continue;
+            adapters.Add(new DnsAdapter(id, adapter.Name, type, adapter.Description, true, [.. (hasIpv4 ? ReadServers(Ipv4InterfacesKey, id) : []), .. (hasIpv6 ? ReadServers(Ipv6InterfacesKey, id) : [])], hasIpv6, hasIpv4));
         }
         return adapters;
     }

@@ -21,6 +21,8 @@
 16. [UninstallRule](#12-uninstallrule-sourcessiteblockcoreuninstallruleswift)
 17. [TemporaryUnblockOptions](#13-temporaryunblockoptions-sourcessiteblockcoretemporaryunblockoptionsswift)
 18. [UpdateCheck](#14-updatecheck-sourcessiteblockcoreupdatecheckswift)
+19. [FamilyDNSProviders](#15-familydnsproviders-sourcessiteblockcorefamilydnsprovidersswift)
+20. [FamilyDNSProbe](#16-familydnsprobe-sourcessiteblockcorefamilydnsprobeswift)
 
 ---
 
@@ -415,3 +417,49 @@ Both addresses are written into the code. Nothing outside the code can point the
 - `static func matchesChecksum(fileAt url: URL, expected: String) -> Bool` — computes the SHA-256 of the file with CryptoKit (Apple's built-in cryptography library) and compares it with `expected`, ignoring letter case.
 
 **Behavioral notes:** The checks in `parse` keep a damaged or hand-edited file from steering the app. `version` has to agree with `build`, so the banner cannot show one version while the app compares another number. `asset` has to be the one fixed name, and `sha256` and `commit` have to have the exact length and character set of a real SHA-256 fingerprint and a real full commit hash. The comparison in `matchesChecksum` ignores letter case, so `expected` may be written in uppercase or lowercase. The app calls `parse` and `isNewer` for every check, and `matchesChecksum` once for each download.
+
+---
+
+### 15. FamilyDNSProviders (`Sources/SiteBlockCore/FamilyDNSProviders.swift`, `Sources/SiteBlockCore/FamilyDNSProviders.json`)
+
+**Purpose:** Holds the family DNS services SiteBlock knows and says which one is in use. A family DNS service refuses to look up adult sites, and SiteBlock sets its servers on every managed network service as the second layer of the adult content filter. The list lives in one file, so changing the service never means editing code that does something else.
+
+**The providers file:** `FamilyDNSProviders.json` has three parts. `readme` is a sentence for people who open the file. `active` is the `id` of the provider in use. `providers` is the list of known providers, and each one has `id` (a short fixed name), `name` (the name people know it by), `ipv4` (two addresses) and `ipv6` (two addresses). The list is:
+- `cleanbrowsing-family`, "CleanBrowsing Family Filter": `185.228.168.168`, `185.228.169.168`, `2a0d:2a00:1::`, `2a0d:2a00:2::`. This is the active provider.
+- `cloudflare-families`, "Cloudflare for Families": `1.1.1.3`, `1.0.0.3`, `2606:4700:4700::1113`, `2606:4700:4700::1003`.
+- `adguard-family`, "AdGuard DNS Family Protection": `94.140.14.15`, `94.140.15.16`, `2a10:50c0::bad1:ff`, `2a10:50c0::bad2:ff`.
+
+**Where the file lives:** The file is built into the programs and is never read from the installed computer. On the Mac, `Package.swift` declares it with `.embedInCode`, so `SiteBlockCore` holds its bytes as `PackageResources.FamilyDNSProviders_json`. On Windows, `windows/src/SiteBlock.Core/SiteBlock.Core.csproj` embeds the same file as the resource `FamilyDNSProviders.json`. Switching provider means changing `active` (or adding a provider) and releasing an update. Nothing on an installed computer can change it, which is deliberate: SiteBlock promises that no setting turns the adult filter off. The Mac workflow runs on any change under `Sources/`, and `.github/workflows/windows.yml` also runs when this file changes, so both systems get the switch.
+
+**Types:**
+- `public struct FamilyDNSProvider: Codable, Equatable, Sendable` — one provider. Properties: `id: String`, `name: String`, `ipv4: [String]`, `ipv6: [String]`, and the computed `servers: [String]`, which is the IPv4 addresses followed by the IPv6 ones, the order SiteBlock writes them.
+- `public struct FamilyDNSProviders: Codable, Equatable, Sendable` — the whole file. Properties: `active: String` and `providers: [FamilyDNSProvider]`.
+- `public struct FamilyDNSProvidersError: Error` — carries one sentence naming the rule that was broken.
+
+**Key Methods:**
+- `static let builtIn: FamilyDNSProviders?` — the list built into this copy of SiteBlock, read with `parse`. It is nil when the embedded file is missing or breaks a rule of `parse`.
+- `var activeProvider: FamilyDNSProvider` — the provider whose `id` equals `active`. `parse` has already checked that one exists.
+- `func isFamilyList(_ servers: [String]) -> Bool` — true when `servers` equals one known provider's `servers` exactly, in order. That means SiteBlock set them, with the active provider or with another provider that was active before an update.
+- `static func parse(_ data: Data) throws -> FamilyDNSProviders` — decodes the JSON and checks the rules: every `id` is not empty and appears once; `active` names a provider; and every provider has exactly 2 IPv4 and 2 IPv6 addresses, each valid and written in its standard short form. The standard form is the one the operating system prints when it reads the address back, so a write can later be compared with a read as plain text. Throws `FamilyDNSProvidersError` for the first broken rule, or the JSON decoding error when the text is not the expected JSON.
+
+**Dependencies:** none beyond Foundation. Users: [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer and § 16 below (`FamilyDNSProbe`).
+
+**Windows:** `windows/src/SiteBlock.Core/FamilyDNSProviders.cs` has the same rules with the names `FamilyDNSProvider`, `FamilyDNSProviders` (`BuiltIn`, `ActiveProvider`, `IsFamilyList`, `Parse`) and `FamilyDNSProvidersException`; see [06-windows.md](06-windows.md) § SiteBlock.Core.
+
+---
+
+### 16. FamilyDNSProbe (`Sources/SiteBlockCore/FamilyDNSProbe.swift`)
+
+**Purpose:** Answers "do the family DNS servers answer on this network?" so the daemon never sets servers a network blocks. It builds and checks the query with `DNSProbePacket.swift`.
+
+**Types:**
+- `public struct FamilyDNSCheck: Equatable, Sendable` — one result: `reachable: Bool` (true when at least one family server answered) and `detail: String` (a short sentence for the diagnostic output).
+- `public protocol FamilyDNSProbe` — one method, `check() -> FamilyDNSCheck`. A check can take up to 2 seconds, so it is never called on the engine queue.
+- `public final class UDPFamilyDNSProbe: FamilyDNSProbe` — the real check.
+
+**Key Methods:**
+- `static let familyTargets` — the two IPv4 servers of the active provider (see § FamilyDNSProviders), each on UDP port 53. The list is empty when the providers file cannot be read, and then every check reports the servers as unreachable.
+- `check()` — sends one DNS query for `example.com` (type A) to both targets at the same time and waits up to 2 seconds in total. A server counts as answering only when a packet comes back from it with the query's random 16-bit ID and the QR (this is an answer) bit set. A check returns as soon as one valid answer arrives.
+- `init(targets:)` — takes another target list (loopback addresses and ports) only so the check itself can be tried against stand-in servers. The installed service always uses `familyTargets`.
+
+Windows: `windows/src/SiteBlock.Core/FamilyDNSProbe.cs` has the same behavior; its `UdpFamilyDNSProbe.FamilyTargets` is built the same way.

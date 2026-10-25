@@ -23,14 +23,16 @@ public static class DnsCache
 }
 
 /// <summary>
-/// Keeps every network adapter's DNS servers on Cloudflare for Families for as long as SiteBlock is installed, and lets the uninstaller put the original servers back
+/// Keeps every network adapter's DNS servers on the active family DNS provider (see <see cref="FamilyDNSProviders"/>, built into SiteBlock) for as long as SiteBlock is installed, and lets the uninstaller put the original servers back
 /// (03-daemon-cli-app.md § DNSEnforcer, 06-windows.md § DNSEnforcer). The family servers are used only while they answer on the current network, and a change is kept only when it can be read back.
 /// <see cref="Enforce"/> must be called on the engine thread; the monitoring runs on its own threads and only asks for a pass.
 /// </summary>
 public sealed class DnsEnforcer : IDnsEnforcer
 {
-    /// <summary>The servers every managed adapter is set to: Cloudflare for Families, two IPv4 and two IPv6 addresses.</summary>
-    public static readonly IReadOnlyList<string> FamilyServers = ["1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"];
+    /// <summary>The family DNS providers built into SiteBlock, or null when the built-in file cannot be read (the tests make sure it is always readable).</summary>
+    internal static readonly FamilyDNSProviders? Providers = FamilyDNSProviders.BuiltIn;
+    /// <summary>The servers an adapter with both IPv4 and IPv6 settings is set to: the active provider's two IPv4 and two IPv6 addresses. Empty when the providers file cannot be read; a pass then sets nothing and puts any overridden adapter's originals back.</summary>
+    public static readonly IReadOnlyList<string> FamilyServers = Providers?.ActiveProvider.Servers ?? [];
     /// <summary>How often the fallback pass and the reachability check run in the installed service.</summary>
     public static readonly TimeSpan ProductionMonitorInterval = TimeSpan.FromSeconds(30);
 
@@ -118,7 +120,8 @@ public sealed class DnsEnforcer : IDnsEnforcer
         }
         long now = Environment.TickCount64;
         var managed = adapters.Where(adapter => adapter.IsManaged).ToList();
-        var overridden = managed.Where(adapter => saved.ContainsKey(adapter.Id) && IsFamily(adapter)).ToList();
+        // An adapter still on the previous provider's servers after a switch also counts as overridden, so it gets its originals back if the family servers stop answering.
+        var overridden = managed.Where(adapter => saved.ContainsKey(adapter.Id) && IsKnownFamily(adapter)).ToList();
         var candidates = managed.Where(adapter => !IsFamily(adapter) && !(_retryNotBefore.TryGetValue(adapter.Id, out long notBefore) && notBefore > now)).ToList();
         // Nothing to set and nothing set: the steady state writes nothing at all.
         if (overridden.Count == 0 && candidates.Count == 0)
@@ -127,7 +130,8 @@ public sealed class DnsEnforcer : IDnsEnforcer
             return saved;
         }
 
-        if (!reachable)
+        // An unreadable providers file leaves no family servers to set; that is handled like servers that do not answer, so no adapter is ever set to an empty list.
+        if (!reachable || FamilyServers.Count == 0)
         {
             if (_familyReachable != false) _log.Write("family DNS unreachable; using the network's own DNS until it answers");
             _familyReachable = false;
@@ -198,11 +202,17 @@ public sealed class DnsEnforcer : IDnsEnforcer
         return record;
     }
 
-    /// <summary>The family servers this adapter should hold: all four, or only the two IPv4 servers on an adapter without IPv6.</summary>
-    internal static IReadOnlyList<string> Wanted(DnsAdapter adapter) => adapter.HasIpv6 ? FamilyServers : [.. FamilyServers.Where(server => !server.Contains(':'))];
+    /// <summary>The active provider's servers this adapter should hold: the IPv4 pair when it has IPv4 settings, then the IPv6 pair when it has IPv6 settings, matching what the backend writes for it.</summary>
+    internal static IReadOnlyList<string> Wanted(DnsAdapter adapter) => Providers is { } providers ? WantedFrom(providers.ActiveProvider, adapter) : [];
 
-    /// <summary>True when the adapter holds exactly the family servers it should, in order.</summary>
-    private static bool IsFamily(DnsAdapter adapter) => adapter.Servers.SequenceEqual(Wanted(adapter), StringComparer.OrdinalIgnoreCase);
+    /// <summary>One provider's servers for this adapter, by the same rule as <see cref="Wanted"/>.</summary>
+    private static IReadOnlyList<string> WantedFrom(FamilyDNSProvider provider, DnsAdapter adapter) => [.. adapter.HasIpv4 ? provider.Ipv4 : [], .. adapter.HasIpv6 ? provider.Ipv6 : []];
+
+    /// <summary>True when the adapter holds exactly the active provider's servers it should, in order.</summary>
+    private static bool IsFamily(DnsAdapter adapter) => FamilyServers.Count > 0 && adapter.Servers.SequenceEqual(Wanted(adapter), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True when the adapter holds exactly any known provider's servers it should, in order, which means SiteBlock set them (with the active provider, or with the one in use before a switch).</summary>
+    private static bool IsKnownFamily(DnsAdapter adapter) => Providers is { } providers && providers.Providers.Any(provider => adapter.Servers.SequenceEqual(WantedFrom(provider, adapter), StringComparer.OrdinalIgnoreCase));
 
     /// <summary>Reads the adapters back and returns the IDs of those that do not hold the servers just written for them (including adapters that disappeared or could not be read).</summary>
     private List<string> AdaptersThatDidNotTakeTheChange(IReadOnlyDictionary<string, IReadOnlyList<string>> written)

@@ -1,8 +1,10 @@
 SiteBlock for Windows - installing on this PC
 
 SiteBlock blocks the websites you choose in every browser and app on this PC, for everyone who uses it.
-It also always blocks adult websites: it sets this PC's DNS servers to Cloudflare for Families and turns on
-the adult-site filter and SafeSearch in Chrome, Edge, Brave and Firefox. Only uninstalling SiteBlock removes this.
+It also always blocks adult websites: it sets this PC's DNS servers to the CleanBrowsing Family Filter (which
+also blocks VPN and proxy sites and mixed-content sites such as Reddit, and forces SafeSearch and YouTube's
+restricted mode) and turns on the adult-site filter and SafeSearch in Chrome, Edge, Brave and Firefox. Only
+uninstalling SiteBlock removes this.
 Unblocking a site needs the SiteBlock password and then a waiting period, and uninstalling needs the password
 and then a 48-hour wait. Only install it if the person who uses this PC wants it.
 

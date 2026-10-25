@@ -10,7 +10,8 @@ import Testing
 // The tests that count checks ("unreachable" needs 3 failed checks in a row, 03 § 11) rely on two properties of the sandbox hooks: the checks run one at a time, and a check looks at the marker file when it starts and then sleeps the delay. So with a delay D, every check that fails because of a marker that appeared at time T started after T and lasts D, and N failed checks cannot end before T + N*D, however the daemon is scheduled. In a sandbox the re-check after a failed check comes one tick later (03 § 11), and a check also starts every tick, so with a long delay the next check starts as soon as the one before it has ended.
 
 // The four family servers in the order the design gives them (01 § Fixed Policy Values).
-private let familyServers = ["1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"]
+// The servers the daemon sets are the active provider's in the built-in providers file (FamilyDNSProvidersTests pins which provider that is).
+private let familyServers = FamilyDNSProviders.builtIn!.activeProvider.servers
 private let unreachableLine = "family DNS unreachable; using the network's own DNS until it answers"
 
 // Helpers that read and edit the stand-in network settings and the saved state.
@@ -569,14 +570,14 @@ struct DNSPlanTests {
             let out = result.stdout
             for expected in [
                 "Family DNS reachability: reachable",
-                "Family servers: 1.1.1.3, 1.0.0.3, 2606:4700:4700::1113, 2606:4700:4700::1003",
+                "Family servers: \(familyServers.joined(separator: ", "))",
                 "Network services: 5",
                 "- WIFI", "name: Wi-Fi", "interface type: IEEE80211", "current ServerAddresses: 192.168.1.1",
                 "- ETH", "name: Ethernet", "interface type: Ethernet", "current ServerAddresses: (none set by hand; the network's own DNS is used)",
                 "- OFF", "enabled: no", "skipped: yes, the service is disabled", "SiteBlock would set: nothing (the service is disabled)",
                 "- VPN", "interface type: VPN", "skipped: yes, VPN-type interface", "current ServerAddresses: 10.1.1.1, 10.1.1.2",
                 "- DONE", "SiteBlock would set: nothing (already the family servers)",
-                "SiteBlock would set: 1.1.1.3, 1.0.0.3, 2606:4700:4700::1113, 2606:4700:4700::1003 (the current servers would be saved first)",
+                "SiteBlock would set: \(familyServers.joined(separator: ", ")) (the current servers would be saved first)",
             ] { #expect(out.contains(expected), "missing \"\(expected)\" in:\n\(out)") }
             #expect(out.components(separatedBy: "enabled: yes").count - 1 == 4, "four services are enabled; output:\n\(out)")
             #expect(out.components(separatedBy: "skipped: no").count - 1 == 3, "three services are not skipped; output:\n\(out)")

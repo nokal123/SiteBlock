@@ -284,10 +284,15 @@ final class FamilyDNSMonitor {
     }
 }
 
-/// Keeps every network service's DNS servers set to Cloudflare for Families for as long as SiteBlock is installed, and lets the uninstaller put the original servers back. Cloudflare for Families refuses to look up adult sites, so this is the second layer of the adult content filter (the first is Chrome's policy file). The family servers are only used while they answer on the current network, and a change is only kept if it can be read back. Every method must be called on the engine queue.
+/// Keeps every network service's DNS servers set to the active family DNS provider (see `FamilyDNSProviders`, built into SiteBlock) for as long as SiteBlock is installed, and lets the uninstaller put the original servers back. A family DNS provider refuses to look up adult sites, so this is the second layer of the adult content filter (the first is Chrome's policy file). The family servers are only used while they answer on the current network, and a change is only kept if it can be read back. Every method must be called on the engine queue.
 final class DNSEnforcer {
-    /// The DNS servers every managed service is set to: Cloudflare for Families, two IPv4 and two IPv6 addresses.
-    static let familyServers = ["1.1.1.3", "1.0.0.3", "2606:4700:4700::1113", "2606:4700:4700::1003"]
+    /// The family DNS providers built into SiteBlock, or nil when the built-in file cannot be read (the tests make sure it is always readable).
+    static let providers = FamilyDNSProviders.builtIn
+    /// The DNS servers every managed service is set to: the active provider's two IPv4 and two IPv6 addresses. Empty when the providers file cannot be read; a pass then sets nothing and puts any overridden service's originals back.
+    static let familyServers = providers?.activeProvider.servers ?? []
+
+    /// True when the servers are any known provider's list, which means SiteBlock set them (with the active provider, or with the one in use before a switch).
+    static func isFamilyList(_ servers: [String]) -> Bool { providers?.isFamilyList(servers) ?? false }
     // A failure message that repeats is logged at most this often, so a persistent problem does not write a line every pass.
     private static let repeatedFailureLogInterval = Duration.seconds(60)
     // After a change to a service could not be read back, that service is left alone for this long (10 minutes), so a settings backend with a bug cannot be retried in a loop.
@@ -346,7 +351,8 @@ final class DNSEnforcer {
         let now = ContinuousClock.now
         let managed = services.filter(\.isManaged)
         // Services SiteBlock set earlier that still hold the family servers, and services that need the family servers now (leaving out any that are being left alone after a change that did not take effect).
-        let overridden = managed.filter { savedDNS[$0.id] != nil && $0.servers == DNSEnforcer.familyServers }
+        // A service still on the previous provider's servers after a switch also counts as overridden, so it gets its originals back if the family servers stop answering.
+        let overridden = managed.filter { savedDNS[$0.id] != nil && DNSEnforcer.isFamilyList($0.servers) }
         let candidates = managed.filter { $0.servers != DNSEnforcer.familyServers && !(retryNotBefore[$0.id].map { $0 > now } ?? false) }
         // With nothing to set and nothing set, there is no reason to ask the network anything.
         if overridden.isEmpty && candidates.isEmpty {
@@ -354,7 +360,8 @@ final class DNSEnforcer {
             return true
         }
 
-        if !check.reachable {
+        // An unreadable providers file leaves no family servers to set; that is handled like servers that do not answer, so no service is ever set to an empty list.
+        if !check.reachable || DNSEnforcer.familyServers.isEmpty {
             if familyReachable != false { log.log("family DNS unreachable; using the network's own DNS until it answers") }
             familyReachable = false
             return putOriginalsBack(for: overridden, savedDNS: savedDNS)

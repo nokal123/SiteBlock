@@ -162,11 +162,11 @@ public sealed class RestartAndEdgeTests
         using var daemon = SandboxDaemon.Start(prepare: d => File.WriteAllText(d.NetworkServicesPath, $$"""{ "{{v4only}}": { "name": "Old NIC", "ipv6": false, "servers": ["192.168.0.1"] } }"""));
         daemon.Setup();
 
-        Assert.True(Wait.Until(() => ServersOf(daemon, v4only).SequenceEqual(["1.1.1.3", "1.0.0.3"]), 5), daemon.NetworkServices().ToJsonString());
+        Assert.True(Wait.Until(() => ServersOf(daemon, v4only).SequenceEqual(Expected.FamilyIpv4Servers), 5), daemon.NetworkServices().ToJsonString());
         // Held steady: later passes do not keep "repairing" it toward the IPv6 servers.
         daemon.Send(new Request(Command.CancelDelayChange));
         Thread.Sleep(800);
-        Assert.Equal(["1.1.1.3", "1.0.0.3"], ServersOf(daemon, v4only));
+        Assert.Equal(Expected.FamilyIpv4Servers, ServersOf(daemon, v4only));
         Assert.Equal(0, daemon.LogCount("DNS settings repaired"));
     }
 
@@ -178,7 +178,8 @@ public sealed class RestartAndEdgeTests
         daemon.Setup();
         Assert.True(Wait.Until(() => ServersOf(daemon, ethernet).SequenceEqual(Expected.FamilyServers), 5));
         // The same content in an unusual layout: any rewrite by the daemon would change the text.
-        string handWritten = $$"""{"{{ethernet}}":{"name":"Ethernet","servers":["1.1.1.3","1.0.0.3","2606:4700:4700::1113","2606:4700:4700::1003"]}   }""";
+        string servers = string.Join(",", Expected.FamilyServers.Select(server => $"\"{server}\""));
+        string handWritten = $$"""{"{{ethernet}}":{"name":"Ethernet","servers":[{{servers}}]}   }""";
         SandboxDaemon.WriteAllText(daemon.NetworkServicesPath, handWritten);
 
         daemon.Send(new Request(Command.CancelDelayChange));

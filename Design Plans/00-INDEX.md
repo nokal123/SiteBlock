@@ -10,7 +10,7 @@
 - Every persisted field, every protocol field, every command and its password rule
 
 ### [02-core-components.md](02-core-components.md)
-**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting, version constants, the update check rules (version file, newer build, checksum)
+**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, the family DNS providers file and its reader, the reachability check, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting, version constants, the update check rules (version file, newer build, checksum)
 - Pure logic with no root access, all unit-testable
 
 ### [03-daemon-cli-app.md](03-daemon-cli-app.md)
@@ -55,7 +55,8 @@
 19b. `Sources/SiteBlockCore/ChromePolicy.swift`, `Sources/SiteBlockCore/BrowserPolicy.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer (and § 9 for the Chrome keys)
 19c. `Sources/siteblockd/AppGuard.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § AppGuard
 19e. `Sources/SiteBlockCore/DNSProbePacket.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)
-19f. `Sources/SiteBlockCore/FamilyDNSProbe.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)
+19f. `Sources/SiteBlockCore/FamilyDNSProbe.swift` — **Primary:** [02-core-components.md](02-core-components.md) § FamilyDNSProbe — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer (Reachability check)
+19k. `Sources/SiteBlockCore/FamilyDNSProviders.swift`, `Sources/SiteBlockCore/FamilyDNSProviders.json` — **Primary:** [02-core-components.md](02-core-components.md) § FamilyDNSProviders — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer, [04-infrastructure.md](04-infrastructure.md) § Package.swift
 19d. `Sources/siteblockd/DNSEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer
 19g. `Sources/siteblockd/BrowserPolicyEnforcer.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
 19h. `Sources/SiteBlockCore/PathRuleParser.swift` — **Primary:** [02-core-components.md](02-core-components.md) § PathRuleParser
@@ -84,7 +85,7 @@
 
 ### Windows
 
-30. `windows/src/SiteBlock.Core/*.cs` (the C# port of SiteBlockCore: `DomainNormalizer`, `Punycode`, `DomainExpander`, `PathRuleParser`, `TabRuleMatcher`, `TabReloadDecider`, `HostsFileEditor`, `PasswordHasher`, `Models`, `Protocol`, `Engine`, `StateStore`, `DaemonClient`, `Formatting`, `ConnectionLimiter`, `UninstallRule`, `TemporaryUnblockOptions`, `UpdateCheck`, `DNSProbePacket`, `FamilyDNSProbe`, `BrowserPolicy`, `ChromePolicy`, `WindowsBrowserPolicy`, `Peer`, `PipeNames`, `BuildInfo`, `JsonCoding`, `SwiftText`) — **Primary:** [06-windows.md](06-windows.md) § SiteBlock.Core (the C# port of SiteBlockCore) — **Also:** [02-core-components.md](02-core-components.md) (the rules each type implements)
+30. `windows/src/SiteBlock.Core/*.cs` (the C# port of SiteBlockCore: `DomainNormalizer`, `Punycode`, `DomainExpander`, `PathRuleParser`, `TabRuleMatcher`, `TabReloadDecider`, `HostsFileEditor`, `PasswordHasher`, `Models`, `Protocol`, `Engine`, `StateStore`, `DaemonClient`, `Formatting`, `ConnectionLimiter`, `UninstallRule`, `TemporaryUnblockOptions`, `UpdateCheck`, `DNSProbePacket`, `FamilyDNSProbe`, `FamilyDNSProviders`, `BrowserPolicy`, `ChromePolicy`, `WindowsBrowserPolicy`, `Peer`, `PipeNames`, `BuildInfo`, `JsonCoding`, `SwiftText`) — **Primary:** [06-windows.md](06-windows.md) § SiteBlock.Core (the C# port of SiteBlockCore; `FamilyDNSProviders.cs` and the embedded providers file) — **Also:** [02-core-components.md](02-core-components.md) (the rules each type implements)
 31. `windows/src/SiteBlock.Service/DaemonRuntime.cs` — **Primary:** [06-windows.md](06-windows.md) § DaemonRuntime — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime
 32. `windows/src/SiteBlock.Service/PipeServer.cs` — **Primary:** [06-windows.md](06-windows.md) § PipeServer — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SocketServer
 33. `windows/src/SiteBlock.Service/ConsoleSession.cs` — **Primary:** [06-windows.md](06-windows.md) § Flags (the console user's SID)
@@ -177,6 +178,14 @@
 - Limits of tab watching (permission refused, half-second delay, Firefox, Safari) → [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits
 - Live tab-watcher test → [05-testing-and-operations.md](05-testing-and-operations.md) § Installed-System Verification
 
+### Family DNS Provider
+- Switching the family DNS provider (change `active` in `FamilyDNSProviders.json` and release an update; nothing on an installed computer can change it) → [02-core-components.md](02-core-components.md) § FamilyDNSProviders
+- The providers file rules and the three known providers → [02-core-components.md](02-core-components.md) § FamilyDNSProviders
+- How the file is built into the Mac programs → [04-infrastructure.md](04-infrastructure.md) § Package.swift
+- How the file is built into the Windows programs and the Windows workflow trigger → [06-windows.md](06-windows.md) § SiteBlock.Core (Family DNS providers)
+- What the DNS enforcer does after a switch (known providers count as overridden, originals never replaced) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § DNSEnforcer, [06-windows.md](06-windows.md) § DNSEnforcer
+- What CleanBrowsing adds and the limits of the filter → [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Adult content filter), § Threat Model and Honest Limits
+
 ### Tamper Resistance
 - Hosts file self-repair → [03-daemon-cli-app.md](03-daemon-cli-app.md) § HostsEnforcer
 - Bypass-line removal → [02-core-components.md](02-core-components.md) § HostsFileEditor
@@ -198,6 +207,7 @@
 - Hosts file repair, `DataBasePath`, takeover → [06-windows.md](06-windows.md) § HostsEnforcer
 - Registry policy for Chrome, Edge, Brave and Firefox → [06-windows.md](06-windows.md) § SiteBlock.Core (Windows browser policy rules), § BrowserPolicyEnforcer
 - Family DNS on adapters → [06-windows.md](06-windows.md) § DNSEnforcer
+- Switching the family DNS provider → [06-windows.md](06-windows.md) § SiteBlock.Core (Family DNS providers)
 - Services, watchdog and tray app guards → [06-windows.md](06-windows.md) § ServiceGuard and the watchdog, § AppGuard
 - Folder access lists → [06-windows.md](06-windows.md) § Installed Paths and Permissions
 - Uninstall steps → [06-windows.md](06-windows.md) § Uninstaller
