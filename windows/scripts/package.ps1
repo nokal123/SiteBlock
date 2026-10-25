@@ -169,8 +169,8 @@ foreach ($name in $required) {
     if ($entries -notcontains $name) { Stop-WithError "the finished zip does not contain $name." }
 }
 
-# Step 6: describe the package. The commit is the full 40-character hash of the checked-out commit; without git it is
-# all zeros (and the build number is then 0, which the tray app never offers as an update). The checksum is lowercase.
+# Step 6: describe the package. The commit is the full 40-character hash of the checked-out commit, or all zeros when the
+# folder is not a git checkout. The checksum is lowercase.
 $commit = ''
 try {
     $commit = "$(& git -C $WindowsRoot rev-parse HEAD 2>$null)".Trim()

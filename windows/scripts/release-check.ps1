@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 # The "build" field of a version file as a number, or an error naming the file when it is missing or not a whole number.
 function Get-Build([string]$path) {
     # System.Text.Json rather than ConvertFrom-Json, which matches "Build" as "build" and reads a field through an array of objects. Only a top-level
-    # object whose exact key "build" holds a JSON whole number of 0 or more counts; text such as "95", 95.5, 95.0 and 1e3 are refused.
+    # object whose exact key "build" holds a JSON whole number of 0 or more counts (-0 is 0, as on the Mac); text such as "95", 95.5, 95.0 and 1e3 are refused.
     [long]$build = -1
     try {
         $document = [System.Text.Json.JsonDocument]::Parse([System.IO.File]::ReadAllText($path))
@@ -22,7 +22,7 @@ function Get-Build([string]$path) {
             $root = $document.RootElement
             $value = [System.Text.Json.JsonElement]::new()
             $ok = $root.ValueKind -eq [System.Text.Json.JsonValueKind]::Object -and $root.TryGetProperty('build', [ref]$value) -and
-                $value.ValueKind -eq [System.Text.Json.JsonValueKind]::Number -and $value.GetRawText() -match '^\d+$' -and $value.TryGetInt64([ref]$build)
+                $value.ValueKind -eq [System.Text.Json.JsonValueKind]::Number -and $value.TryGetInt64([ref]$build)
             if (-not $ok) { $build = -1 }
         } finally { $document.Dispose() }
     } catch { $build = -1 }

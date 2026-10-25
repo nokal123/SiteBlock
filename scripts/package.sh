@@ -138,9 +138,8 @@ done
 ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$ZIP"
 rm -rf "$STAGE"
 
-# Describe the package. The commit is the full 40-character hash of the checked-out commit. Without git (the build
-# number is then 0) it is all zeros, and the app ignores a version.json whose build is 0, so a package made without git
-# is never offered as an update. The checksum is written in lowercase hexadecimal, as the app expects.
+# Describe the package. The commit is the full 40-character hash of the checked-out commit, or all zeros when the folder
+# is not a git checkout. The checksum is written in lowercase hexadecimal, as the app expects.
 COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
     COMMIT="0000000000000000000000000000000000000000"
