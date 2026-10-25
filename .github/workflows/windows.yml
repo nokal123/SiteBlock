@@ -1,11 +1,13 @@
 # Builds, tests and packages SiteBlock for Windows whenever Windows code is pushed to the windows or master branch,
 # then installs the package for real on GitHub's Windows machine and runs the end-to-end checks (windows/scripts/e2e.ps1).
-# Only on master, it then publishes the package as a new GitHub Release windows-v<version>, and replaces the files of
-# the fixed release windows-latest, so the newest Windows build is always at one fixed download link:
+# Only on master, and only when the release number (SiteBlockBuildNumber in windows/version.props) is higher than the published
+# one, it then publishes the package as a new GitHub Release windows-v<version>, and replaces the files of the fixed release
+# windows-latest, so the newest Windows release is always at one fixed download link:
 #   https://github.com/nokal123/SiteBlock/releases/download/windows-latest/SiteBlock-Windows.zip
 # No Windows release is ever marked latest: the Mac app's updater reads releases/latest, which must stay the Mac package.
 # Steps: run every test project (a failing test stops the run, so a broken package is never published), run
-# windows/scripts/package.ps1, run windows/scripts/e2e.ps1, keep the zip and the logs as run artifacts, then publish.
+# windows/scripts/package.ps1, run windows/scripts/e2e.ps1, keep the zip and the logs as run artifacts, compare the build with the
+# published one (windows/scripts/release-check.ps1), then, for a new release only, publish.
 name: Windows package
 
 on:
@@ -15,7 +17,7 @@ on:
     paths:
       - "windows/**"
       - ".github/workflows/windows.yml"
-      # The family DNS providers file is shared with the Mac source and built into the Windows programs, so a provider switch rebuilds and releases Windows too.
+      # The family DNS providers file is shared with the Mac source and built into the Windows programs, so a provider switch rebuilds and tests Windows too.
       - "Sources/SiteBlockCore/FamilyDNSProviders.json"
   # Also allows a manual run from the repository's Actions tab.
   workflow_dispatch:
@@ -43,9 +45,6 @@ jobs:
     steps:
       - name: Check out the code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          # The whole history, because the build number is the count of commits. A shallow checkout would count 1.
-          fetch-depth: 0
 
       - name: Set up .NET 10
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
@@ -121,13 +120,13 @@ jobs:
             exit $code
           }
 
-      # A build numbered 0 means the commit count could not be read; it would look older than every install, so the updater would never offer it.
-      # write-build-number.ps1 already stops on GitHub when the count is 0; this checks the packaged file itself, so a 0 can never reach a release.
+      # A build numbered 0 would look older than every install, so the updater would never offer it. package.ps1 already refuses a release number
+      # that is not above 0; this checks the packaged file itself, so a 0 can never reach a release.
       - name: Check the build number
         run: |
           $info = Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json
           if ([int]$info.build -le 0) {
-            Write-Host "::error title=Build number is 0::version-windows.json says build $($info.build); the commit count could not be read, so nothing is published."
+            Write-Host "::error title=Build number is 0::version-windows.json says build $($info.build), so nothing is published. Set SiteBlockBuildNumber in windows/version.props."
             exit 1
           }
           Write-Host "Build $($info.build), version $($info.displayVersion)."
@@ -156,26 +155,37 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      # Creates a release for this version, tagged windows-v<version> (for example windows-v1.0.3), not marked latest.
-      # A release that already exists for this version is left alone. Older releases are kept, so GitHub keeps each
-      # version's download counts (windows/scripts/stats.sh adds them up).
-      # The first Windows release must be 1.0.0. When no windows-v release exists yet and this build would publish as anything else, version.props'
-      # WindowsSeriesFirstBuild does not match master's commit count, and the run stops here, naming the number to set, instead of publishing a wrong first version.
-      - name: Check the first release is 1.0.0
+      # Compares this build with the published one. "release" means the release number was raised and this push is a release; "skip" means it was
+      # not, so the package is kept as a run artifact but not published, and windows-latest keeps the files of the last release. A lower number, or a
+      # published version-windows.json that cannot be read, stops the run, because guessing could publish a build installed copies never take.
+      - name: Decide whether this is a release
+        id: decide
         if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $info = Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json
-          $existing = @(gh release list --limit 200 --json tagName --jq '.[].tagName' | Where-Object { $_ -like 'windows-v*' })
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error title=Release list failed::gh release list exited $LASTEXITCODE"; exit 1 }
-          if ($existing.Count -eq 0 -and $info.displayVersion -ne '1.0.0') {
-            Write-Host "::error title=First Windows release is not 1.0.0::This build would publish as $($info.displayVersion). Set WindowsSeriesFirstBuild in windows/version.props to $($info.build) and push again."
+          New-Item -ItemType Directory -Path published -Force | Out-Null
+          gh release download windows-latest --pattern version-windows.json --dir published --clobber
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error title=Published version unreadable::Could not download version-windows.json from the windows-latest release, so nothing is published."
             exit 1
           }
+          $decision = pwsh -NoProfile -File windows/scripts/release-check.ps1 windows/dist/version-windows.json published/version-windows.json 2> published/check-error.txt
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error title=Not released::$((Get-Content -LiteralPath published/check-error.txt -Raw).Trim())"
+            exit 1
+          }
+          "decision=$decision" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ($decision -eq 'skip') {
+            $build = (Get-Content windows/dist/version-windows.json -Raw | ConvertFrom-Json).build
+            Write-Host "::notice title=Not a release::Build $build is already published. Raise SiteBlockBuildNumber in windows/version.props by one to release."
+          }
 
+      # Creates a release for this version, tagged windows-v<version> (for example windows-v1.0.3), not marked latest.
+      # A release that already exists for this version is left alone. Older releases are kept, so GitHub keeps each
+      # version's download counts (windows/scripts/stats.sh adds them up).
       - name: Publish this version as a release
-        if: github.ref == 'refs/heads/master'
+        if: steps.decide.outputs.decision == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -195,7 +205,7 @@ jobs:
       # build. The files are replaced in place (--clobber) instead of deleting and recreating the release, so the
       # release keeps its download counts. It is never marked latest.
       - name: Update the windows-latest release
-        if: github.ref == 'refs/heads/master'
+        if: steps.decide.outputs.decision == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

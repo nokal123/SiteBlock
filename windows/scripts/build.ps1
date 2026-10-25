@@ -54,9 +54,6 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# Write the build number (the commit count) first, so every program carries the same version.
-& (Join-Path $PSScriptRoot 'write-build-number.ps1')
-
 # Start from an empty output folder, so no file from an older build is left behind.
 if (Test-Path -LiteralPath $OutDir) { Remove-Item -LiteralPath $OutDir -Recurse -Force }
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null

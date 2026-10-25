@@ -16,9 +16,6 @@ if ! command -v swift >/dev/null 2>&1; then
     exit 1
 fi
 
-# Write the generated build number file (the commit count) before compiling, so every program shows the same version.
-scripts/write-build-number.sh
-
 # Compile each program. Building one product at a time keeps the error output readable.
 for product in siteblockd siteblock SiteBlockApp; do
     echo "==> Building $product (release)"
@@ -34,7 +31,7 @@ for product in siteblockd siteblock SiteBlockApp; do
     fi
 done
 
-# The version (set by hand in Models.swift, for example 1.2.0) and the build number (the commit count) come from the
+# The version (set by hand in Models.swift, for example 1.2.0) and the build number (the release number in Models.swift) come from the
 # built daemon, so the code has the only copy of both, and the app's Info.plist gets the same two values.
 VERSION_LINE="$("$BIN_DIR/siteblockd" --version)"
 # The daemon prints "siteblockd <version> (build <number>)", for example "siteblockd 1.2.0 (build 52)".

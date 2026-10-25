@@ -2,9 +2,15 @@ import Foundation
 
 /// The first two parts of the version people see. To start a new series (for example 1.3), change this and `siteBlockSeriesFirstBuild` together.
 public let siteBlockSeries = "1.2"
-/// The build number (commit count) of the first build in the current series, which is released as <series>.0.
+/// The build number of the first build in the current series, which is released as <series>.0.
 public let siteBlockSeriesFirstBuild = 51
-/// The version number people see: the series followed by how many builds came after the series' first one, so the series starts at 1.2.0 and counts 1.2.1, 1.2.2 and so on, and starts again at .0 when the series changes. A build made without git (build 0) reads <series>.0. Updates are ordered by the overall build number, never by this text, so starting again at .0 never hides an update.
+/// The release number. To publish a Mac release, raise it by one and push to master: GitHub's package workflow publishes a build only when this number is
+/// higher than the published one, so a push that leaves it alone is built and tested but not released. Installed copies take an update only when its number is
+/// higher than their own, so this number never goes down.
+public let siteBlockBuildNumber = 94
+/// The version number people see: the series followed by how far the build number is past the series' first build, so the series starts at 1.2.0 and counts
+/// 1.2.1, 1.2.2 and so on, one per release, and starts again at .0 when the series changes. Updates are ordered by the build number, never by this text, so starting
+/// again at .0 never hides an update.
 public let siteBlockMarketingVersion = "\(siteBlockSeries).\(max(0, siteBlockBuildNumber - siteBlockSeriesFirstBuild))"
 /// The version shown in the app, the CLI and the daemon's status reply, for example "1.2.0". The build number is shown only by `siteblockd --version`, which the build scripts read.
 public let siteBlockVersion = siteBlockMarketingVersion

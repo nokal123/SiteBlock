@@ -100,20 +100,20 @@ function Get-ZipEntryNames([string]$zipPath) {
     }
 }
 
-# Step 1: build both kinds of PC. build.ps1 writes the build number first, so both builds carry the same one.
+# Step 1: build both kinds of PC. Both read the build number from version.props, so both carry the same one.
 foreach ($target in $Targets) {
     & (Join-Path $PSScriptRoot 'build.ps1') -Runtime $target.Runtime -Configuration Release
     if ($LASTEXITCODE -ne 0) { Stop-WithError "the $($target.Runtime) build failed, so no package was made." }
 }
 
 # Step 2: work out the version. The programs cannot run on a Mac, so the numbers are read from the same files the
-# build used: version.props (the series and its first build) and BuildNumber.props (the commit count).
+# build used: version.props (the series, its first build and the release number).
 $series = Read-PropsValue (Join-Path $WindowsRoot 'version.props') 'WindowsSeries'
 $firstBuildText = Read-PropsValue (Join-Path $WindowsRoot 'version.props') 'WindowsSeriesFirstBuild'
-$buildText = Read-PropsValue (Join-Path $WindowsRoot 'BuildNumber.props') 'SiteBlockBuildNumber'
+$buildText = Read-PropsValue (Join-Path $WindowsRoot 'version.props') 'SiteBlockBuildNumber'
 if ($null -eq $series -or $series -notmatch '^\d+\.\d+$') { Stop-WithError "WindowsSeries in version.props must look like 1.0; it is '$series'." }
 if ($null -eq $firstBuildText -or $firstBuildText -notmatch '^\d+$') { Stop-WithError "WindowsSeriesFirstBuild in version.props must be a whole number; it is '$firstBuildText'." }
-if ($null -eq $buildText -or $buildText -notmatch '^\d+$') { Stop-WithError "BuildNumber.props has no build number; write-build-number.ps1 should have written it." }
+if ($null -eq $buildText -or $buildText -notmatch '^\d+$' -or [int]$buildText -le 0) { Stop-WithError "SiteBlockBuildNumber in version.props must be a whole number above 0; it is '$buildText'." }
 $build = [int]$buildText
 $patch = [Math]::Max(0, $build - [int]$firstBuildText)
 $displayVersion = "$series.$patch"

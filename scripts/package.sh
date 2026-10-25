@@ -18,9 +18,6 @@ set -euo pipefail
 # Work from the repository root, wherever the script is started from.
 cd "$(dirname "$0")/.."
 
-# Write the build number (the commit count) first; build.sh runs the same script again and finds nothing to change.
-scripts/write-build-number.sh
-
 # Build fresh release programs, so the package never ships stale ones.
 scripts/build.sh
 

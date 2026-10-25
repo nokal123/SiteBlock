@@ -4,12 +4,12 @@ using System.Reflection;
 namespace SiteBlock.Core;
 
 /// <summary>
-/// The version numbers of this build. Directory.Build.props writes the build number (the commit count), the series (such as 1.0) and the series' first build into every assembly as
+/// The version numbers of this build. Directory.Build.props writes the build number (the release number in version.props), the series (such as 1.0) and the series' first build into every assembly as
 /// <see cref="AssemblyMetadataAttribute"/> values, and this class reads them from the SiteBlock.Core assembly, so every program built from one checkout shows the same version.
 /// </summary>
 public static class BuildInfo
 {
-    /// <summary>The number of commits this build was made from, or 0 when it was built without git (or the value is missing or unreadable).</summary>
+    /// <summary>The release number this build was made with (<c>SiteBlockBuildNumber</c> in version.props), or 0 when the value is missing or unreadable.</summary>
     public static int BuildNumber { get; } = ReadInt("SiteBlockBuildNumber");
 
     /// <summary>The first two parts of the version people see, such as "1.0"; "1.0" when the value is missing.</summary>
@@ -19,8 +19,8 @@ public static class BuildInfo
     public static int SeriesFirstBuild { get; } = ReadInt("SiteBlockSeriesFirstBuild");
 
     /// <summary>
-    /// The version people see: the series followed by how many builds came after the series' first one, so the series starts at .0 and counts up.
-    /// A build made without git (build 0) reads &lt;series&gt;.0. Updates are ordered by the build number, never by this text.
+    /// The version people see: the series followed by how far the build number is past the series' first build, so the series starts at .0 and counts up by
+    /// one per release. Updates are ordered by the build number, never by this text.
     /// </summary>
     public static string MarketingVersion { get; } = $"{Series}.{Math.Max(0, BuildNumber - SeriesFirstBuild)}";
 

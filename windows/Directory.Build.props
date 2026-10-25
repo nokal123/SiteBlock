@@ -1,7 +1,6 @@
 <Project>
   <!-- Settings every SiteBlock for Windows project shares. -->
   <Import Project="$(MSBuildThisFileDirectory)version.props" />
-  <Import Project="$(MSBuildThisFileDirectory)BuildNumber.props" Condition="Exists('$(MSBuildThisFileDirectory)BuildNumber.props')" />
   <PropertyGroup>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
@@ -12,8 +11,6 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <Company>SiteBlock</Company>
     <Product>SiteBlock</Product>
-    <!-- BuildNumber.props is written by scripts/write-build-number; without it the build number is 0. -->
-    <SiteBlockBuildNumber Condition="'$(SiteBlockBuildNumber)' == ''">0</SiteBlockBuildNumber>
     <SiteBlockPatch>$([MSBuild]::Subtract($(SiteBlockBuildNumber), $(WindowsSeriesFirstBuild)))</SiteBlockPatch>
     <SiteBlockPatch Condition="$(SiteBlockPatch) &lt; 0">0</SiteBlockPatch>
     <Version>$(WindowsSeries).$(SiteBlockPatch)</Version>

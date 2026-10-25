@@ -1,9 +1,11 @@
-# Rebuilds the installable SiteBlock package whenever app code is pushed to master, and publishes it
-# as a new GitHub Release for that version, marked latest, so the newest version is always at one fixed download link:
+# Rebuilds and tests the installable SiteBlock package whenever app code is pushed to master. It publishes the package only
+# when the release number (siteBlockBuildNumber in Sources/SiteBlockCore/Models.swift) is higher than the published one, as a
+# new GitHub Release for that version, marked latest, so the newest version is always at one fixed download link:
 #   https://github.com/nokal123/SiteBlock/releases/latest/download/SiteBlock.zip
-# Steps: build on a fresh Apple Silicon Mac, run every test (a failing test stops the run, so a
-# broken package is never published), run scripts/package.sh, then publish SiteBlock.zip and version.json
-# as a new release v<version>, keeping the older releases and their download counts (the file the app reads to learn the newest version and the zip's checksum).
+# Steps: build on a fresh Apple Silicon Mac, run every test (a failing test stops the run, so a broken package is never
+# published), run scripts/package.sh, compare the build with the published one (scripts/release-check.sh), then, for a new
+# release only, publish SiteBlock.zip and version.json (the file the app reads to learn the newest version and the zip's
+# checksum) as a new release v<version>, keeping the older releases and their download counts.
 name: Build and publish package
 
 on:
@@ -40,9 +42,6 @@ jobs:
     steps:
       - name: Check out the code
         uses: actions/checkout@v6
-        with:
-          # The whole history, because the build number is the count of commits. A shallow checkout would count 1.
-          fetch-depth: 0
 
       - name: Show the build tools
         run: |
@@ -82,11 +81,34 @@ jobs:
             dist/version.json
           retention-days: 30
 
+      # Compares this build with the published one. "release" means the release number was raised and this push is a release;
+      # "skip" means it was not, so the package is kept as a run artifact but not published. A lower number, or a published
+      # version.json that cannot be read, stops the run, because guessing could publish a build installed copies never take.
+      - name: Decide whether this is a release
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p published
+          if ! gh release download --pattern version.json --dir published --clobber; then
+            echo "::error title=Published version unreadable::Could not download version.json from the latest release, so nothing is published."
+            exit 1
+          fi
+          if ! DECISION="$(scripts/release-check.sh dist/version.json published/version.json 2> published/check-error.txt)"; then
+            echo "::error title=Not released::$(cat published/check-error.txt)"
+            exit 1
+          fi
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          if [ "$DECISION" = "skip" ]; then
+            echo "::notice title=Not a release::Build $(plutil -extract build raw -o - dist/version.json) is already published. Raise siteBlockBuildNumber in Sources/SiteBlockCore/Models.swift by one to release."
+          fi
+
       # Creates a new release for this version, tagged v<version> (for example v1.2.3), and marks it as the latest one.
       # Older releases are kept, so GitHub keeps each version's download counts (scripts/stats.sh adds them up). The
       # links .../releases/latest/download/SiteBlock.zip and .../version.json always point at the release marked latest.
       # The one release once published under the tag "latest" is removed first, so that tag name never shadows those links.
       - name: Publish this version as the latest release
+        if: steps.decide.outputs.decision == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

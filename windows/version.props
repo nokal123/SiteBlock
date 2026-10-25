@@ -1,10 +1,12 @@
 <Project>
-  <!-- The Windows version people see is <WindowsSeries>.<builds since WindowsSeriesFirstBuild>. Change both together to start a new series. -->
+  <!-- The Windows version people see is <WindowsSeries>.<SiteBlockBuildNumber - WindowsSeriesFirstBuild>. Change the series and its first build together to start a new series. -->
   <PropertyGroup>
     <WindowsSeries>1.0</WindowsSeries>
-    <!-- The commit count of the first Windows build published from master, which is therefore 1.0.0. The commit that set it is number 88 on the windows branch;
-         master holds nothing windows lacks, so merging windows into master with a fast-forward right after makes that commit master's first Windows build. If more
-         commits land first, raise this to master's commit count at the merge; the workflow refuses to publish a first release that is not 1.0.0 and names the number. -->
+    <!-- The build number of the first Windows release, 1.0.0. -->
     <WindowsSeriesFirstBuild>88</WindowsSeriesFirstBuild>
+    <!-- The release number. To publish a Windows release, raise it by one and push to master: the Windows workflow publishes a build only when this number is
+         higher than the published one, so a push that leaves it alone is built and tested but not released. Installed copies take an update only when its number
+         is higher than their own, so this number never goes down. -->
+    <SiteBlockBuildNumber>94</SiteBlockBuildNumber>
   </PropertyGroup>
 </Project>

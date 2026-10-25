@@ -2,8 +2,6 @@ bin/
 obj/
 build/
 dist/
-# Written by scripts/write-build-number before every build
-BuildNumber.props
 TestResults/
 
 # Local memory folders written by Claude Code agents.
