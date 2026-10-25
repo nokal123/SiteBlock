@@ -193,7 +193,7 @@ scripts/build.sh && sudo scripts/install.sh && scripts/verify-install.sh
 
 Run the tests with `scripts/test.sh`. It adds the compiler flags that Swift Testing needs when only the Command Line Tools are installed, and leaves them out when Xcode is. The integration tests start the real `siteblockd` in sandbox mode, which uses a temporary folder in place of `/etc/hosts` and the system folders, so the tests need no administrator password.
 
-To build a package for other Macs, run `scripts/package.sh`. It writes `dist/SiteBlock.zip` and `dist/version.json` (the small file the app reads to learn the newest version). A GitHub Actions workflow (`.github/workflows/package.yml`) does the same on every push to `master` that changes the app: it builds on a fresh Apple Silicon Mac, runs every test, and replaces the "latest" release with the new zip and `version.json`. A failing test stops it, so a broken package is never published.
+To build a package for other Macs, run `scripts/package.sh`. It writes `dist/SiteBlock.zip` and `dist/version.json` (the small file the app reads to learn the newest version). A GitHub Actions workflow (`.github/workflows/package.yml`) builds the package on a fresh Apple Silicon Mac and runs every test on each push to `master` that changes the app. It publishes the zip and `version.json` as a new release only when the release number, `siteBlockBuildNumber` in `Sources/SiteBlockCore/Models.swift`, is higher than the published one, so a release means raising that number by one and pushing. A failing test stops it, so a broken package is never published.
 
 To see what SiteBlock finds on each network connection and what it would do about its DNS servers, run `build/siteblockd --print-dns-plan` (the installed copy is `/usr/local/libexec/siteblock/siteblockd`). It only reads and changes nothing, so it needs no administrator rights.
 
@@ -205,7 +205,7 @@ Building needs the .NET 10 SDK. On Windows, right-click `windows\Install SiteBlo
 powershell -ExecutionPolicy Bypass -File windows\scripts\build.ps1
 ```
 
-Run the tests on Windows with `dotnet test windows/SiteBlock.sln`. `windows/scripts/package.ps1` builds the Intel/AMD and Arm programs and writes `windows/dist/SiteBlock-Windows.zip`. The `.github/workflows/windows.yml` workflow runs every test, installs the package on a fresh Windows machine, runs the end-to-end checks (`windows/scripts/e2e.ps1`), and publishes the release.
+Run the tests on Windows with `dotnet test windows/SiteBlock.sln`. `windows/scripts/package.ps1` builds the Intel/AMD and Arm programs and writes `windows/dist/SiteBlock-Windows.zip`. The `.github/workflows/windows.yml` workflow runs every test, installs the package on a fresh Windows machine, and runs the end-to-end checks (`windows/scripts/e2e.ps1`). On `master` it publishes a release only when `SiteBlockBuildNumber` in `windows/version.props` is higher than the published one, so a Windows release means raising that number by one and pushing.
 
 ### Download counts
 
