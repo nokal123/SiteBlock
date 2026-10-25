@@ -16,7 +16,7 @@
 **Purpose:** Give every build the version `1.0.<build>`, where `<build>` is a release number kept by hand in `Models.swift`.
 
 **Sub-steps:**
-- 1a. `Models.swift` declares `public let siteBlockBuildNumber = 94`, the release number, next to `siteBlockSeries` and `siteBlockSeriesFirstBuild`. To release, it is raised by one and pushed to `master`; it never goes down.
+- 1a. `Models.swift` declares `public let siteBlockBuildNumber = 95`, the release number, next to `siteBlockSeries` and `siteBlockSeriesFirstBuild`. To release, it is raised by one and pushed to `master`; it never goes down.
 - 1b. The version people see is `siteBlockSeries` plus `max(0, siteBlockBuildNumber - siteBlockSeriesFirstBuild)`, and `siteBlockVersion` is that text.
 - 1c. `scripts/build.sh` reads the version from `siteblockd --version`, refuses a version that does not look like `1.0.<number>`, and writes `CFBundleShortVersionString` as `1.0.<build>` and `CFBundleVersion` as `<build>` into the built app's `Info.plist`. `Resources/Info.plist` keeps the placeholder values.
 - 1e. `siteblockd --version`, `siteblock version` and the first line of `siteblock status` print `siteblockd` or `siteblock` and the version, or `SiteBlock <version>`, as described in [03-daemon-cli-app.md](../03-daemon-cli-app.md).
