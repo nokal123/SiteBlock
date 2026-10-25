@@ -20,6 +20,7 @@ public sealed class FamilyDnsProviderSwitchTests
     private const string Ethernet = "{A2222222-2222-2222-2222-222222222222}";
     private const string OldNic = "{A3333333-3333-3333-3333-333333333333}";
     private const string Own = "{A4444444-4444-4444-4444-444444444444}";
+    private const string NewNic = "{A5555555-5555-5555-5555-555555555555}";
     private const string UnreachableLine = "family DNS unreachable; using the network's own DNS until it answers";
 
     // CleanBrowsing Family Filter, the active provider, and the two other known providers (02 § FamilyDNSProviders).
@@ -82,22 +83,26 @@ public sealed class FamilyDnsProviderSwitchTests
 
     // (a) 03 § DNSEnforcer pass step 1 and 06 "Known providers": an adapter on a previous provider's four servers is moved to CleanBrowsing's, and its record keeps the first
     // saved original; the previous provider's servers are never written into it, neither at the switch nor in the passes after it.
+    // A new adapter with no record appears at the same restart, so the switch pass has a new original to save and really writes the record; without it the record would not be
+    // saved at all and a pass that put the previous provider's servers into the existing entries could never show up in the state file.
     [Theory]
     [MemberData(nameof(PreviousProviders))]
     public void AdapterOnAPreviousProvidersServers_IsMovedToCleanBrowsing_AndKeepsItsRealOriginal(string previousName, string[] previous)
     {
         using var daemon = TwoAdaptersOverriddenThenStopped();
-        PutServers(daemon, (Wifi, previous), (Ethernet, previous));
+        PutServers(daemon, (Wifi, previous), (Ethernet, previous), (NewNic, ["10.0.0.1"]));
         daemon.Launch();
         daemon.WaitUntilReady();
+        var expected = new Dictionary<string, string>(TwoOriginals) { [NewNic] = "10.0.0.1" };
 
-        Assert.True(Wait.Until(() => ServersOf(daemon, Wifi).SequenceEqual(CleanBrowsing) && ServersOf(daemon, Ethernet).SequenceEqual(CleanBrowsing), 5), $"not every adapter left {previousName}: {daemon.NetworkServices().ToJsonString()}\n{daemon.LogText()}");
-        // Watch the record through later passes (the sandbox runs one every tick): it must only ever hold the real originals.
+        Assert.True(Wait.Until(() => new[] { Wifi, Ethernet, NewNic }.All(id => ServersOf(daemon, id).SequenceEqual(CleanBrowsing)), 5), $"not every adapter left {previousName}: {daemon.NetworkServices().ToJsonString()}\n{daemon.LogText()}");
+        // The originals are saved before any adapter is written, so once the adapters hold CleanBrowsing the record must already be the final one. Watch it through later passes
+        // (the sandbox runs one every tick): it must only ever hold the real originals plus the new adapter's own servers.
         var seen = new HashSet<string>();
         var clock = Stopwatch.StartNew();
         while (clock.Elapsed < TimeSpan.FromSeconds(1)) { seen.Add(Text(SavedDns(daemon))); Thread.Sleep(5); }
-        Assert.Equal([Text(TwoOriginals)], seen);
-        Assert.Equal(Text(TwoOriginals), Text(SavedDns(daemon, daemon.StateBackupPath)));
+        Assert.Equal([Text(expected)], seen);
+        Assert.Equal(Text(expected), Text(SavedDns(daemon, daemon.StateBackupPath)));
         Assert.Equal(CleanBrowsing, ServersOf(daemon, Wifi));
     }
 
@@ -152,19 +157,45 @@ public sealed class FamilyDnsProviderSwitchTests
     }
 
     // 03 § DNSEnforcer Uninstall, end to end after a switch: the uninstaller restores the servers saved before SiteBlock changed anything, not the previous provider's.
+    // As in (a), a new adapter with no record appears at the restart, so the switch pass saves the record to the state file the uninstall later reads.
     [Fact]
     public void UninstallAfterASwitch_RestoresTheRealOriginals_NotThePreviousProvider()
     {
         using var daemon = TwoAdaptersOverriddenThenStopped();
-        PutServers(daemon, (Wifi, Cloudflare), (Ethernet, Cloudflare));
+        PutServers(daemon, (Wifi, Cloudflare), (Ethernet, Cloudflare), (NewNic, ["10.0.0.1"]));
         daemon.Launch();
         daemon.WaitUntilReady();
         daemon.Setup();
-        Assert.True(Wait.Until(() => ServersOf(daemon, Wifi).SequenceEqual(CleanBrowsing) && ServersOf(daemon, Ethernet).SequenceEqual(CleanBrowsing), 5), daemon.NetworkServices().ToJsonString());
+        Assert.True(Wait.Until(() => new[] { Wifi, Ethernet, NewNic }.All(id => ServersOf(daemon, id).SequenceEqual(CleanBrowsing)), 5), daemon.NetworkServices().ToJsonString());
+        Assert.Equal(Text(new Dictionary<string, string>(TwoOriginals) { [NewNic] = "10.0.0.1" }), Text(SavedDns(daemon)));
 
         Assert.True(daemon.Send(new Request(Command.Uninstall, Password: Defaults.Password)).Ok);
         Assert.Equal(0, daemon.WaitForExit(15));
         Assert.Equal(["192.168.1.1"], ServersOf(daemon, Wifi));
         Assert.Empty(ServersOf(daemon, Ethernet));
+        Assert.Equal(["10.0.0.1"], ServersOf(daemon, NewNic));
+    }
+
+    // 06 "Known providers" says "any known provider's list FOR IT", and "Which servers an adapter wants" says an adapter with both IPv4 and IPv6 settings wants the IPv4 pair
+    // then the IPv6 pair. So Cloudflare's IPv4 pair alone on such an adapter is not Cloudflare's list for it: the adapter is not counted as overridden, and while the family
+    // servers do not answer its original is not put back, even though it has a record. Control: in the same pass an adapter holding Cloudflare's full four-server list with a
+    // record does get its original back, which shows the unreachable restore really ran.
+    [Fact]
+    public void AdapterWithBothFamilies_OnlyOnThePreviousProvidersIpv4Pair_IsNotRestoredWhenUnreachable()
+    {
+        using var daemon = TwoAdaptersOverriddenThenStopped();
+        PutServers(daemon, (Wifi, Cloudflare), (Ethernet, CloudflareIpv4));
+        File.WriteAllText(daemon.UnreachableMarkerPath, "");
+        daemon.Launch();
+        daemon.WaitUntilReady();
+
+        // "Unreachable" needs 3 failed checks in a row; the sandbox checks once per 0.2 s tick.
+        Assert.True(Wait.Until(() => ServersOf(daemon, Wifi).SequenceEqual(["192.168.1.1"]), 6), $"the control adapter on Cloudflare's four servers did not get its original back: {daemon.NetworkServices().ToJsonString()}\n{daemon.LogText()}");
+        // Ethernet's original is the empty list, so a wrong restore would show as an adapter with no servers. Wait through more passes before judging it.
+        Thread.Sleep(800);
+        Assert.Equal(CloudflareIpv4, ServersOf(daemon, Ethernet));
+        Assert.Equal(["192.168.1.1"], ServersOf(daemon, Wifi));
+        Assert.Equal(Text(TwoOriginals), Text(SavedDns(daemon)));
+        Assert.Equal(1, daemon.LogCount(UnreachableLine));
     }
 }

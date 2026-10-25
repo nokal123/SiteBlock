@@ -190,3 +190,22 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-10-25 — Family DNS: CleanBrowsing Family, chosen in one built-in providers file
+
+**Implemented:**
+- `Sources/SiteBlockCore/FamilyDNSProviders.json` lists the known family DNS services (CleanBrowsing Family Filter, Cloudflare for Families, AdGuard DNS Family Protection) and names the active one, `cleanbrowsing-family`. The Mac embeds it in SiteBlockCore and the Windows build embeds the same file in SiteBlock.Core, so switching means changing `active` and releasing; nothing on the installed computer can change it.
+- Both parsers check the same rules: ids not empty or repeated, `active` names a provider, two IPv4 and two IPv6 addresses each in standard form. Windows also rejects a file that is not a JSON object and an address with a zone index.
+- The DNS enforcers treat any known provider's list as family servers, so after a switch a service on the previous provider is moved to the new one and keeps its real original; the reachability probe checks the active provider's IPv4 pair. On Windows an adapter is given only the address families it has.
+- Tests: 44 new tests on both platforms, audited (17 mutants, 14 killed; the two real survivors were closed in one fix round and confirmed killed). Mac 1393 tests pass; Windows core 210 pass.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---
