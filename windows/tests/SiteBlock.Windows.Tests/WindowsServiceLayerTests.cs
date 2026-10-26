@@ -279,8 +279,10 @@ public sealed class BrowserPolicyEnforcerTests : IDisposable
         Assert.Equal((RegistryValueKind.String, (object?)"reddit.com"), chromeList["1"]);
     }
 
-    // Brave's TorDisabled (06 § SiteBlock.Core: DWORD 1) set by hand to the text "1", to DWORD 0, or deleted, in the real registry, is written back as DWORD 1 and logged for Brave only.
+    // Brave's TorDisabled (06 § SiteBlock.Core: DWORD 1) set by hand to the text "1", to DWORD 0, to QWORD 1 (the right number in the wrong type, which a browser ignores), or deleted,
+    // in the real registry, is written back as DWORD 1 and logged for Brave only.
     [Theory]
+    [InlineData("qword one")]
     [InlineData("text one")]
     [InlineData("dword zero")]
     [InlineData("deleted")]
@@ -291,6 +293,7 @@ public sealed class BrowserPolicyEnforcerTests : IDisposable
         {
             if (edit == "text one") brave.SetValue("TorDisabled", "1", RegistryValueKind.String);
             else if (edit == "dword zero") brave.SetValue("TorDisabled", 0, RegistryValueKind.DWord);
+            else if (edit == "qword one") brave.SetValue("TorDisabled", 1L, RegistryValueKind.QWord);
             else brave.DeleteValue("TorDisabled");
         }
 

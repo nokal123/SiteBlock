@@ -255,6 +255,7 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Mac: `BrowserTarget.brave` owns and writes `TorDisabled` = true (boolean) in `com.brave.Browser`, beside the other adult-filter keys; the uninstaller removes it with them.
 - Windows: `WindowsBrowserPolicy.Desired` writes `TorDisabled` (DWORD 1) under `SOFTWARE\Policies\BraveSoftware\Brave` and owns it, so a wrong type is rewritten and the uninstall removes it.
 - Brave reads this policy only when it starts (`dynamic_refresh: false` in brave-core's `TorDisabled.yaml`), so an already-open Brave keeps the Tor window until it restarts. README and design plans say so.
+- Tests: 16 new Mac cases and 20 new Windows cases plus updated Brave expectations; audited (15 mutants, all killed); the fix round re-checks TorDisabled during the uninstall wait and adds a QWORD 1 hand edit. 1440 Mac tests pass.
 
 **User's summary:**
 > Gate waived for this project (user decision, 2026-10-13).

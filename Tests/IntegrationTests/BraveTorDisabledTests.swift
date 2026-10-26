@@ -141,9 +141,21 @@ struct BraveTorDisabledTests {
             try editPlist(at: chromePath) { $0["TorDisabled"] = true }
             pause(0.5)
             for path in bravePaths { #expect(readText(path)?.contains(torTrueXML) == true, "TorDisabled must be in place before the uninstall: \(path)") }
+            // Started before the request, so it over-counts the time since the daemon began the 2 s uninstall wait.
+            let sinceRequest = Stopwatch()
             try daemon.send(.uninstall, password: password).requireOK()
             // The adult filter, TorDisabled included, stays on through the uninstall wait.
             #expect(bravePaths.allSatisfy { readText($0)?.contains(torTrueXML) == true }, "TorDisabled must stay while the uninstall counts down")
+            // The uninstall command runs one pass before it replies, so the check above only covers that pass. About 4 timed passes (tick 0.2 s) run in the next 0.8 s, and
+            // each must keep TorDisabled too.
+            pause(0.8)
+            let stillThere = bravePaths.filter { readText($0)?.contains(torTrueXML) == true }
+            let readAt = sinceRequest.elapsed
+            // The re-check means something only while the wait is still running: under 2 s since the request (never early), and the daemon still counting down.
+            try require(readAt < 1.8, "the re-check ran \(readAt) s after the uninstall request, too close to the 2 s wait to prove anything")
+            #expect(daemon.isRunning, "the daemon ended before the 2 s uninstall wait was over")
+            #expect((try? daemon.status().uninstallSecondsRemaining) != nil, "status no longer shows an uninstall countdown \(readAt) s into a 2 s wait")
+            #expect(stillThere == bravePaths, "TorDisabled must stay through the timed passes of the uninstall wait; \(readAt) s after the request only \(stillThere) of \(bravePaths) held it")
             let exit = try #require(daemon.waitForExit(timeout: 6.0), "the daemon never exited after the uninstall delay")
             #expect(exit.status == 0 && !exit.killedBySignal)
             for path in bravePaths {

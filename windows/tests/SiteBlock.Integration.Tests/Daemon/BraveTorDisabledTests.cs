@@ -43,8 +43,11 @@ public sealed class BraveTorDisabledTests
         }
     }
 
-    // A hand edit that sets TorDisabled to the string "1", the string "true", DWORD 0 or DWORD 2, or deletes it, is undone within a tick to DWORD 1 and logged for Brave.
+    // A hand edit that sets TorDisabled to the string "1", the string "true", DWORD 0, DWORD 2 or QWORD 1, or deletes it, is undone within a tick to DWORD 1 and logged for Brave.
+    // QWORD 1 holds the right number in another number type: registry.json stores it as {"type":"qword","value":1}, which the store reads as the wrong type (06 § Sandbox), and
+    // the design counts a value of the right name but the wrong type as wrong.
     [Theory]
+    [InlineData("qword", "1")]
     [InlineData("string", "\"1\"")]
     [InlineData("string", "\"true\"")]
     [InlineData("dword", "0")]
@@ -118,10 +121,26 @@ public sealed class BraveTorDisabledTests
         });
         daemon.SetupAndAdd("reddit.com");
         Assert.True(Wait.Until(() => BraveTorDisabledIsRight(daemon), RepairSeconds), daemon.Registry().ToJsonString());
+        // The uninstall wait is max(2 s fast minimum, delay); pinning the delay at 2 makes the wait exactly 2 s instead of depending on a default.
+        Assert.Equal(2L, daemon.Status().DelaySeconds);
 
+        // Started before the request, so it over-counts the time since the service began the 2 s uninstall wait.
+        var sinceRequest = System.Diagnostics.Stopwatch.StartNew();
         Assert.True(daemon.Send(new Request(Command.Uninstall, Password: Defaults.Password)).Ok);
         // TorDisabled stays during the uninstall wait: the adult filter is on until the uninstall finishes.
         Assert.True(BraveTorDisabledIsRight(daemon), daemon.Registry().ToJsonString());
+        // The uninstall command runs one pass before it replies, so the check above only covers that pass. About 4 timed passes (tick 0.2 s) run in the next 0.8 s, and each
+        // must keep TorDisabled too.
+        Thread.Sleep(TimeSpan.FromSeconds(0.8));
+        var midWait = daemon.Registry();
+        double readAt = sinceRequest.Elapsed.TotalSeconds;
+        // The re-check means something only while the wait is still running: under 2 s since the request (never early), and the service still counting down.
+        Assert.True(readAt < 1.8, $"the re-check ran {readAt} s after the uninstall request, too close to the 2 s wait to prove anything");
+        Assert.False(daemon.Process.HasExited, "the service ended before the 2 s uninstall wait was over");
+        Assert.NotNull(daemon.Status().UninstallSecondsRemaining);
+        var midValue = Expected.Value(Expected.Key(midWait, Expected.BraveKey), "TorDisabled");
+        Assert.True((string?)midValue?["type"] == "dword" && midValue["value"]?.ToJsonString() == "1", $"TorDisabled must stay through the timed passes of the uninstall wait; {readAt} s after the request: {midWait.ToJsonString()}");
+        Expected.AssertAdultFilterValues(midWait);
         Assert.Equal(0, daemon.WaitForExit(15));
 
         var registry = daemon.Registry();
