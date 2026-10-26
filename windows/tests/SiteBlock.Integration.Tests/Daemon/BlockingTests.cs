@@ -78,6 +78,10 @@ public sealed class BlockingTests
         Assert.Null(Expected.Value(Expected.Key(registry, Expected.EdgeKey), "SafeSitesFilterBehavior"));
         Assert.Null(Expected.Value(Expected.Key(registry, Expected.ChromeKey), "ForceBingSafeSearch"));
         Assert.Null(Expected.Value(Expected.Key(registry, Expected.BraveKey), "ForceBingSafeSearch"));
+        // TorDisabled is Brave's alone.
+        Assert.Null(Expected.Value(Expected.Key(registry, Expected.ChromeKey), "TorDisabled"));
+        Assert.Null(Expected.Value(Expected.Key(registry, Expected.EdgeKey), "TorDisabled"));
+        Assert.Null(Expected.Value(Expected.Key(registry, Expected.FirefoxKey), "TorDisabled"));
     }
 
     [Fact]

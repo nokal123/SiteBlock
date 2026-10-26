@@ -41,7 +41,7 @@ enum BrowserUnderTest: CaseIterable, CustomTestStringConvertible {
         switch self {
         case .chrome: return ["URLBlocklist", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch", "DnsOverHttpsMode"]
         case .edge: return ["URLBlocklist", "DnsOverHttpsMode", "ForceGoogleSafeSearch", "ForceBingSafeSearch"]
-        case .brave: return ["URLBlocklist", "DnsOverHttpsMode", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch"]
+        case .brave: return ["URLBlocklist", "DnsOverHttpsMode", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch", "TorDisabled"]
         case .firefox: return ["EnterprisePoliciesEnabled", "DNSOverHTTPS", "WebsiteFilter"]
         }
     }
@@ -62,6 +62,8 @@ enum BrowserUnderTest: CaseIterable, CustomTestStringConvertible {
             plist["DnsOverHttpsMode"] = "off"
             plist["SafeSitesFilterBehavior"] = 1
             plist["ForceGoogleSafeSearch"] = true
+            // 03 § 13: Brave also gets TorDisabled, a boolean true, in the same group as the filter keys (removes the "New Private Window with Tor" option).
+            plist["TorDisabled"] = true
         case .firefox:
             plist["EnterprisePoliciesEnabled"] = true
             plist["DNSOverHTTPS"] = ["Enabled": false, "Locked": true] as [String: Any]

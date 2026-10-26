@@ -40,7 +40,7 @@ private func isWholeNumber(_ value: Any?) -> Bool {
     @Test func eachTargetOwnsExactlyTheKeysTheDesignGivesIt() {
         #expect(BrowserTarget.chrome.managedKeys == ["URLBlocklist", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch", "DnsOverHttpsMode"])
         #expect(BrowserTarget.edge.managedKeys == ["URLBlocklist", "DnsOverHttpsMode", "ForceGoogleSafeSearch", "ForceBingSafeSearch"])
-        #expect(BrowserTarget.brave.managedKeys == ["URLBlocklist", "DnsOverHttpsMode", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch"])
+        #expect(BrowserTarget.brave.managedKeys == ["URLBlocklist", "DnsOverHttpsMode", "SafeSitesFilterBehavior", "ForceGoogleSafeSearch", "TorDisabled"])
         #expect(BrowserTarget.firefox.managedKeys == ["EnterprisePoliciesEnabled", "DNSOverHTTPS", "WebsiteFilter"])
     }
 
@@ -65,12 +65,15 @@ private func isWholeNumber(_ value: Any?) -> Bool {
         #expect(values["SafeSitesFilterBehavior"] == nil, "Edge does not get the Chrome-only key")
     }
 
-    @Test func braveValuesAreTheListSecureDNSOffSafeSitesAndGoogleSafeSearch() {
+    // 03 § 13: "Brave — URLBlocklist, DnsOverHttpsMode = "off", SafeSitesFilterBehavior = 1, ForceGoogleSafeSearch = true, TorDisabled = true (a boolean)".
+    @Test func braveValuesAreTheListSecureDNSOffSafeSitesGoogleSafeSearchAndTorDisabled() {
         let values = BrowserTarget.brave.managedValues(blockList: ["youtube.com"], adultFilter: true)
         #expect(Set(values.keys) == BrowserTarget.brave.managedKeys)
+        #expect(values["URLBlocklist"] as? [String] == ["youtube.com"])
         #expect(values["DnsOverHttpsMode"] as? String == "off")
         #expect(isWholeNumber(values["SafeSitesFilterBehavior"]) && (values["SafeSitesFilterBehavior"] as? Int) == 1)
         #expect(isBoolean(values["ForceGoogleSafeSearch"]) && (values["ForceGoogleSafeSearch"] as? Bool) == true)
+        #expect(isBoolean(values["TorDisabled"]) && (values["TorDisabled"] as? Bool) == true)
         #expect(values["ForceBingSafeSearch"] == nil)
     }
 

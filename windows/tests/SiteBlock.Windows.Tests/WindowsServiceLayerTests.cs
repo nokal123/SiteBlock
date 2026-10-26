@@ -191,6 +191,9 @@ public sealed class BrowserPolicyEnforcerTests : IDisposable
         Assert.False(edge.ContainsKey("SafeSitesFilterBehavior"));
         var brave = Read(@"SOFTWARE\Policies\BraveSoftware\Brave");
         Assert.Equal((RegistryValueKind.DWord, (object?)1), brave["SafeSitesFilterBehavior"]);
+        Assert.Equal((RegistryValueKind.DWord, (object?)1), brave["TorDisabled"]);
+        Assert.False(chrome.ContainsKey("TorDisabled"));
+        Assert.False(edge.ContainsKey("TorDisabled"));
         var firefoxDns = Read(@"SOFTWARE\Policies\Mozilla\Firefox\DNSOverHTTPS");
         Assert.Equal((RegistryValueKind.DWord, (object?)0), firefoxDns["Enabled"]);
         Assert.Equal((RegistryValueKind.DWord, (object?)1), firefoxDns["Locked"]);
@@ -274,6 +277,43 @@ public sealed class BrowserPolicyEnforcerTests : IDisposable
         var chromeList = Read(@"SOFTWARE\Policies\Google\Chrome\URLBlocklist");
         Assert.Equal(["1"], chromeList.Keys);
         Assert.Equal((RegistryValueKind.String, (object?)"reddit.com"), chromeList["1"]);
+    }
+
+    // Brave's TorDisabled (06 § SiteBlock.Core: DWORD 1) set by hand to the text "1", to DWORD 0, or deleted, in the real registry, is written back as DWORD 1 and logged for Brave only.
+    [Theory]
+    [InlineData("text one")]
+    [InlineData("dword zero")]
+    [InlineData("deleted")]
+    public void Enforce_BraveTorDisabledChangedByHand_IsWrittenBackAsDwordOneAndLoggedForBrave(string edit)
+    {
+        _enforcer.Enforce(Lists, adultFilter: true, causedByCommand: true);
+        using (var brave = _registry.Open(@"SOFTWARE\Policies\BraveSoftware\Brave", writable: true)!)
+        {
+            if (edit == "text one") brave.SetValue("TorDisabled", "1", RegistryValueKind.String);
+            else if (edit == "dword zero") brave.SetValue("TorDisabled", 0, RegistryValueKind.DWord);
+            else brave.DeleteValue("TorDisabled");
+        }
+
+        Assert.True(_enforcer.Enforce(Lists, adultFilter: true, causedByCommand: false));
+
+        Assert.Equal((RegistryValueKind.DWord, (object?)1), Read(@"SOFTWARE\Policies\BraveSoftware\Brave")["TorDisabled"]);
+        Assert.Contains("browser policy repaired (Brave)", LogText());
+        Assert.DoesNotContain("browser policy repaired (Chrome)", LogText());
+    }
+
+    // The uninstall pass removes TorDisabled and keeps Brave's key for a value SiteBlock does not own. (A key with nothing else left is deleted: see
+    // Enforce_UninstallPass_RemovesEveryOwnedValueAndDeletesKeysLeftEmpty, which needs TorDisabled gone too.)
+    [Fact]
+    public void Enforce_UninstallPass_RemovesTorDisabledAndKeepsBravesKeyForACompanyValue()
+    {
+        using (var brave = _registry.Create(@"SOFTWARE\Policies\BraveSoftware\Brave")) brave.SetValue("HomepageLocation", "https://intranet.example.org");
+        _enforcer.Enforce(Lists, adultFilter: true, causedByCommand: true);
+        Assert.Equal((RegistryValueKind.DWord, (object?)1), Read(@"SOFTWARE\Policies\BraveSoftware\Brave")["TorDisabled"]);
+
+        _enforcer.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true);
+
+        Assert.Equal(["HomepageLocation"], Read(@"SOFTWARE\Policies\BraveSoftware\Brave").Keys);
+        Assert.Null(_registry.Open(@"SOFTWARE\Policies\BraveSoftware\Brave\URLBlocklist"));
     }
 }
 

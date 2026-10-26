@@ -64,12 +64,12 @@ public enum BrowserTarget: CaseIterable, Sendable {
         switch self {
         case .chrome: return ChromePolicy.managedKeys
         case .edge: return [ChromePolicy.blocklistKey, ChromePolicy.dnsOverHTTPSKey, ChromePolicy.safeSearchKey, BrowserPolicy.bingSafeSearchKey]
-        case .brave: return [ChromePolicy.blocklistKey, ChromePolicy.dnsOverHTTPSKey, ChromePolicy.safeSitesKey, ChromePolicy.safeSearchKey]
+        case .brave: return [ChromePolicy.blocklistKey, ChromePolicy.dnsOverHTTPSKey, ChromePolicy.safeSitesKey, ChromePolicy.safeSearchKey, BrowserPolicy.braveTorDisabledKey]
         case .firefox: return [BrowserPolicy.firefoxEnabledKey, BrowserPolicy.firefoxDNSOverHTTPSKey, BrowserPolicy.firefoxWebsiteFilterKey]
         }
     }
 
-    /// The keys SiteBlock wants in this browser's policy file and their values. The block list key (`URLBlocklist`, or `WebsiteFilter` for Firefox) is included only when the list is not empty. The other keys are included only while `adultFilter` is true, which is always except during an uninstall. Types matter, because a browser ignores a policy of the wrong type: the Chrome-family keys use a whole number, a boolean and a string where each browser expects them, and Firefox's `DNSOverHTTPS` and `WebsiteFilter` are nested dictionaries.
+    /// The keys SiteBlock wants in this browser's policy file and their values. The block list key (`URLBlocklist`, or `WebsiteFilter` for Firefox) is included only when the list is not empty. The other keys are included only while `adultFilter` is true, which is always except during an uninstall. Types matter, because a browser ignores a policy of the wrong type: the Chrome-family keys use a whole number, a boolean and a string where each browser expects them (Brave's `TorDisabled` is a boolean), and Firefox's `DNSOverHTTPS` and `WebsiteFilter` are nested dictionaries.
     public func managedValues(blockList: [String], adultFilter: Bool) -> [String: Any] {
         var values: [String: Any] = [:]
         switch self {
@@ -82,6 +82,8 @@ public enum BrowserTarget: CaseIterable, Sendable {
             if self != .edge { values[ChromePolicy.safeSitesKey] = 1 }
             // Edge's Bing SafeSearch policy takes 2 for strict.
             if self == .edge { values[BrowserPolicy.bingSafeSearchKey] = 2 }
+            // Brave's "Private Window with Tor" sends its traffic through Tor, whose last relay looks names up, so neither the hosts file nor the family DNS servers reach it. The boolean true removes that window.
+            if self == .brave { values[BrowserPolicy.braveTorDisabledKey] = true }
         case .firefox:
             if !blockList.isEmpty { values[BrowserPolicy.firefoxWebsiteFilterKey] = ["Block": blockList] }
             guard adultFilter else { return values }
@@ -105,6 +107,8 @@ public enum BrowserPolicy {
 
     /// The key in Edge's policy file that makes Bing SafeSearch strict.
     public static let bingSafeSearchKey = "ForceBingSafeSearch"
+    /// The key in Brave's policy file that, set to true, turns off Brave's "Private Window with Tor". Brave reads it only when it starts.
+    public static let braveTorDisabledKey = "TorDisabled"
     /// The key in Firefox's policy file that turns enterprise policies on.
     public static let firefoxEnabledKey = "EnterprisePoliciesEnabled"
     /// The key in Firefox's policy file that holds the DNS-over-HTTPS settings dictionary.

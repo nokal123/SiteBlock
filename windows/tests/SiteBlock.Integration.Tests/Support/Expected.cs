@@ -79,7 +79,7 @@ internal static class Expected
     {
         [ChromeKey] = [("SafeSitesFilterBehavior", "dword", "1"), ("ForceGoogleSafeSearch", "dword", "1"), ("DnsOverHttpsMode", "string", "\"off\"")],
         [EdgeKey] = [("DnsOverHttpsMode", "string", "\"off\""), ("ForceGoogleSafeSearch", "dword", "1"), ("ForceBingSafeSearch", "dword", "2")],
-        [BraveKey] = [("DnsOverHttpsMode", "string", "\"off\""), ("SafeSitesFilterBehavior", "dword", "1"), ("ForceGoogleSafeSearch", "dword", "1")],
+        [BraveKey] = [("DnsOverHttpsMode", "string", "\"off\""), ("SafeSitesFilterBehavior", "dword", "1"), ("ForceGoogleSafeSearch", "dword", "1"), ("TorDisabled", "dword", "1")],
         [FirefoxDnsKey] = [("Enabled", "dword", "0"), ("Locked", "dword", "1")],
     };
 

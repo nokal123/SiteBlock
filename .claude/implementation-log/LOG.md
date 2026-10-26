@@ -247,3 +247,22 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-10-26 — Brave's Tor window turned off on Mac and Windows
+
+**Implemented:**
+- Cause: Brave's "New Private Window with Tor" sends its traffic through Tor, whose last relay looks site names up, so neither the hosts file nor the family DNS servers reach it; adult sites not on the block list would load there. Ordinary private windows in every browser stay filtered by the hosts file, the family DNS and the browser policies, so they are left available.
+- Mac: `BrowserTarget.brave` owns and writes `TorDisabled` = true (boolean) in `com.brave.Browser`, beside the other adult-filter keys; the uninstaller removes it with them.
+- Windows: `WindowsBrowserPolicy.Desired` writes `TorDisabled` (DWORD 1) under `SOFTWARE\Policies\BraveSoftware\Brave` and owns it, so a wrong type is rewritten and the uninstall removes it.
+- Brave reads this policy only when it starts (`dynamic_refresh: false` in brave-core's `TorDisabled.yaml`), so an already-open Brave keeps the Tor window until it restarts. README and design plans say so.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---

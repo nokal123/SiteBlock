@@ -91,6 +91,9 @@ public static class BrowserPolicy
     /// <summary>The Edge policy name that makes Bing SafeSearch strict (value 2).</summary>
     public const string BingSafeSearchKey = "ForceBingSafeSearch";
 
+    /// <summary>The Brave policy name that, set to 1, turns off Brave's "Private Window with Tor". Brave reads it only when it starts.</summary>
+    public const string BraveTorDisabledKey = "TorDisabled";
+
     /// <summary>
     /// Cuts the block list to <paramref name="limit"/> entries when it is too long, keeping the whole-site entries before the path entries so a long list of path rules can never push a whole-site block out.
     /// Returns the entries to write (sorted, so the registry holds the same list on every pass) and how many were left out.

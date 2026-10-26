@@ -93,7 +93,7 @@ public static class WindowsBrowserPolicy
     /// <summary>
     /// What SiteBlock wants in the browser's registry key.
     /// The block list is included only when it is not empty, and cut to 1,000 entries with whole-site entries kept first.
-    /// The adult-filter values (SafeSearch, Secure DNS off, and for Chrome and Brave the SafeSites filter) are included only while <paramref name="adultFilter"/> is true, which is always except during an uninstall.
+    /// The adult-filter values (SafeSearch, Secure DNS off, for Chrome and Brave the SafeSites filter, and for Brave the Tor window turned off) are included only while <paramref name="adultFilter"/> is true, which is always except during an uninstall.
     /// The Owned sets are the same whatever the flag and the lists are, so a pass with the filter off and empty lists still knows what to remove.
     /// </summary>
     public static RegistryPolicy Desired(BrowserTarget target, BrowserBlockLists lists, bool adultFilter)
@@ -132,11 +132,14 @@ public static class WindowsBrowserPolicy
                 // Edge has no SafeSites policy here; it gets strict Bing SafeSearch (2) instead.
                 if (target == BrowserTarget.Edge) wanted[ChromePolicy.BingSafeSearchKey] = RegValue.DWord(2);
                 else wanted[ChromePolicy.SafeSitesKey] = RegValue.DWord(1);
+                // Brave's "Private Window with Tor" sends its traffic through Tor, whose last relay looks names up, so neither the hosts file nor the family DNS servers reach it. DWORD 1 removes that window.
+                if (target == BrowserTarget.Brave) wanted[BrowserPolicy.BraveTorDisabledKey] = RegValue.DWord(1);
             }
             if (wanted.Count > 0) values[""] = wanted;
 
             var owned = new HashSet<string>(StringComparer.Ordinal) { ChromePolicy.DnsOverHttpsKey, ChromePolicy.SafeSearchKey };
             owned.Add(target == BrowserTarget.Edge ? ChromePolicy.BingSafeSearchKey : ChromePolicy.SafeSitesKey);
+            if (target == BrowserTarget.Brave) owned.Add(BrowserPolicy.BraveTorDisabledKey);
             ownedValues[""] = owned;
         }
 

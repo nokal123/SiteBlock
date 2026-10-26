@@ -408,12 +408,13 @@ function Test-EdgePolicy {
     Assert-PolicyList "$key\URLBlocklist" $TestDomain
 }
 
-# Brave's policy key holds the adult-filter values and a block list with the site.
+# Brave's policy key holds the adult-filter values (TorDisabled among them) and a block list with the site.
 function Test-BravePolicy {
     $key = 'SOFTWARE\Policies\BraveSoftware\Brave'
     Assert-PolicyValue $key 'DnsOverHttpsMode' String 'off'
     Assert-PolicyValue $key 'SafeSitesFilterBehavior' DWord 1
     Assert-PolicyValue $key 'ForceGoogleSafeSearch' DWord 1
+    Assert-PolicyValue $key 'TorDisabled' DWord 1
     Assert-PolicyList "$key\URLBlocklist" $TestDomain
 }
 

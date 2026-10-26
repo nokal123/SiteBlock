@@ -46,15 +46,17 @@ public sealed class WindowsBrowserPolicyTests
         Assert.False(values.ContainsKey("SafeSitesFilterBehavior"));
     }
 
+    // 06 § SiteBlock.Core: Brave gets the Chrome-style adult values plus TorDisabled (DWORD 1), which removes the "New Private Window with Tor" option.
     [Fact]
-    public void Desired_BraveWithTheFilterOn_HoldsTheChromeStyleAdultValues()
+    public void Desired_BraveWithTheFilterOn_HoldsTheChromeStyleAdultValuesAndTorDisabled()
     {
         var values = TopValues(WindowsBrowserPolicy.Desired(BrowserTarget.Brave, RedditAndShorts, adultFilter: true));
 
-        Assert.Equal(3, values.Count);
+        Assert.Equal(4, values.Count);
         Assert.Equal(RegValue.Str("off"), values["DnsOverHttpsMode"]);
         Assert.Equal(RegValue.DWord(1), values["SafeSitesFilterBehavior"]);
         Assert.Equal(RegValue.DWord(1), values["ForceGoogleSafeSearch"]);
+        Assert.Equal(RegValue.DWord(1), values["TorDisabled"]);
     }
 
     [Fact]
@@ -127,7 +129,7 @@ public sealed class WindowsBrowserPolicyTests
     [Theory]
     [InlineData(BrowserTarget.Chrome, "", new[] { "DnsOverHttpsMode", "ForceGoogleSafeSearch", "SafeSitesFilterBehavior" })]
     [InlineData(BrowserTarget.Edge, "", new[] { "DnsOverHttpsMode", "ForceBingSafeSearch", "ForceGoogleSafeSearch" })]
-    [InlineData(BrowserTarget.Brave, "", new[] { "DnsOverHttpsMode", "ForceGoogleSafeSearch", "SafeSitesFilterBehavior" })]
+    [InlineData(BrowserTarget.Brave, "", new[] { "DnsOverHttpsMode", "ForceGoogleSafeSearch", "SafeSitesFilterBehavior", "TorDisabled" })]
     [InlineData(BrowserTarget.Firefox, "DNSOverHTTPS", new[] { "Enabled", "Locked" })]
     public void Desired_OwnedSets_AreTheSameWhateverTheFlagAndTheLists(BrowserTarget target, string subkey, string[] ownedNames)
     {
