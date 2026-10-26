@@ -7,6 +7,6 @@
     <!-- The release number. To publish a Windows release, raise it by one and push to master: the Windows workflow publishes a build only when this number is
          higher than the published one, so a push that leaves it alone is built and tested but not released. Installed copies take an update only when its number
          is higher than their own, so this number never goes down. -->
-    <SiteBlockBuildNumber>94</SiteBlockBuildNumber>
+    <SiteBlockBuildNumber>95</SiteBlockBuildNumber>
   </PropertyGroup>
 </Project>

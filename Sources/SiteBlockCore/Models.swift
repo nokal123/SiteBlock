@@ -7,7 +7,7 @@ public let siteBlockSeriesFirstBuild = 95
 /// The release number. To publish a Mac release, raise it by one and push to master: GitHub's package workflow publishes a build only when this number is
 /// higher than the published one, so a push that leaves it alone is built and tested but not released. Installed copies take an update only when its number is
 /// higher than their own, so this number never goes down.
-public let siteBlockBuildNumber = 95
+public let siteBlockBuildNumber = 96
 /// The version number people see: the series followed by how far the build number is past the series' first build, so the series starts at 1.2.0 and counts
 /// 1.2.1, 1.2.2 and so on, one per release, and starts again at .0 when the series changes. Updates are ordered by the build number, never by this text, so starting
 /// again at .0 never hides an update.
