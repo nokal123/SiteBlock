@@ -70,7 +70,7 @@ struct BlockedListView: View {
 
     /// The one line under the "Blocked parts of sites" heading that says which browsers can enforce a part of a site.
     private var limitsNote: some View {
-        Text("Works in Chrome, Firefox, Edge and Brave. Safari can only block whole sites.")
+        Text("Works in Chrome, Firefox, Edge, Brave and Safari.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

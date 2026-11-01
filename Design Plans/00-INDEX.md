@@ -10,11 +10,11 @@
 - Every persisted field, every protocol field, every command and its password rule
 
 ### [02-core-components.md](02-core-components.md)
-**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, tab reload decisions, hosts file editing, password hashing, the family DNS providers file and its reader, the reachability check, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting, version constants, the update check rules (version file, newer build, checksum)
+**Open for:** SiteBlockCore library, domain parsing, Punycode, subdomain expansion, path rules, tab address matching, whole-site and path rules for the tab watcher, tab reload decisions, the blocked page, hosts file editing, password hashing, the family DNS providers file and its reader, the reachability check, Engine command rules, temporary unblock checks and tick rule, the menu choices of the temporary unblock form, state file, socket client, duration formatting, version constants, the update check rules (version file, newer build, checksum)
 - Pure logic with no root access, all unit-testable
 
 ### [03-daemon-cli-app.md](03-daemon-cli-app.md)
-**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, temporary unblock in the CLI and the panel, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge and Brave, Automation permission, the Updater (daily check, banner, download, checks, install with the Mac password)
+**Open for:** siteblockd flags, runtime loop, socket server, hosts enforcement, watchdog and self-repair, uninstall, CLI commands and exit codes, temporary unblock in the CLI and the panel, menu bar app screens, tab watcher, Apple Events bridge to Chrome, Edge, Brave and Safari, Automation permission, the Updater (daily check, banner, download, checks, install with the Mac password)
 
 ### [04-infrastructure.md](04-infrastructure.md)
 **Open for:** repository layout, Package.swift, Swift Testing setup, installed paths, sandbox mode, launchd plists, build, Info.plist keys, install, upgrade, version numbers, universal Mac programs, the installer's Mac check, `SiteBlock.zip` and `version.json`, automatic package builds
@@ -62,6 +62,7 @@
 19h. `Sources/SiteBlockCore/PathRuleParser.swift` — **Primary:** [02-core-components.md](02-core-components.md) § PathRuleParser
 19i. `Sources/SiteBlockCore/TabRuleMatcher.swift` — **Primary:** [02-core-components.md](02-core-components.md) § TabRuleMatcher — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 19j. `Sources/SiteBlockCore/TabReloadDecider.swift` — **Primary:** [02-core-components.md](02-core-components.md) § TabReloadDecider — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+19k. `Sources/SiteBlockCore/BlockedPage.swift` — **Primary:** [02-core-components.md](02-core-components.md) § BlockedPage — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 20. `Sources/siteblockd/Uninstaller.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Uninstaller
 21. `Sources/siteblock/main.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
 21a. `Sources/siteblock/Commands.swift`, `Sources/siteblock/PasswordPrompt.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § siteblock CLI
@@ -70,7 +71,7 @@
 22. `Sources/SiteBlockApp/*` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App
 22d. `Sources/SiteBlockApp/Updater.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (the update banner and the Settings version line), [02-core-components.md](02-core-components.md) § UpdateCheck
 22a. `Sources/SiteBlockApp/TabWatcher.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel and the permission banner)
-22b. `Sources/SiteBlockApp/ChromiumTabs.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+22b. `Sources/SiteBlockApp/BrowserTabs.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserTabs — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
 22c. `Sources/SiteBlockApp/Views/TemporaryUnblockForm.swift` — **Primary:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (the temporary unblock form) — **Also:** [02-core-components.md](02-core-components.md) § TemporaryUnblockOptions
 23. `Resources/Info.plist` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script (including the `NSAppleEventsUsageDescription` key)
 24. `scripts/build.sh`, `scripts/test.sh` — **Primary:** [04-infrastructure.md](04-infrastructure.md) § Build Script — **Also:** [04-infrastructure.md](04-infrastructure.md) § Version Numbers
@@ -169,14 +170,16 @@
 - Implementation steps → [Tasks/TASKS-09-update-check.md](Tasks/TASKS-09-update-check.md)
 
 ### Path Rules and Tab Watching
-- Tab watcher (reloads a tab that moved to a blocked part of a site without loading a page) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- Tab watcher (sends a tab on a blocked site, or on a blocked part of a site, to the blocked page, including a site blocked while the browser runs) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- Why a running browser keeps showing a just-blocked site (its cached policy copy, and a connection it already has open) → [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Blocked sites that a running browser keeps showing), [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer (Settings cache refresh)
 - In-page address changes (`pushState`) and what catches them → [01-overview-and-data.md](01-overview-and-data.md) § How Blocking Works (Blocking part of a site), [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
-- Which tab addresses fall under a path rule → [02-core-components.md](02-core-components.md) § TabRuleMatcher
-- Which tabs to reload, and why a tab is reloaded only once per address → [02-core-components.md](02-core-components.md) § TabReloadDecider
-- Apple Events bridge to Chrome, Edge and Brave → [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs
-- Apple Events / Automation permission (the macOS prompt, refusal, the panel banner) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs, § TabWatcher, § SiteBlock.app Menu Bar App (Panel states)
+- Which tab addresses fall under a whole-site or path rule, and how the rule list is built (`watchedTabRules`, `watchedPathRules`) → [02-core-components.md](02-core-components.md) § TabRuleMatcher
+- Which tabs to act on, and why a tab is acted on only once per address → [02-core-components.md](02-core-components.md) § TabReloadDecider
+- Apple Events bridge to Chrome, Edge, Brave and Safari → [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserTabs
+- The blocked page a tab is sent to (`data:` address, escaping) → [02-core-components.md](02-core-components.md) § BlockedPage
+- Apple Events / Automation permission (the macOS prompt, refusal, the panel banner) → [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserTabs, § TabWatcher, § SiteBlock.app Menu Bar App (Panel states)
 - `NSAppleEventsUsageDescription` and macOS asking again after an update → [04-infrastructure.md](04-infrastructure.md) § Build Script, § Upgrade Behavior
-- Limits of tab watching (permission refused, half-second delay, Firefox, Safari) → [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits
+- Limits of tab watching (permission refused, check delay of up to about 4.4 seconds for whole sites, Firefox, Safari private windows, command-line adds) → [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits
 - Live tab-watcher test → [05-testing-and-operations.md](05-testing-and-operations.md) § Installed-System Verification
 
 ### Family DNS Provider
@@ -241,14 +244,15 @@ The daemon and watchdog each check every 5 seconds that the other is loaded and 
 - [03-daemon-cli-app.md](03-daemon-cli-app.md) § LaunchdGuard and Watchdog, § Uninstaller
 - [04-infrastructure.md](04-infrastructure.md) § Launchd Jobs
 
-### A tab switches to a blocked part of a site without loading
-Browsers check their block lists only when a page loads, and some sites change the address inside a page that is already open. The daemon's `status` reply lists every path rule, including rules that are waiting to unblock. The menu bar app's StatusModel hands that list to the TabWatcher every time it applies a snapshot, leaving out a rule whose own temporary unblock is open, because the browsers' block lists do not hold an open rule. While a rule exists and Chrome, Edge or Brave is running, the TabWatcher asks ChromiumTabs every half second for the address of every open tab, using Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action). TabRuleMatcher and TabReloadDecider pick the tabs whose address falls under a rule and have not already been reloaded at that address. ChromiumTabs reloads each of them. A reload is a real page load, so the browser checks the `URLBlocklist` the daemon wrote and shows its block page. If the person refuses the Automation permission (the macOS setting that lets one app control another), ChromiumTabs reports the refusal, the TabWatcher publishes the browser's name, and the panel shows a banner.
+### A blocked site or part of a site shows in a tab that a browser's own block list missed
+Two things let a blocked page appear in a browser that is already running. A running browser keeps the copy of its block list that it read earlier, and a browser with a connection already open to a site keeps using that connection, so a site added a moment ago can still load, even in a new tab. And a site can change the address inside a page that is already open, without loading a new page, so a path rule is not applied. The daemon's `status` reply lists every blocked site and every path rule, including those waiting to unblock. The menu bar app's StatusModel builds `watchedTabRules` from it (one whole-site rule per host of the browsers' block list, then the path rules), leaving out an entry whose own temporary unblock is open, and hands it to the TabWatcher every time it applies a snapshot. While a rule exists and Chrome, Edge, Brave or Safari is running, the TabWatcher asks BrowserTabs for the address of every open tab, using Apple Events (the macOS mechanism one app uses to ask another app for data or to perform an action). It does so every 4 seconds when only whole sites are blocked and every half second while a path rule exists, and at once when the rule list changes. TabRuleMatcher and TabReloadDecider pick the tabs whose address falls under a rule and have not already been acted on at that address. BrowserTabs sets each of them to the blocked page that BlockedPage builds. If the person refuses the Automation permission (the macOS setting that lets one app control another), BrowserTabs reports the refusal, the TabWatcher publishes the browser's name, and the panel shows a banner.
 - **Rule list from the daemon:** [01-overview-and-data.md](01-overview-and-data.md) § Wire Protocol (StatusSnapshot), [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App (StatusModel)
-- **Address matching:** [02-core-components.md](02-core-components.md) § TabRuleMatcher
-- **Deciding what to reload:** [02-core-components.md](02-core-components.md) § TabReloadDecider
-- **Polling, permission handling and reloading:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
-- **Apple Events to the browser:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § ChromiumTabs
-- **The block page the reload produces:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer
+- **Address matching and the rule list:** [02-core-components.md](02-core-components.md) § TabRuleMatcher
+- **Deciding what to act on:** [02-core-components.md](02-core-components.md) § TabReloadDecider
+- **Polling, permission handling and sending tabs to the blocked page:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher
+- **Apple Events to the browser:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserTabs
+- **The blocked page:** [02-core-components.md](02-core-components.md) § BlockedPage
+- **Why a running browser's own block list is not enough:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § BrowserPolicyEnforcer (Settings cache refresh)
 - **Permission text and prompt:** [04-infrastructure.md](04-infrastructure.md) § Build Script
 - **Limits:** [01-overview-and-data.md](01-overview-and-data.md) § Threat Model and Honest Limits
 

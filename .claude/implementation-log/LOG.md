@@ -267,3 +267,24 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-11-01 — Tab watcher blocks whole sites in Chrome, Edge, Brave and Safari
+
+**Implemented:**
+- Cause: a site added while Chrome runs was not blocked, even in a new tab. A running Chrome keeps its process's cached copy of its managed policy, so its `URLBlocklist` stays old until restart (stopping cfprefsd only helps new processes; tested still unblocked 23 minutes later). Chrome and Safari also keep loading a site through connections they already have open after it is added to /etc/hosts (tested 90 seconds).
+- The menu bar app's tab watcher now watches whole blocked sites (`StatusSnapshot.watchedTabRules`, a whole site is a `WatchedPathRule` with path "/") as well as path rules, in Chrome, Edge, Brave and Safari, and sets a matching tab's address to a `data:` "Blocked by SiteBlock" page (`BlockedPage`) instead of reloading it. Path rules use the same page.
+- `ChromiumTabs` became `BrowserTabs` with Safari support: Safari tabs are named by position, and the change event names "every tab of window W whose URL is <address>", so a tab that shifted position is never changed (tested live).
+- Review fixes: a tab whose change failed is forgotten by the decider and retried on the next tick; while the panel is closed the app polls one second after the next countdown that changes the watched list ends.
+- Check timing (user decision): with only whole sites blocked the watcher checks every 4 seconds (about 3 Apple Events a second for four Chrome windows instead of about 26), checks at once whenever the rule list changes, and keeps half-second checks while a path rule exists.
+- Tests: 63 new cases across `WatchedTabRulesTests` (including `WatchedRulesCheckSecondsTests`), `BlockedPageTests` and `TabReloadDeciderForgetTabTests`; audited with 20 mutants (17 killed, gaps closed in the fix round and the two survivors re-checked as killed). 1503 Mac tests pass. Windows unchanged.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---

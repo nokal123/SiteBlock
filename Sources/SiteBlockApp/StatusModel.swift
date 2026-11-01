@@ -81,7 +81,7 @@ final class StatusModel: ObservableObject {
     @Published private(set) var closeCount = 0
     /// Goes up by one every time the panel opens, so the add field can take keyboard focus again.
     @Published private(set) var openCount = 0
-    /// The sorted names of the running browsers (Chrome, Edge, Brave) that the person has not allowed SiteBlock to control. The tab watcher cannot close blocked parts of sites in those browsers, so the panel shows a banner while this is not empty and a path rule exists.
+    /// The sorted names of the running browsers (Chrome, Edge, Brave, Safari) that the person has not allowed SiteBlock to control. The tab watcher cannot send blocked tabs to the blocked page in those browsers, so the panel shows a banner while this is not empty and the watcher has something to look for.
     @Published private(set) var deniedBrowserNames: [String] = []
 
     /// How often to ask the daemon for status while the panel is open.
@@ -112,7 +112,7 @@ final class StatusModel: ObservableObject {
     private var feedbackCounter = 0
     /// The timer that clears the current message.
     private var feedbackClearTask: Task<Void, Never>?
-    /// Watches browser tabs and reloads one that moved onto a blocked part of a site without loading a new page. It gets the path rules of every status snapshot that is applied, and reports the browsers that refused permission. It is created in `init` because its callback needs `self`.
+    /// Watches browser tabs and sends one that is on a blocked site or a blocked part of a site to the blocked page. It gets the rules of every status snapshot that is applied, and reports the browsers that refused permission. It is created in `init` because its callback needs `self`.
     private var tabWatcher: TabWatcher?
     /// Looks for a newer SiteBlock once a day and installs it when the person asks. The banner and Settings read its state through the model.
     let updater = Updater()
@@ -164,10 +164,12 @@ final class StatusModel: ObservableObject {
         }
     }
 
-    /// Runs one status poll and returns how long to wait before the next one.
+    /// Runs one status poll and returns how long to wait before the next one. With the panel closed that is 30 seconds, or less when a countdown that changes the tab watcher's rules ends sooner: then the next poll comes one second after it ends, so the daemon has already applied the change.
     private func pollOnce() async -> Double {
         await refresh()
-        return panelVisible ? Self.visiblePollSeconds : Self.hiddenPollSeconds
+        if panelVisible { return Self.visiblePollSeconds }
+        guard let seconds = snapshot?.secondsUntilWatchedRulesChange else { return Self.hiddenPollSeconds }
+        return min(Self.hiddenPollSeconds, Double(max(seconds, 0)) + 1)
     }
 
     /// Asks the daemon for its status and applies the answer. Does nothing when a poll is already waiting on the daemon.
@@ -344,8 +346,8 @@ final class StatusModel: ObservableObject {
         guard status != snapshot else { return }
         snapshot = status
         snapshotInstant = arrivedAt
-        // Every applied snapshot carries the full list of path rules (including those waiting to unblock, which are still blocked), so the watcher always works from the daemon's latest list. An identical answer has the same rules, so skipping it above loses nothing.
-        tabWatcher?.setRules(status.watchedPathRules)
+        // Every applied snapshot carries the full list of blocked sites and path rules (including those waiting to unblock, which are still blocked), so the watcher always works from the daemon's latest list. An identical answer has the same rules, so skipping it above loses nothing.
+        tabWatcher?.setRules(status.watchedTabRules)
     }
 
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Decides which browser tabs the tab watcher should reload, and remembers which tab it already reloaded at which address, so a tab that is showing the browser's block page is not reloaded over and over.
+/// Decides which browser tabs the tab watcher should act on (the Mac watcher sends them to the blocked page; the Windows watcher reloads them), and remembers which tab it already acted on at which address, so the same tab at the same address is not acted on over and over.
 public struct TabReloadDecider: Sendable {
     /// For each browser process id, the address the watcher last acted on for each of its tabs (keyed by tab id). A tab appears here only while its address matches a rule.
     private var memory: [Int32: [String: String]] = [:]
@@ -8,7 +8,7 @@ public struct TabReloadDecider: Sendable {
     /// Creates a decider that has not acted on any tab yet.
     public init() {}
 
-    /// Takes the complete tab list of one browser process and returns the ids of the tabs to reload now, in the order they were given. A tab is returned when its address matches a rule and the watcher has not already acted on that tab at that address; the address is then remembered. A tab that still matches at the address already remembered is left alone. A tab that no longer matches is forgotten, so going back to the blocked part later reloads it again, and so are tabs missing from the list. With no rules it returns nothing and forgets everything about the process.
+    /// Takes the complete tab list of one browser process and returns the ids of the tabs to act on now, in the order they were given. A tab is returned when its address matches a rule and the watcher has not already acted on that tab at that address; the address is then remembered. A tab that still matches at the address already remembered is left alone. A tab that no longer matches is forgotten, so going back to the blocked part later acts on it again, and so are tabs missing from the list. With no rules it returns nothing and forgets everything about the process.
     public mutating func tabsToReload(processID: Int32, tabs: [(id: String, url: String)], rules: [WatchedPathRule]) -> [String] {
         // With no rules there is nothing to act on, and nothing worth remembering.
         guard !rules.isEmpty else {
@@ -30,6 +30,13 @@ public struct TabReloadDecider: Sendable {
         // Only the tabs seen in this list survive, so the memory of tabs that closed is dropped here too.
         memory[processID] = updated.isEmpty ? nil : updated
         return toReload
+    }
+
+    /// Drops what is remembered about one tab, so the next list that shows it on a matching address returns it again. The tab watcher calls it when the change it was asked to make did not happen. A process left with no remembered tab has no entry, and an unknown process or tab changes nothing.
+    public mutating func forget(processID: Int32, tabID: String) {
+        guard var tabs = memory[processID] else { return }
+        tabs[tabID] = nil
+        memory[processID] = tabs.isEmpty ? nil : tabs
     }
 
     /// Drops what is remembered about every process that is not in `running`, because those browsers have quit.

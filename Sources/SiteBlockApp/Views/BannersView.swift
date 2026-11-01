@@ -65,9 +65,9 @@ struct BannersView: View {
         updateVisible || !snapshot.hostsFileHealthy || snapshot.lockoutSecondsRemaining != nil || snapshot.pendingDelay != nil || snapshot.uninstallSecondsRemaining != nil || snapshot.recoverySecondsRemaining != nil || feedback?.scope == .banner || needsBrowserPermission(snapshot: snapshot, deniedBrowserNames: deniedBrowserNames)
     }
 
-    /// True when the permission banner should show: at least one path rule exists (otherwise the tab watcher has nothing to do and the permission does not matter) and at least one running browser has refused control.
+    /// True when the permission banner should show: the tab watcher has at least one blocked site or path rule to look for (otherwise the permission does not matter) and at least one running browser has refused control.
     private static func needsBrowserPermission(snapshot: StatusSnapshot, deniedBrowserNames: [String]) -> Bool {
-        !deniedBrowserNames.isEmpty && !(snapshot.blockedPaths ?? []).isEmpty
+        !deniedBrowserNames.isEmpty && !snapshot.watchedTabRules.isEmpty
     }
 
     var body: some View {
@@ -173,11 +173,11 @@ struct BannersView: View {
         }
     }
 
-    /// Asks the person to let SiteBlock control the named browsers. Without that permission SiteBlock cannot see which address a tab is on, so a blocked part of a site that opens without a page load stays open until the next reload. A button opens the Automation page of System Settings, where the permission is switched on.
+    /// Asks the person to let SiteBlock control the named browsers. Without that permission SiteBlock cannot see which address a tab is on, so a site blocked while the browser is open, or a blocked part of a site that opens without a page load, can stay open in it. A button opens the Automation page of System Settings, where the permission is switched on.
     private func browserPermission(_ names: [String]) -> some View {
         BannerCard(icon: "hand.raised.fill", tint: .orange) {
             // ListFormatter writes "Google Chrome", "Brave and Google Chrome" or "Brave, Google Chrome, and Microsoft Edge".
-            Text("Let SiteBlock control \(ListFormatter.localizedString(byJoining: names)) so blocked parts of sites close right away.")
+            Text("Let SiteBlock control \(ListFormatter.localizedString(byJoining: names)) so blocked sites close right away.")
             Button("Open Settings") {
                 if let url = Self.automationSettingsURL { NSWorkspace.shared.open(url) }
             }

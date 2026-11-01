@@ -1,10 +1,13 @@
 import Foundation
 
-/// One path rule as the daemon reports it: a site plus the start of a path under it, such as youtube.com and /shorts. The tab watcher compares browser tab addresses against a list of these.
+/// One thing the tab watcher looks for: a site plus the start of a path under it, such as youtube.com and /shorts. A whole blocked site is a rule whose path is `/`, which every address starts with. The tab watcher compares browser tab addresses against a list of these.
 public struct WatchedPathRule: Hashable, Sendable {
+    /// The path of a rule that stands for a whole blocked site. A real path rule never has it, because a path rule has no trailing `/`.
+    public static let wholeSitePath = "/"
+
     /// The site name, already normalized the way the daemon stores it: lowercase, Punycode for non-ASCII letters, no leading `www.`, for example `youtube.com`.
     public let domain: String
-    /// The start of the path, beginning with `/`, in its original case and without a trailing `/` or `*`, for example `/shorts`.
+    /// The start of the path, beginning with `/`, in its original case and without a trailing `/` or `*`, for example `/shorts`; or `/` alone for a whole site.
     public let path: String
 
     /// Creates a rule from its two parts.
@@ -12,9 +15,25 @@ public struct WatchedPathRule: Hashable, Sendable {
         self.domain = domain
         self.path = path
     }
+
+    /// True when the rule stands for a whole blocked site rather than a part of one.
+    public var isWholeSite: Bool { path == Self.wholeSitePath }
+
+    /// The rule as people read it: the site name alone for a whole site (`x.com`), or the site and path joined (`youtube.com/shorts`).
+    public var displayText: String { isWholeSite ? domain : PathRuleParser.display(domain: domain, path: path) }
+
+    /// Seconds between tab checks while a path rule is watched. A site such as YouTube moves to a blocked part of itself without loading a page, and the content plays at once, so these checks stay frequent.
+    public static let pathRuleCheckSeconds = 0.5
+    /// Seconds between tab checks while only whole sites (or nothing) are watched. A tab on a blocked site has to be caught within about five seconds, and checking less often keeps the Apple Events sent to the browsers to a few a second.
+    public static let wholeSiteCheckSeconds = 4.0
+
+    /// How often the tab watcher looks at the tabs for this list of rules: every half second when it holds at least one path rule, otherwise every four seconds.
+    public static func checkSeconds(for rules: [WatchedPathRule]) -> Double {
+        rules.contains { !$0.isWholeSite } ? pathRuleCheckSeconds : wholeSiteCheckSeconds
+    }
 }
 
-/// Decides whether the address of an open browser tab falls under a path rule. The steps mirror what Chrome's `youtube.com/shorts` entry and Firefox's `*://*.youtube.com/shorts*` pattern match, so the tab watcher reloads only tabs that the browser will then block.
+/// Decides whether the address of an open browser tab falls under a rule (a whole site or a part of one). The steps mirror what Chrome's `youtube.com/shorts` entry and Firefox's `*://*.youtube.com/shorts*` pattern match, so the tab watcher acts on exactly the tabs the browsers' own block lists cover.
 public enum TabRuleMatcher {
     /// The two parts of a tab address that a rule is compared with.
     private struct Address {
@@ -73,5 +92,22 @@ public extension StatusSnapshot {
     /// The path rules the tab watcher looks for: every rule in the snapshot except those a temporary unblock currently has open, because an open rule is allowed for now and its tabs must be left alone. Rules waiting to open, or waiting to unblock for good, are still blocked, so they stay in. An older daemon that reports no path rules gives an empty list.
     var watchedPathRules: [WatchedPathRule] {
         (blockedPaths ?? []).filter { $0.temporaryUnblock?.isOpen != true }.map { WatchedPathRule(domain: $0.domain, path: $0.path) }
+    }
+
+    /// Everything the tab watcher looks for: one whole-site rule for each host the browsers' block list holds, followed by `watchedPathRules`. The hosts are those of every site whose temporary unblock is not open, shortened the way the browsers' list is (a host is left out when a parent domain of it is in the list) and normalized the way tab hosts are, so a listed `www.` name still matches. Whole-site rules come first, so a tab on a blocked site is reported under its site even when a path rule on that site also matches.
+    var watchedTabRules: [WatchedPathRule] {
+        let stillBlocked = blocked.filter { $0.temporaryUnblock?.isOpen != true }.map { BlockedSite(domain: $0.domain, hosts: $0.hosts) }
+        // A host the normalizer refuses could never equal a normalized tab host, so it is dropped; normalizing can also turn two hosts into one, which the set removes.
+        let hosts = Set(ChromePolicy.urlBlocklist(for: stillBlocked).compactMap { try? DomainNormalizer.normalize($0) }).sorted()
+        return hosts.map { WatchedPathRule(domain: $0, path: WatchedPathRule.wholeSitePath) } + watchedPathRules
+    }
+
+    /// Seconds until the earliest countdown that changes `watchedTabRules` ends, or nil when none is running: a temporary unblock that opens (its start wait) or closes (its window), or an unblock for good that removes a site or rule. The status model polls again at that moment while the panel is closed, so the tab watcher does not keep sending tabs of a site that has just opened to the blocked page, or miss a site whose window has just closed, for the rest of a 30-second wait.
+    var secondsUntilWatchedRulesChange: Int? {
+        let temporary = blocked.compactMap(\.temporaryUnblock) + (blockedPaths ?? []).compactMap(\.temporaryUnblock)
+        // A waiting unblock changes the list when it opens; an open one changes it when its window ends.
+        let temporaryEnds = temporary.map { $0.isOpen ? $0.secondsRemaining : ($0.opensInSeconds ?? $0.secondsRemaining) }
+        let unblockEnds = blocked.compactMap(\.unblockSecondsRemaining) + (blockedPaths ?? []).compactMap(\.unblockSecondsRemaining)
+        return (temporaryEnds + unblockEnds).min()
     }
 }

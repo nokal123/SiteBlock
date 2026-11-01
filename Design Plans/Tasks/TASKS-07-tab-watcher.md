@@ -1,7 +1,7 @@
 # Tasks: Tab Watcher
-> **Corresponds to:** [02-core-components.md](../02-core-components.md) § TabRuleMatcher, § TabReloadDecider; [03-daemon-cli-app.md](../03-daemon-cli-app.md) § TabWatcher, § ChromiumTabs, § SiteBlock.app Menu Bar App; [04-infrastructure.md](../04-infrastructure.md) § Build Script, § Automatic Package Builds; [05-testing-and-operations.md](../05-testing-and-operations.md) § Unit Tests, § Installed-System Verification
+> **Corresponds to:** [02-core-components.md](../02-core-components.md) § TabRuleMatcher, § TabReloadDecider; [03-daemon-cli-app.md](../03-daemon-cli-app.md) § TabWatcher, § BrowserTabs, § SiteBlock.app Menu Bar App; [04-infrastructure.md](../04-infrastructure.md) § Build Script, § Automatic Package Builds; [05-testing-and-operations.md](../05-testing-and-operations.md) § Unit Tests, § Installed-System Verification
 
-**Scope:** Add the tab watcher to the menu bar app. It reloads a Chrome, Edge or Brave tab that moves to a blocked part of a site without loading a page, so the browser's own block list then shows its block page. This covers two pure logic types in `SiteBlockCore`, the Apple Events bridge, the watcher, the permission banner, the Info.plist key, the failed-test annotations in the package workflow, and the tests.
+**Scope:** Add the tab watcher to the menu bar app. It sends a Chrome, Edge, Brave or Safari tab that is on a blocked site or a blocked part of a site to the SiteBlock blocked page (`BlockedPage`), using the rule list `watchedTabRules`. This covers two pure logic types in `SiteBlockCore`, the Apple Events bridge, the watcher, the permission banner, the Info.plist key, the failed-test annotations in the package workflow, and the tests.
 
 **Prerequisites:** [TASKS-06-audit-fixes.md](TASKS-06-audit-fixes.md) complete. Path rules already exist end to end (`PathRuleParser`, `addPath`, `StatusSnapshot.blockedPaths`, and the browser block lists). `scripts/test.sh` passes.
 
@@ -50,25 +50,25 @@
 
 ---
 
-## Step 3: ChromiumTabs
+## Step 3: BrowserTabs
 
-**File:** `Sources/SiteBlockApp/ChromiumTabs.swift`
-**Reference:** [03-daemon-cli-app.md](../03-daemon-cli-app.md) § ChromiumTabs
-**Purpose:** Talk to Chrome, Edge and Brave over Apple Events. The file imports only Foundation, AppKit and CoreServices and uses no other app file, so a test harness can compile it alone.
+**File:** `Sources/SiteBlockApp/BrowserTabs.swift`
+**Reference:** [03-daemon-cli-app.md](../03-daemon-cli-app.md) § BrowserTabs
+**Purpose:** Talk to Chrome, Edge, Brave and Safari over Apple Events. The file imports only Foundation, AppKit and CoreServices and uses no other app file, so a test harness can compile it alone.
 
 **Sub-steps:**
-- 3a. The supported browsers: `com.google.Chrome` ("Google Chrome"), `com.microsoft.edgemac` ("Microsoft Edge"), `com.brave.Browser` ("Brave"). The scripting codes: window class `cwin`, tab class `CrTb`, property `id` = `ID  `, property `URL` = `URL `, reload event class `CrSu` and event ID `Rlod`.
-- 3b. `static func runningBrowsers() -> [(pid: pid_t, bundleID: String, name: String)]` from `NSWorkspace.shared.runningApplications`, skipping terminated applications. Every process is addressed by its process ID with `NSAppleEventDescriptor(processIdentifier:)`.
+- 3a. The supported browsers: `com.google.Chrome` ("Google Chrome"), `com.microsoft.edgemac` ("Microsoft Edge"), `com.brave.Browser` ("Brave"), `com.apple.Safari` ("Safari"). The scripting codes: window class `cwin` and property `id` = `ID  ` for all; tab class `CrTb` and address property `URL ` for the Chromium browsers; tab class `bTab` and address property `pURL` for Safari. `enum BrowserKind` (`.chromium`, `.safari`) and `struct RunningBrowser` (`pid`, `bundleID`, `name`, `kind`) carry the difference.
+- 3b. `static func runningBrowsers() -> [RunningBrowser]` from `NSWorkspace.shared.runningApplications`, skipping terminated applications. Every process is addressed by its process ID with `NSAppleEventDescriptor(processIdentifier:)`.
 - 3c. `enum AutomationPermission` (`.allowed`, `.denied`, `.notAsked`, `.unavailable`) and `static func permission(pid: pid_t, ask: Bool) -> AutomationPermission` using `AEDeterminePermissionToAutomateTarget`. Map `noErr` to allowed, -1743 to denied, -1744 to notAsked, and anything else to unavailable. Comment that `ask: true` blocks until the person answers the prompt.
 - 3d. Object specifiers as `NSAppleEventDescriptor` records of type `obj ` (keys `want`, `from`, `form`, `seld`) using `formUniqueID` for "window id W" and "tab id T", `formAbsolutePosition` with `kAEAll` for "every", and `formPropertyID` for properties. IDs go back out with the descriptor type they arrived in.
-- 3e. `static func readTabs(pid: pid_t) throws -> [(windowID: String, tabID: String, url: String)]`: get the window IDs, then per window get the tab IDs, the tab addresses, and the tab IDs again. Use a window's tabs only when both ID lists are equal and the address list has the same count. IDs may arrive as integers or text and are stored as text.
-- 3f. `static func currentURL(pid:windowID:tabID:) throws -> String` and `static func reload(pid:windowID:tabID:) throws`.
+- 3e. `static func readTabs(_ browser: RunningBrowser) throws -> [BrowserTab]`: get the window IDs, then per window in a Chromium browser get the tab IDs, the tab addresses, and the tab IDs again; in Safari get the addresses in one event and use the positions "1", "2", ... as tab IDs. A window that throws -1728 or -1719 is skipped. Use a window's tabs only when both ID lists are equal and the address list has the same count. IDs may arrive as integers or text and are stored as text.
+- 3f. `static func currentURL(_:windowID:tabID:) throws -> String` and `static func open(_ url: String, in browser: RunningBrowser, windowID: String, tabID: String, currentURL: String) throws`. For Safari, `open` names every tab of the window whose URL equals `currentURL` with a test-form object specifier, so a shifted position is never changed.
 - 3g. Send every event with `sendEvent(options: [.waitForReply], timeout: 2)`.
 
 **Dependencies:** none inside the package.
 
 **Acceptance Criteria:**
-- [ ] With Chrome running and the permission allowed, `readTabs` returns one entry per open tab, and `reload` reloads exactly the named tab.
+- [ ] With Chrome running and the permission allowed, `readTabs` returns one entry per open tab, and `open` sets exactly the named tab to the new address.
 - [ ] With the permission denied, `permission(pid:ask: false)` returns `.denied` and the other functions throw instead of hanging.
 - [ ] `swift build` gives no warnings.
 
@@ -81,9 +81,9 @@
 **Purpose:** Run the watch loop in the menu bar app and feed it the daemon's path rules.
 
 **Sub-steps:**
-- 4a. A watcher class on its own serial queue with a repeating timer every 0.5 seconds (leeway 0.1 seconds). A tick still running when the next is due makes the next tick be skipped, never queued.
+- 4a. A watcher class on its own serial queue with a repeating timer whose interval is `WatchedPathRule.checkSeconds(for:)` (0.5 seconds with a path rule, 4 seconds otherwise; first armed at 4 seconds). `setRules` re-arms the timer with a deadline of now when the list changed. The leeway is 10% of the interval. A tick still running when the next is due makes the next tick be skipped, never queued.
 - 4b. `func setRules(_ rules: [WatchedPathRule])`. `StatusModel` calls it every time it applies a snapshot, passing `snapshot.blockedPaths` mapped to `domain` and `path`.
-- 4c. The eight tick steps in the design, in order: no rules clears the decider and ends the activity; no running browser forgets all memory and reports no denied browsers but keeps the activity; hold one `ProcessInfo.beginActivity` for as long as at least one rule exists; look up the permission (ask once per bundle identifier per app run, recheck a denial with `ask: false` at most every 10 seconds); read the tabs and skip a process on error; ask the decider, re-read each tab's current address, and reload only when it still matches; log each reload; forget exited processes.
+- 4c. The eight tick steps in the design, in order: no rules clears the decider and ends the activity; no running browser forgets all memory and reports no denied browsers but keeps the activity; hold one `ProcessInfo.beginActivity` for as long as at least one rule exists; look up the permission (ask once per bundle identifier per app run, recheck a denial with `ask: false` at most every 10 seconds); read the tabs and skip a process on error; ask the decider, re-read each tab's current address, and send the tab to the blocked page only when it still matches; log each change; forget exited processes.
 - 4d. Logging with `os.Logger(subsystem: "com.nokal.siteblock.app", category: "tabs")` at info level, naming the rule and never the full address, and logging permission changes.
 - 4e. `deniedBrowserNames: [String]` (sorted display names of running supported browsers whose permission is denied), published to `StatusModel` on the main actor whenever it changes.
 - 4f. The watcher sends no Apple Events when there are no rules or no supported browser is running.
@@ -92,7 +92,7 @@
 
 **Acceptance Criteria:**
 - [ ] With no path rule, a Chrome process receives no Apple Events from SiteBlock.
-- [ ] A tab that switches to the blocked part of a site with `history.pushState` is reloaded once, and is not reloaded again while it stays on that address.
+- [ ] A tab that switches to the blocked part of a site with `history.pushState` is sent to the blocked page once, and is not sent again while it stays on that address.
 - [ ] `swift build -c release --product SiteBlockApp` succeeds with no warnings.
 
 ---
@@ -141,7 +141,7 @@
 
 **Acceptance Criteria:**
 - [ ] `scripts/test.sh` passes in full.
-- [ ] In the live test, the watcher reloads the pushState tab exactly once and leaves the other tabs alone.
+- [ ] In the live test, the watcher sends the pushState tab to the blocked page exactly once and leaves the other tabs alone.
 
 ---
 

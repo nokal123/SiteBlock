@@ -27,16 +27,17 @@ SiteBlock/
 ├── Design Plans/
 ├── Sources/
 │   ├── SiteBlockCore/        library: all policy logic (see 02)
-│   │   ├── TabRuleMatcher.swift     does a tab address fall under a path rule (see 02)
-│   │   ├── TabReloadDecider.swift   which tabs to reload, each once per address (see 02)
+│   │   ├── TabRuleMatcher.swift     does a tab address fall under a whole-site or path rule; the watcher's rule lists (see 02)
+│   │   ├── TabReloadDecider.swift   which tabs to act on, each once per address (see 02)
+│   │   ├── BlockedPage.swift        the page a blocked tab is sent to, as a data: address (see 02)
 │   │   ├── UpdateCheck.swift        version file check, newer-build rule, checksum (see 02)
 │   │   ├── FamilyDNSProviders.swift reads the providers file (see 02)
 │   │   └── FamilyDNSProviders.json  the family DNS services and the active one, built into the programs (see 02)
 │   ├── siteblockd/           daemon + watchdog executable
 │   ├── siteblock/            CLI executable
 │   └── SiteBlockApp/         menu bar app executable
-│       ├── TabWatcher.swift         polls browser tabs and reloads blocked ones (see 03)
-│       ├── ChromiumTabs.swift       Apple Events bridge to Chrome, Edge and Brave (see 03)
+│       ├── TabWatcher.swift         polls browser tabs and sends blocked ones to the blocked page (see 03)
+│       ├── BrowserTabs.swift        Apple Events bridge to Chrome, Edge, Brave and Safari (see 03)
 │       └── Updater.swift            checks GitHub for a newer version and installs it on request (see 03)
 ├── Tests/
 │   ├── SiteBlockCoreTests/   unit tests (Swift Testing)
@@ -146,7 +147,7 @@ Every build has a version people see and a build number. The version is `<series
 3. Assemble `build/SiteBlock.app`:
    - `Contents/MacOS/SiteBlock` — the `SiteBlockApp` program.
    - `Contents/Info.plist` — from `Resources/Info.plist` with `CFBundleIdentifier` `com.nokal.siteblock.app`, `CFBundleName` `SiteBlock`, `CFBundleExecutable` `SiteBlock`, `LSUIElement` true, `LSMinimumSystemVersion` `14.0`, `CFBundleShortVersionString` set to the version people see and `CFBundleVersion` set to the build number.
-   - The template also carries `NSAppleEventsUsageDescription` = "SiteBlock checks the address of each open tab so a blocked part of a site closes as soon as you go to it." This is the sentence macOS shows in its prompt when the tab watcher first asks to control a browser (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher). Without the key, macOS refuses the app's Apple Events without asking. The app is signed ad hoc without the hardened runtime (Apple's stricter code-signing mode), so no entitlement is needed for Apple Events.
+   - The template also carries `NSAppleEventsUsageDescription` = "SiteBlock checks the address of each open tab so a blocked site, or a blocked part of a site, closes as soon as you go to it." This is the sentence macOS shows in its prompt when the tab watcher first asks to control a browser (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher). Without the key, macOS refuses the app's Apple Events without asking. The app is signed ad hoc without the hardened runtime (Apple's stricter code-signing mode), so no entitlement is needed for Apple Events.
 4. Copy `siteblockd` and `siteblock` into `build/`.
 5. Sign all three with an ad-hoc signature (`codesign --force --sign -`), which marks them as unchanged since build. Macs with an Apple chip refuse to run unsigned programs, and an ad-hoc signature needs no Apple developer account. `codesign` signs both copies inside each universal file. The script then verifies the signatures.
 6. Check every finished program in `build/` (`siteblockd`, `siteblock` and `SiteBlock.app/Contents/MacOS/SiteBlock`) with `lipo -verify_arch arm64 x86_64`, so a program missing either copy stops the build.
@@ -184,7 +185,7 @@ Running `install.sh` again replaces the programs and plists and restarts the job
 
 The "Update" button in the menu bar app runs this same script from an unzipped copy of the downloaded package, so an update behaves exactly like this upgrade (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § Updater). The new app starts with the new build number, and the update banner no longer shows.
 
-The ad hoc signature of the app changes with every build. After an upgrade, macOS may therefore ask again whether SiteBlock may control Chrome, Edge or Brave. Until the person answers, the tab watcher reads nothing from that browser, and a refusal makes the panel show the permission banner.
+The ad hoc signature of the app changes with every build. After an upgrade, macOS may therefore ask again whether SiteBlock may control Chrome, Edge, Brave or Safari. Until the person answers, the tab watcher reads nothing from that browser, and a refusal makes the panel show the permission banner.
 
 ---
 

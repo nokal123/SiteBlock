@@ -10,6 +10,7 @@
 5. [PathRuleParser](#3a-pathruleparser-sourcessiteblockcorepathruleparserswift)
 6. [TabRuleMatcher](#3b-tabrulematcher-sourcessiteblockcoretabrulematcherswift)
 7. [TabReloadDecider](#3c-tabreloaddecider-sourcessiteblockcoretabreloaddeciderswift)
+   - [BlockedPage](#3d-blockedpage-sourcessiteblockcoreblockedpageswift)
 8. [HostsFileEditor](#4-hostsfileeditor-sourcessiteblockcorehostsfileeditorswift)
 9. [PasswordHasher](#5-passwordhasher-sourcessiteblockcorepasswordhasherswift)
 10. [Models and Protocol Types](#6-models-and-protocol-types)
@@ -125,12 +126,16 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 
 ### 3b. TabRuleMatcher (`Sources/SiteBlockCore/TabRuleMatcher.swift`)
 
-**Purpose:** Decides whether the address shown in a browser tab falls under a path rule. It applies the same matching the browsers apply to their own block lists, so the tab watcher reloads only tabs that the browser will then block. It is a pure function over strings with no browser access.
+**Purpose:** Decides whether the address shown in a browser tab falls under a path rule. It applies the same matching the browsers apply to their own block lists, so the tab watcher acts only on tabs that the browser's own block list would also refuse. It is a pure function over strings with no browser access.
 
 **Types:**
-- `public struct WatchedPathRule: Hashable, Sendable` — one path rule as the daemon reports it in `StatusSnapshot.blockedPaths`.
+- `public struct WatchedPathRule: Hashable, Sendable` — one thing the tab watcher looks for: a part of a site, as the daemon reports it in `StatusSnapshot.blockedPaths`, or a whole blocked site.
   - `domain: String` — already normalized: lowercase, Punycode for non-ASCII labels, no leading `www.`.
-  - `path: String` — starts with `/`, keeps its case, and has no trailing `/` or `*`.
+  - `path: String` — starts with `/`, keeps its case, and has no trailing `/` or `*`. A whole blocked site is a rule whose path is `/` alone (`WatchedPathRule.wholeSitePath`). Every address path starts with `/`, so the matching steps below apply to it unchanged, and a real path rule never has this path because a path rule has no trailing `/`.
+  - `var isWholeSite: Bool` — true when `path` equals `wholeSitePath`.
+  - `static let pathRuleCheckSeconds = 0.5` and `static let wholeSiteCheckSeconds = 4.0` — how often the Mac tab watcher looks at the tabs.
+  - `static func checkSeconds(for rules: [WatchedPathRule]) -> Double` — `pathRuleCheckSeconds` when the list holds at least one path rule (a rule whose path is not `/`), otherwise `wholeSiteCheckSeconds`, including for an empty list. A path rule needs the short interval because a page can switch to it without loading; a whole site needs only the long one, which keeps the cost of the Apple Events low.
+  - `var displayText: String` — the rule as people read it: the domain alone for a whole site (`x.com`), otherwise `PathRuleParser.display` of the domain and path (`youtube.com/shorts`). The tab watcher logs it and shows it on the blocked page.
 - `public enum TabRuleMatcher` — holds the two functions below.
 
 **Key Methods:**
@@ -148,12 +153,15 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 **Behavioral notes:** The steps mirror what Chrome's `youtube.com/shorts` entry and Firefox's `*://*.youtube.com/shorts*` pattern match (see § PathRuleParser, Browser entries). The browsers treat the path as a plain prefix, which is why `/shortsXYZ` matches; the matcher does the same so that it never reloads a tab the browser would leave open. Because the user-info part is not the host, an address such as `https://youtube.com@other.com/shorts` is judged by `other.com`. A subdomain the normalizer refuses (one with an underscore, such as `a_b.youtube.com`, or a label longer than 63 characters) gives no match, so the watcher leaves that tab alone and the browser applies its block list on the next load.
 
 
-**Rules for the tab watcher:** `public extension StatusSnapshot { var watchedPathRules: [WatchedPathRule] }` turns a status snapshot into the list the tab watcher looks for: every path rule except one whose own temporary unblock is open (`temporaryUnblock?.isOpen == true`), because the browsers' block lists do not hold an open rule. Rules waiting to open or waiting to unblock for good stay in, because they are still blocked. A snapshot from an older daemon with no path rules gives an empty list.
+**Rules for the tab watcher:** `public extension StatusSnapshot` has two computed properties that turn a status snapshot into the list the tab watcher looks for.
+- `var watchedPathRules: [WatchedPathRule]` — every path rule except one whose own temporary unblock is open (`temporaryUnblock?.isOpen == true`), because the browsers' block lists do not hold an open rule. Rules waiting to open or waiting to unblock for good stay in, because they are still blocked. A snapshot from an older daemon with no path rules gives an empty list. The Windows tab watcher uses this list.
+- `var secondsUntilWatchedRulesChange: Int?` — the number of seconds until the earliest countdown that changes `watchedTabRules` ends, or nil when none is running. It is the smallest of, for every blocked site and every path rule: its temporary unblock's `secondsRemaining` when that unblock is open, its `opensInSeconds` (or `secondsRemaining` when `opensInSeconds` is missing) when it is waiting, and its `unblockSecondsRemaining`. The menu bar app's status model uses it to poll at that moment (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App, StatusModel).
+- `var watchedTabRules: [WatchedPathRule]` — one whole-site rule for each host of the browsers' block list, followed by `watchedPathRules`. The hosts come from every blocked site whose temporary unblock is not open, shortened the way the browsers' list is (`ChromePolicy.urlBlocklist`, which leaves out a host when a parent domain of it is in the list) and run through `DomainNormalizer.normalize`, so a listed `www.` name still matches a tab host. A host the normalizer refuses is dropped, because it could never equal a normalized tab host, and duplicates are removed. The whole-site rules are sorted by domain and come first, so a tab on a blocked site is reported under its site even when a path rule on that site also matches. The Mac tab watcher uses this list.
 ---
 
 ### 3c. TabReloadDecider (`Sources/SiteBlockCore/TabReloadDecider.swift`)
 
-**Purpose:** Decides which tabs to reload, and remembers which tab it has already acted on at which address, so a tab that is showing the browser's block page is never reloaded over and over. It is a value type with no browser access; the tab watcher feeds it the tab lists it reads.
+**Purpose:** Decides which tabs to act on (the Mac tab watcher sends them to the blocked page, the Windows tab watcher reloads them), and remembers which tab it has already acted on at which address, so a tab that is showing a block page is never acted on over and over. It is a value type with no browser access; the tab watcher feeds it the tab lists it reads.
 
 **Properties:**
 - Memory: for each process ID (`Int32`), a dictionary from tab ID (`String`) to the address the decider last acted on for that tab.
@@ -172,9 +180,24 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 **Behavioral notes:** A process whose tab list could not be read in a given tick is not passed to `tabsToReload` in that tick, so its memory is kept and a later successful read continues from it. Different processes never share memory, even when two of them use the same tab ID.
 
 
-**Forget(processId, tabId):** drops what is remembered about one tab, so the next list that shows it on a matching address returns it again; a process left with no remembered tab has no entry, and an unknown process or tab changes nothing. The Windows tab watcher calls it when a reload it was asked for did not happen and a retry falls due ([06-windows.md](06-windows.md) § TabWatcher).
+**Forget(processId, tabId):** `public mutating func forget(processID: Int32, tabID: String)` drops what is remembered about one tab, so the next list that shows it on a matching address returns it again; a process left with no remembered tab has no entry, and an unknown process or tab changes nothing. Both tab watchers call it when a change they were asked to make did not happen, so the next tick tries that tab again: the Mac watcher when the re-read of the tab's address fails, the re-read address no longer matches a rule, or setting the address fails ([03-daemon-cli-app.md](03-daemon-cli-app.md) § TabWatcher), and the Windows watcher when a retry falls due ([06-windows.md](06-windows.md) § TabWatcher).
 
 **Repeated tab id:** a browser never lists the same tab id twice in one answer, but when a list does, the tab is handled once, by its first appearance: that appearance decides whether the id is returned and which address is remembered, and later appearances are ignored.
+
+**Tab keys:** the decider treats a tab ID as opaque text. The Mac tab watcher passes each tab's `BrowserTab.key` ("<windowID>/<tabID>") as the ID, because Safari tab IDs are positions that are unique only inside one window.
+---
+
+### 3d. BlockedPage (`Sources/SiteBlockCore/BlockedPage.swift`)
+
+**Purpose:** Builds the page that the Mac tab watcher sets a tab to when the tab is on a blocked site or a blocked part of a site. The page travels inside its own address as a `data:` address (an address that holds the page itself), so it needs no file on disk and no server. A `data:` address is used because Safari refused to switch a web tab to a `file://` page set through Apple Events, while Chrome and Safari both accepted `data:`. A `data:` address matches no rule (`TabRuleMatcher` accepts only `http` and `https`), so a tab showing this page is left alone.
+
+**Key Methods:**
+- `BlockedPage.title` — the page title, "Blocked by SiteBlock".
+- `static func address(ruleText: String) -> String` — `data:text/html;charset=utf-8,` followed by the page HTML, percent-encoded. Every character except ASCII letters, digits and `-._~` is encoded, so `#` (which would start a fragment and cut the page short), `%` and every non-ASCII character are encoded.
+- `static func html(ruleText: String) -> String` — the page: the heading "<rule> is blocked", the line "SiteBlock blocked this page. To open it again, use the SiteBlock menu bar app.", and colors that follow the system's light or dark appearance. The rule text is HTML-escaped for `&`, `<`, `>`, `"` and `'`, one Unicode scalar at a time, so a rule can never add markup or script.
+
+**Dependencies:** Foundation only. The Windows port does not use it; the Windows tab watcher reloads the tab.
+
 ---
 
 ### 4. HostsFileEditor (`Sources/SiteBlockCore/HostsFileEditor.swift`)

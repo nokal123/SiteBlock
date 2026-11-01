@@ -716,3 +716,99 @@ private struct DeciderGenerator: RandomNumberGenerator {
         #expect(emptyRuleCalls > 10, "seed \(seed): only \(emptyRuleCalls) calls had no rules")
     }
 }
+
+// MARK: - forgetting one tab
+
+// Expected values come from 02-core-components.md § 3c TabReloadDecider, "Forget(processId, tabId)": `forget(processID:tabID:)` drops what is remembered
+// about one tab, so the next list that shows it on a matching address returns it again; a process left with no remembered tab has no entry; an unknown
+// process or tab changes nothing. The tab watcher calls it when the change it asked for did not happen, so the next tick tries that tab again.
+@Suite struct TabReloadDeciderForgetTabTests {
+    // A tab that was returned and remembered is returned again by the next identical list once it is forgotten, and remembered again after that.
+    @Test func aForgottenTabIsReturnedAgainByTheSameList() {
+        var d = TabReloadDecider()
+        let tabs = [tab("w1/1", blocked(1))]
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == ["w1/1"])
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == [], "control: without forget the same list returns nothing")
+        d.forget(processID: 7, tabID: "w1/1")
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == ["w1/1"])
+        #expect(d.remembered(processID: 7) == ["w1/1": blocked(1)])
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == [])
+    }
+
+    // Forgetting the last remembered tab of a process leaves that process with nothing remembered.
+    @Test func forgettingTheLastTabLeavesTheProcessEmpty() {
+        var d = TabReloadDecider()
+        _ = d.tabsToReload(processID: 7, tabs: [tab("a", blocked(1))], rules: rules)
+        d.forget(processID: 7, tabID: "a")
+        #expect(d.remembered(processID: 7) == [:])
+        // The emptied process behaves exactly like a new one.
+        #expect(d.tabsToReload(processID: 7, tabs: [tab("a", blocked(1))], rules: rules) == ["a"])
+    }
+
+    // Forgetting one tab keeps the other tabs of the same process, which stay suppressed, and the forgotten tab alone comes back.
+    @Test func forgettingOneTabLeavesTheOtherTabsOfTheProcess() {
+        var d = TabReloadDecider()
+        let tabs = [tab("a", blocked(1)), tab("b", blocked(2)), tab("c", blocked(3))]
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == ["a", "b", "c"])
+        d.forget(processID: 7, tabID: "b")
+        #expect(d.remembered(processID: 7) == ["a": blocked(1), "c": blocked(3)])
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == ["b"])
+    }
+
+    // Two processes never share memory, even with the same tab id: forgetting a tab in one leaves the same id in the other remembered.
+    @Test func forgettingATabInOneProcessLeavesTheSameIdInAnother() {
+        var d = TabReloadDecider()
+        _ = d.tabsToReload(processID: 1, tabs: [tab("t", blocked(1))], rules: rules)
+        _ = d.tabsToReload(processID: 2, tabs: [tab("t", blocked(2))], rules: rules)
+        d.forget(processID: 1, tabID: "t")
+        #expect(d.remembered(processID: 1) == [:])
+        #expect(d.remembered(processID: 2) == ["t": blocked(2)])
+        #expect(d.tabsToReload(processID: 2, tabs: [tab("t", blocked(2))], rules: rules) == [])
+        #expect(d.tabsToReload(processID: 1, tabs: [tab("t", blocked(1))], rules: rules) == ["t"])
+    }
+
+    // An unknown process, an unknown tab in a known process, and a tab id that differs only in case or by a near-identical key change nothing.
+    @Test(arguments: [(Int32(99), "w1/1"), (Int32(7), "w1/2"), (Int32(7), "W1/1"), (Int32(7), "w1/1 "), (Int32(7), "1"), (Int32(7), ""), (Int32(-7), "w1/1")])
+    func forgettingSomethingUnknownChangesNothing(processID: Int32, tabID: String) {
+        var d = TabReloadDecider()
+        let tabs = [tab("w1/1", blocked(1)), tab("w2/1", blocked(2))]
+        _ = d.tabsToReload(processID: 7, tabs: tabs, rules: rules)
+        d.forget(processID: processID, tabID: tabID)
+        #expect(d.remembered(processID: 7) == ["w1/1": blocked(1), "w2/1": blocked(2)])
+        #expect(d.tabsToReload(processID: 7, tabs: tabs, rules: rules) == [])
+        #expect(d.remembered(processID: processID) == (processID == 7 ? ["w1/1": blocked(1), "w2/1": blocked(2)] : [:]), "forget must not create an entry")
+    }
+
+    // Forgetting on an empty decider and forgetting the same tab twice are harmless.
+    @Test func forgettingTwiceOrOnAnEmptyDeciderIsHarmless() {
+        var empty = TabReloadDecider()
+        empty.forget(processID: 1, tabID: "a")
+        #expect(empty.remembered(processID: 1) == [:])
+        var d = TabReloadDecider()
+        _ = d.tabsToReload(processID: 1, tabs: [tab("a", blocked(1)), tab("b", blocked(2))], rules: rules)
+        d.forget(processID: 1, tabID: "a")
+        d.forget(processID: 1, tabID: "a")
+        #expect(d.remembered(processID: 1) == ["b": blocked(2)])
+    }
+
+    // The tab watcher's retry: after forget, the same tab still on the same blocked address is acted on at the next tick, and when the tab has meanwhile
+    // moved to an open address it is simply not returned and nothing is remembered for it.
+    @Test func afterForgetTheNextTickRetriesOrLetsGoDependingOnTheAddress() {
+        var d = TabReloadDecider()
+        _ = d.tabsToReload(processID: 3, tabs: [tab("w/1", blocked(1)), tab("w/2", blocked(2))], rules: rules)
+        d.forget(processID: 3, tabID: "w/1")
+        d.forget(processID: 3, tabID: "w/2")
+        #expect(d.tabsToReload(processID: 3, tabs: [tab("w/1", blocked(1)), tab("w/2", openWatch)], rules: rules) == ["w/1"])
+        #expect(d.remembered(processID: 3) == ["w/1": blocked(1)])
+    }
+
+    // A tab whose address changed after it was remembered is returned for the new blocked address anyway; forget is not needed for that, and forgetting
+    // it then still gives exactly one return for the new address.
+    @Test func forgetDoesNotCauseADoubleReturnForANewAddress() {
+        var d = TabReloadDecider()
+        _ = d.tabsToReload(processID: 3, tabs: [tab("t", blocked(1))], rules: rules)
+        d.forget(processID: 3, tabID: "t")
+        #expect(d.tabsToReload(processID: 3, tabs: [tab("t", blocked(2))], rules: rules) == ["t"])
+        #expect(d.tabsToReload(processID: 3, tabs: [tab("t", blocked(2))], rules: rules) == [])
+    }
+}
