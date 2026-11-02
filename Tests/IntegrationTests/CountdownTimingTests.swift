@@ -179,7 +179,8 @@ struct CountdownTimingTests {
             let gone = try #require(goneAt, "the site was still blocked after 5 s and \(polls) status requests")
             #expect(gone >= 2.0, "the site was gone \(gone) s after the request, after \(polls) status requests: some time was counted twice (request \(phase) s into a tick)")
             #expect(gone < 4.0)
-            #expect(polls >= 30, "only \(polls) status requests were sent during the countdown, too few to test anything")
+            // The floor is 15, not 30. 30 assumed native speed; the release build also runs this suite on Intel under Rosetta, where each status request takes about 70 ms, so only about 29 fit before the site is gone at 2 s. Fifteen requests spread over 2 s still land inside most one-second ticks, which is enough to show time counted twice.
+            #expect(polls >= 15, "only \(polls) status requests were sent during the countdown, too few to test anything")
             #expect(daemon.hostsText() == ExpectedHosts.idleText)
         }
     }
