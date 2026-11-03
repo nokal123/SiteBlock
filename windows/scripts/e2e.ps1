@@ -759,9 +759,12 @@ function Invoke-TabScript([string]$webSocketUrl, [string]$expression) {
     }
 }
 
-# Returns Chrome's open tabs (type "page") from its DevTools list.
+# Returns Chrome's open tabs (type "page") from its DevTools list. Windows PowerShell 5.1 hands a JSON list from
+# Invoke-RestMethod down the pipeline as one object, so the list is kept in a variable first, which unpacks it into
+# its entries before they are filtered.
 function Get-ChromeTabs([int]$port) {
-    return @(Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 5 | Where-Object { $_.type -eq 'page' })
+    $list = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 5
+    return @($list | Where-Object { $_.type -eq 'page' })
 }
 
 # Counts the tray app's lines for a Chrome tab it sent to the blocked page or reloaded, in its log (the log of the person
