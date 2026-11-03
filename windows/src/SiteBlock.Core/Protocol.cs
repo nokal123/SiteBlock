@@ -147,6 +147,44 @@ public sealed record StatusSnapshot(string Version, bool PasswordSet, IReadOnlyL
     public List<WatchedPathRule> WatchedPathRules =>
         (BlockedPaths ?? []).Where(rule => rule.TemporaryUnblock?.IsOpen != true).Select(rule => new WatchedPathRule(rule.Domain, rule.Path)).ToList();
 
+    /// <summary>
+    /// Everything the tab watcher looks for: one whole-site rule for each host the browsers' block list holds, followed by <see cref="WatchedPathRules"/>. The hosts are those of every site whose temporary unblock is not open,
+    /// shortened the way the browsers' list is (a host is left out when a parent domain of it is in the list) and normalized the way tab hosts are, so a listed <c>www.</c> name still matches.
+    /// Whole-site rules come first, so a tab on a blocked site is reported under its site even when a path rule on that site also matches.
+    /// </summary>
+    public List<WatchedPathRule> WatchedTabRules
+    {
+        get
+        {
+            var stillBlocked = Blocked.Where(site => site.TemporaryUnblock?.IsOpen != true).Select(site => new BlockedSite(site.Domain, [.. site.Hosts]));
+            var hosts = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (string host in ChromePolicy.UrlBlocklist(stillBlocked))
+            {
+                // A host the normalizer refuses could never equal a normalized tab host, so it is dropped; normalizing can also turn two hosts into one, which the set removes.
+                try { hosts.Add(DomainNormalizer.Normalize(host)); }
+                catch (DomainException) { }
+            }
+            return [.. hosts.Select(host => new WatchedPathRule(host, WatchedPathRule.WholeSitePath)), .. WatchedPathRules];
+        }
+    }
+
+    /// <summary>
+    /// Seconds until the earliest countdown that changes <see cref="WatchedTabRules"/> ends, or null when none is running: a temporary unblock that opens (its start wait) or closes (its window), or an unblock for good that removes a site or rule.
+    /// The status model polls again at that moment while the panel is closed, so the tab watcher does not keep sending tabs of a site that has just opened to the blocked page, or miss a site whose window has just closed, for the rest of a 30-second wait.
+    /// </summary>
+    public long? SecondsUntilWatchedRulesChange
+    {
+        get
+        {
+            var temporary = Blocked.Select(site => site.TemporaryUnblock).Concat((BlockedPaths ?? []).Select(rule => rule.TemporaryUnblock)).OfType<TemporaryUnblockStatus>();
+            // A waiting unblock changes the list when it opens; an open one changes it when its window ends.
+            var temporaryEnds = temporary.Select(unblock => unblock.IsOpen ? unblock.SecondsRemaining : unblock.OpensInSeconds ?? unblock.SecondsRemaining);
+            var unblockEnds = Blocked.Select(site => site.UnblockSecondsRemaining).Concat((BlockedPaths ?? []).Select(rule => rule.UnblockSecondsRemaining)).OfType<long>();
+            var all = temporaryEnds.Concat(unblockEnds).ToList();
+            return all.Count == 0 ? null : all.Min();
+        }
+    }
+
     /// <summary>True when both snapshots hold equal values, comparing every list entry by entry.</summary>
     public bool Equals(StatusSnapshot? other)
     {

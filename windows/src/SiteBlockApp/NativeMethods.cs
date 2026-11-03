@@ -93,6 +93,20 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", EntryPoint = "GetClassNameW", StringMarshalling = StringMarshalling.Utf16)]
     public static partial int GetClassName(IntPtr hwnd, [Out] char[] className, int maxCount);
 
+    /// <summary>The message a window gets when a key goes down.</summary>
+    public const uint WmKeyDown = 0x0100;
+    /// <summary>The message a window gets when a key comes up.</summary>
+    public const uint WmKeyUp = 0x0101;
+    /// <summary>The Enter key.</summary>
+    public const int VkReturn = 0x0D;
+    /// <summary>The Escape key.</summary>
+    public const int VkEscape = 0x1B;
+
+    /// <summary>Puts a message in the window's queue and returns at once, without waiting for the window to handle it.</summary>
+    [LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
     /// <summary>The id of the process that owns the window.</summary>
     [LibraryImport("user32.dll")]
     public static partial uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);

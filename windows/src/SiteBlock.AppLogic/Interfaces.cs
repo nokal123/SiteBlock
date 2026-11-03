@@ -73,6 +73,9 @@ public interface IBrowserTabs
 
     /// <summary>Presses the window's reload button, which reloads its visible tab. Throws when the button cannot be found or pressed.</summary>
     void Reload(int processId, string windowId);
+
+    /// <summary>Sends the window's visible tab to <paramref name="url"/> by typing it into the address bar and pressing Enter. Throws when the address bar cannot be found or the tab did not move.</summary>
+    void Open(int processId, string windowId, string url);
 }
 
 /// <summary>Downloads the update files from GitHub. Production uses HttpClient; tests use a fake.</summary>

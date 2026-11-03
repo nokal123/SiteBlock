@@ -3,12 +3,31 @@ using System.Text;
 namespace SiteBlock.Core;
 
 /// <summary>
-/// One path rule as the service reports it: a site plus the start of a path under it, such as youtube.com and /shorts.
+/// One thing the tab watcher looks for: a site plus the start of a path under it, such as youtube.com and /shorts. A whole blocked site is a rule whose path is <c>/</c>, which every address starts with.
 /// The tab watcher compares browser tab addresses against a list of these.
 /// </summary>
 /// <param name="Domain">The site name, already normalized the way the service stores it: lowercase, Punycode for non-ASCII letters, no leading <c>www.</c>, for example <c>youtube.com</c>.</param>
-/// <param name="Path">The start of the path, beginning with <c>/</c>, in its original case and without a trailing <c>/</c> or <c>*</c>, for example <c>/shorts</c>.</param>
-public readonly record struct WatchedPathRule(string Domain, string Path);
+/// <param name="Path">The start of the path, beginning with <c>/</c>, in its original case and without a trailing <c>/</c> or <c>*</c>, for example <c>/shorts</c>; or <c>/</c> alone for a whole site.</param>
+public readonly record struct WatchedPathRule(string Domain, string Path)
+{
+    /// <summary>The path of a rule that stands for a whole blocked site. A real path rule never has it, because a path rule has no trailing <c>/</c>.</summary>
+    public const string WholeSitePath = "/";
+
+    /// <summary>How often the tab watcher looks at the tabs while a path rule is watched. A site such as YouTube moves to a blocked part of itself without loading a page, and the content plays at once, so these looks stay frequent.</summary>
+    public static readonly TimeSpan PathRuleCheckInterval = TimeSpan.FromSeconds(0.5);
+
+    /// <summary>How often the tab watcher looks at the tabs while only whole sites (or nothing) are watched. A tab on a blocked site has to be caught within about five seconds, and looking less often keeps the UI Automation reads light.</summary>
+    public static readonly TimeSpan WholeSiteCheckInterval = TimeSpan.FromSeconds(4);
+
+    /// <summary>True when the rule stands for a whole blocked site rather than a part of one.</summary>
+    public bool IsWholeSite => Path == WholeSitePath;
+
+    /// <summary>The rule as people read it: the site name alone for a whole site (<c>x.com</c>), or the site and path joined (<c>youtube.com/shorts</c>).</summary>
+    public string DisplayText => IsWholeSite ? Domain : PathRuleParser.Display(Domain, Path);
+
+    /// <summary>How often the tab watcher looks at the tabs for this list of rules: every half second when it holds at least one path rule, otherwise every four seconds.</summary>
+    public static TimeSpan CheckInterval(IEnumerable<WatchedPathRule> rules) => rules.Any(rule => !rule.IsWholeSite) ? PathRuleCheckInterval : WholeSiteCheckInterval;
+}
 
 /// <summary>
 /// Decides whether the address of an open browser tab falls under a path rule. The steps mirror what Chrome's <c>youtube.com/shorts</c> entry and Firefox's <c>*://*.youtube.com/shorts*</c> pattern match, so the tab watcher reloads only tabs that the browser will then block.

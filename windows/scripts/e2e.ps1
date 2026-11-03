@@ -762,20 +762,21 @@ function Get-ChromeTabs([int]$port) {
     return @(Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 5 | Where-Object { $_.type -eq 'page' })
 }
 
-# Counts the tray app's "reloaded a tab" lines in its log (the log of the person signed in at the screen, who is also
-# the account running this script when the check runs at all).
+# Counts the tray app's lines for a Chrome tab it sent to the blocked page or reloaded, in its log (the log of the person
+# signed in at the screen, who is also the account running this script when the check runs at all).
 function Get-TabReloadCount {
     $appLog = Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log'
     $text = Read-SharedText $appLog
-    return @([regex]::Matches($text, 'reloaded a Google Chrome tab on a blocked part of a site')).Count
+    return @([regex]::Matches($text, 'sent a Google Chrome tab to the blocked page|reloaded a Google Chrome tab on a blocked site')).Count
 }
 
 # 06-windows.md, Testing, item 6. The tray app reads each Chrome window's address bar through UI Automation, which
 # works only for windows on the same desktop, so the check runs only when this script itself runs in the console
 # session where the tray app runs (an interactive desktop), and is skipped otherwise. It blocks a path of
 # example.com, opens two visible Chrome windows on ordinary pages of that site, marks both pages, moves the first one
-# onto the blocked path with history.pushState (no page load), and checks that the tray app reloaded that tab (its
-# mark is gone) exactly once, while the second window's page was left alone (its mark is still there).
+# onto the blocked path with history.pushState (no page load), and checks that the tray app sent that tab to the
+# blocked page (its mark is gone and it shows a data: address) exactly once, while the second window's page was left
+# alone (its mark is still there).
 function Test-LiveTabWatcher {
     $chrome = Find-Chrome
     if ($null -eq $chrome) { Skip-Check 'Chrome is not installed on this machine' }
@@ -841,7 +842,9 @@ function Test-LiveTabWatcher {
         }
         $stayMark = Invoke-TabScript $staying.webSocketDebuggerUrl 'window.__siteblockMark'
         if ($stayMark -ne 'marked') { throw 'the second window, which never left an allowed page, was reloaded too' }
-        return "reloaded once after $elapsed ms; the other window was left alone"
+        $landed = @(Get-ChromeTabs $port | Where-Object { $_.id -eq $moving.id } | ForEach-Object { $_.url }) -join ''
+        if (-not $landed.StartsWith('data:text/html')) { throw "the tab was moved off the blocked path, but not to the blocked page (it is at '$($landed.Substring(0, [Math]::Min(60, $landed.Length)))')" }
+        return "sent to the blocked page once after $elapsed ms; the other window was left alone"
     } finally {
         Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $first.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
     }
@@ -994,6 +997,38 @@ function Test-RunningChromeGetsNewBlock {
             throw "a navigation to $site was still not refused by Chrome's policy 30 seconds after siteblock add (before the add it ended '$beforeAdd'; the last one ended '$($script:LastOutcome)'). $experiment. End of siteblockd.log: $(Get-LogTail $DaemonLog 6)"
         }
         return "Chrome refused $site $blockedAt ms after siteblock add (before the add it ended '$beforeAdd')"
+    } finally {
+        Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $started.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 06-windows.md, Testing, item 6. A Chrome window that is already on a site when the site is blocked is sent to the
+# blocked page by the tray app, without a Chrome restart: the open tab keeps its connection, so neither the hosts file
+# nor a block list Chrome has not read yet would stop it. It runs in the same conditions as the live tab-watcher check.
+function Test-LiveWholeSite {
+    $chrome = Find-Chrome
+    if ($null -eq $chrome) { Skip-Check 'Chrome is not installed on this machine' }
+    $session = Get-ConsoleSessionId
+    if ((Get-Process -Id $PID).SessionId -ne $session) { Skip-Check "this script does not run on the interactive desktop (it is in session $((Get-Process -Id $PID).SessionId), the console is session $session)" }
+    $site = 'example.net'
+    $port = 9336
+    $chromeProfile = Join-Path ([System.IO.Path]::GetTempPath()) ('siteblock-whole-' + [guid]::NewGuid().ToString('N'))
+    $started = Start-Process -FilePath $chrome -ArgumentList @("--remote-debugging-port=$port", "--user-data-dir=$chromeProfile", '--no-first-run', '--no-default-browser-check', '--new-window', "https://$site/") -PassThru
+    try {
+        if ((Wait-Until 20000 { @(Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" }).Count -ge 1 }) -lt 0) { throw "Chrome did not open $site within 20 seconds" }
+        $tab = Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" } | Select-Object -First 1
+        if ((Wait-Until 20000 { (Invoke-TabScript $tab.webSocketDebuggerUrl "document.readyState + ' ' + location.href") -match "^complete https://$([regex]::Escape($site))/" }) -lt 0) { throw "the page did not finish loading $site within 20 seconds" }
+        $before = Get-TabReloadCount
+        $add = Invoke-SiteBlock @('add', $site)
+        if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
+        # The tray app learns of a site added from the command line on its next status poll, every 30 seconds while its panel is closed.
+        $script:WholeSiteUrl = ''
+        $elapsed = Wait-Until 45000 { $script:WholeSiteUrl = @(Get-ChromeTabs $port | Where-Object { $_.id -eq $tab.id } | ForEach-Object { $_.url }) -join ''; $script:WholeSiteUrl.StartsWith('data:text/html') }
+        if ($elapsed -lt 0) { throw "the tab open on $site was not sent to the blocked page within 45 seconds (it is at '$($script:WholeSiteUrl)'). End of app.log: $(Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 12)" }
+        Start-Sleep -Seconds 5
+        $moves = (Get-TabReloadCount) - $before
+        if ($moves -ne 1) { throw "the tray app logged $moves moves or reloads, not exactly one. End of app.log: $(Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 12)" }
+        return "the open tab was sent to the blocked page $elapsed ms after siteblock add"
     } finally {
         Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $started.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
     }
@@ -1191,6 +1226,7 @@ try {
         Invoke-Check 'upgrade keeps blocks, password and countdowns' { Test-UpgradeKeepsState }
         Invoke-Check 'running Chrome refuses a newly blocked site' { Test-RunningChromeGetsNewBlock }
         Invoke-Check 'live tab watcher' { Test-LiveTabWatcher }
+        Invoke-Check 'live tab watcher, whole site' { Test-LiveWholeSite }
         Invoke-Check 'live update' { Test-LiveUpdate }
     }
 } finally {

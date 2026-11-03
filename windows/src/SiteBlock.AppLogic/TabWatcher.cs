@@ -27,15 +27,15 @@ public static partial class BrowserAddress
 }
 
 /// <summary>
-/// Reloads a Chrome, Edge or Brave window's visible tab once when it has moved onto a blocked part of a site without loading a page (YouTube does this when you tap Shorts), so the browser's own block list shows its block page.
-/// Every 0.5 seconds, while at least one path rule exists and a supported browser runs, it reads each window's address bar through <see cref="IBrowserTabs"/>, asks <see cref="TabReloadDecider"/> which windows to reload (the window id is the tab id), reads the address again, and reloads only when it still matches a rule.
-/// A beat that comes while the previous tick still runs is skipped, never queued.
+/// Sends a Chrome, Edge or Brave window's visible tab to SiteBlock's blocked page once when it is on a blocked site or a blocked part of a site. That covers a tab that was already open when the site was blocked,
+/// a new tab the browser opened over a connection it already had (the hosts file only stops new ones), a browser that has not read its new block list yet, and a page that moved onto a blocked part of a site
+/// without loading (YouTube does this when you tap Shorts). While a supported browser runs and a rule exists, it reads each window's address bar through <see cref="IBrowserTabs"/> every half second when a path rule
+/// exists and every four seconds otherwise (<see cref="WatchedPathRule.CheckInterval"/>), asks <see cref="TabReloadDecider"/> which windows to act on (the window id is the tab id), reads the address again, and acts only
+/// when it still matches a rule. When the tab cannot be sent to the blocked page, its reload button is pressed instead, which shows the browser's own block page once the browser knows the rule.
+/// A changed rule list is looked at at once. A beat that comes while the previous tick still runs is skipped, never queued.
 /// </summary>
 public sealed class TabWatcher : IDisposable
 {
-    /// <summary>How often the watcher looks at the browsers.</summary>
-    public static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(0.5);
-
     private readonly IBrowserTabs _tabs;
     private readonly IClock _clock;
     private readonly IAppLog _log;
@@ -52,6 +52,10 @@ public sealed class TabWatcher : IDisposable
     private const long RetryDelayMs = 5_000;
     private int _tickRunning;
     private int _started;
+    // Set when the rules changed since the last look, so the beat looks at once instead of after its wait.
+    private int _rulesChanged;
+    // Cancelled when the rules change, which cuts the beat's current wait short; replaced each time.
+    private CancellationTokenSource _wake = new();
 
     /// <summary>Creates the watcher. It does nothing until <see cref="Start"/> is called.</summary>
     public TabWatcher(IBrowserTabs tabs, IClock clock, IAppLog? log = null)
@@ -73,15 +77,31 @@ public sealed class TabWatcher : IDisposable
     /// <summary>The browsers that refused to be read. Windows asks no permission for UI Automation, so this is always empty; it exists so the panel logic matches the Mac's.</summary>
     public IReadOnlyList<string> DeniedBrowserNames { get; } = [];
 
-    /// <summary>Replaces the rules to watch for. The status model calls it with every status it applies. The new list is used from the next tick.</summary>
+    /// <summary>
+    /// Replaces the rules to watch for. The status model calls it with every status it applies. A list equal to the current one changes nothing; a different one is used at once: the beat's wait is cut short,
+    /// so a newly blocked site is looked for right away, and the interval is set again for the new list.
+    /// </summary>
     public void SetRules(IEnumerable<WatchedPathRule> rules)
     {
         ArgumentNullException.ThrowIfNull(rules);
         List<WatchedPathRule> copy = [.. rules];
-        lock (_gate) _rules = copy;
+        CancellationTokenSource wake;
+        lock (_gate)
+        {
+            if (copy.SequenceEqual(_rules)) return;
+            _rules = copy;
+            Volatile.Write(ref _rulesChanged, 1);
+            wake = _wake;
+            _wake = new CancellationTokenSource();
+        }
+        wake.Cancel();
+        wake.Dispose();
     }
 
-    /// <summary>Starts the beat: every 0.5 seconds a tick starts on a pool thread, unless the previous one still runs. Calling it again does nothing.</summary>
+    /// <summary>
+    /// Starts the beat: after each wait of <see cref="WatchedPathRule.CheckInterval"/> for the current rules, a tick starts on a pool thread, unless the previous one still runs. A change of rules ends the wait early.
+    /// Calling it again does nothing.
+    /// </summary>
     public void Start()
     {
         if (Interlocked.Exchange(ref _started, 1) != 0) return;
@@ -90,13 +110,26 @@ public sealed class TabWatcher : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                try
+                TimeSpan interval;
+                CancellationToken wake;
+                lock (_gate)
                 {
-                    await _clock.Delay(TickInterval, token).ConfigureAwait(false);
+                    interval = WatchedPathRule.CheckInterval(_rules);
+                    wake = _wake.Token;
                 }
-                catch (OperationCanceledException)
+                // Rules that changed before this wait began are looked at without waiting; a change during the wait cancels it.
+                if (Interlocked.Exchange(ref _rulesChanged, 0) == 0)
                 {
-                    return;
+                    using var either = CancellationTokenSource.CreateLinkedTokenSource(token, wake);
+                    try
+                    {
+                        await _clock.Delay(interval, either.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        if (token.IsCancellationRequested) return;
+                        Volatile.Write(ref _rulesChanged, 0);
+                    }
                 }
                 // Fire and forget: a slow tick does not delay the beat, and the next beats are skipped until it ends.
                 _ = TryRunTickAsync();
@@ -105,7 +138,11 @@ public sealed class TabWatcher : IDisposable
     }
 
     /// <summary>Stops the beat. A tick that is running finishes on its own.</summary>
-    public void Dispose() => _stop.Cancel();
+    public void Dispose()
+    {
+        _stop.Cancel();
+        lock (_gate) _wake.Cancel();
+    }
 
     /// <summary>Runs one tick on a pool thread unless one is already running. Completes with true when this call ran a tick and false when it was skipped.</summary>
     public async Task<bool> TryRunTickAsync()
@@ -123,7 +160,7 @@ public sealed class TabWatcher : IDisposable
     }
 
     /// <summary>
-    /// One look at the browsers. With no rules or no browser it forgets everything and touches nothing. Otherwise, for each browser process whose windows can be read, it reloads each window the decider names, after reading its address again and finding it still on a blocked part of a site.
+    /// One look at the browsers. With no rules or no browser it forgets everything and touches nothing. Otherwise, for each browser process whose windows can be read, it acts on each window the decider names, after reading its address again and finding it still on a blocked site or part of a site.
     /// A process that cannot be read this tick keeps its memory. Memory of processes that are gone is dropped. It never throws.
     /// </summary>
     private void RunTick()
@@ -172,7 +209,7 @@ public sealed class TabWatcher : IDisposable
             // A tab handed back for a retry is returned by the decider only while it is still on a blocked address. When it was not returned, it has left (or could not be
             // read this look), so its failure record goes and a later return starts with all its tries.
             foreach (var key in _failedReloads.Keys.Where(key => key.ProcessId == browser.ProcessId && _failedReloads[key].HandedBack && !toReload.Contains(key.TabId)).ToList()) _failedReloads.Remove(key);
-            foreach (string windowId in toReload) ReloadIfStillBlocked(browser, windowId, ruleList);
+            foreach (string windowId in toReload) ActIfStillBlocked(browser, windowId, ruleList);
         }
 
         // Memory about browsers that quit is dropped, so a new process that reuses an id starts clean.
@@ -210,8 +247,11 @@ public sealed class TabWatcher : IDisposable
         _failedReloads[key] = (url, failures, failures >= MaxReloadAttempts ? long.MaxValue : _clock.MonotonicMilliseconds + RetryDelayMs, HandedBack: false);
     }
 
-    /// <summary>Reads one window's address again and presses its reload button only when the address still matches a rule, because the page may have moved on since the list was read. Errors are ignored: the window may be gone.</summary>
-    private void ReloadIfStillBlocked(BrowserProcess browser, string windowId, IReadOnlyCollection<WatchedPathRule> rules)
+    /// <summary>
+    /// Reads one window's address again and, only when it still matches a rule, sends the tab to the blocked page for that rule; when that fails, it presses the reload button instead. The page may have moved on since
+    /// the list was read, which is why the address is read again. Errors are ignored: the window may be gone.
+    /// </summary>
+    private void ActIfStillBlocked(BrowserProcess browser, string windowId, IReadOnlyCollection<WatchedPathRule> rules)
     {
         try
         {
@@ -221,15 +261,26 @@ public sealed class TabWatcher : IDisposable
                 NoteFailedReload(browser.ProcessId, windowId);
                 return;
             }
-            if (TabRuleMatcher.MatchingRule(current, rules) is null) return;
+            if (TabRuleMatcher.MatchingRule(current, rules) is not { } rule) return;
+            try
+            {
+                _tabs.Open(browser.ProcessId, windowId, BlockedPage.Address(rule.DisplayText));
+                _failedReloads.Remove((browser.ProcessId, windowId));
+                // The line names the browser only: the log never holds an address, a domain or a path rule.
+                _log.Info($"sent a {browser.DisplayName} tab to the blocked page");
+                return;
+            }
+            catch (Exception)
+            {
+                // The tab could not be moved; the reload below shows the browser's own block page when the browser already knows the rule.
+            }
             _tabs.Reload(browser.ProcessId, windowId);
             _failedReloads.Remove((browser.ProcessId, windowId));
-            // The line names the browser only: the log never holds an address, a domain or a path rule.
-            _log.Info($"reloaded a {browser.DisplayName} tab on a blocked part of a site");
+            _log.Info($"reloaded a {browser.DisplayName} tab on a blocked site or part of a site");
         }
         catch (Exception)
         {
-            // The reload did not happen (the window closed, stopped answering, or its reload button could not be pressed). The decider already counted this tab as handled at
+            // Neither the move nor the reload happened (the window closed, stopped answering, or its address bar and reload button could not be used). The decider already counted this tab as handled at
             // this address, so a later retry is scheduled instead of leaving the tab on the blocked part for as long as it stays there.
             NoteFailedReload(browser.ProcessId, windowId);
         }

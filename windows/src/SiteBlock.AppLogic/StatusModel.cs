@@ -180,13 +180,24 @@ public sealed class StatusModel : ObservableModel, IDisposable
             catch (Exception error) when (error is not OperationCanceledException) { }
             try
             {
-                await _clock.Delay(_pollFast ? VisiblePollInterval : HiddenPollInterval, token).ConfigureAwait(false);
+                await _clock.Delay(NextPollInterval(), token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// The wait before the next poll: 1 second with the panel open. With it closed, 30 seconds, or less when a countdown that changes the tab watcher's rules ends sooner: then the poll comes one second after it ends,
+    /// so the watcher stops sending the tabs of a site that has just opened to the blocked page, or starts on a site whose window has just closed, without waiting out the rest of the 30 seconds.
+    /// </summary>
+    private TimeSpan NextPollInterval()
+    {
+        if (_pollFast) return VisiblePollInterval;
+        if (Snapshot?.SecondsUntilWatchedRulesChange is not long seconds) return HiddenPollInterval;
+        return TimeSpan.FromSeconds(Math.Min(HiddenPollInterval.TotalSeconds, Math.Max(seconds, 0) + 1));
     }
 
     /// <summary>Asks the service for its status and applies the answer. Does nothing when a status request is already waiting, so polls never pile up behind a slow service.</summary>
@@ -378,7 +389,7 @@ public sealed class StatusModel : ObservableModel, IDisposable
         // The arrival time is set before the snapshot, so a view redrawing on the snapshot change already counts down from the right moment.
         SnapshotArrivedAt = arrivedAt;
         Snapshot = status;
-        TabWatcher?.SetRules(status.WatchedPathRules);
+        TabWatcher?.SetRules(status.WatchedTabRules);
     }
 
     /// <summary>Marks the service unreachable with the sentence that says why, unless a newer reply was already applied. Runs on the dispatcher.</summary>

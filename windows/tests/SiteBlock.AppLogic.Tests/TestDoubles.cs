@@ -109,7 +109,7 @@ public sealed class FakeBrowserTabs : IBrowserTabs
     public List<(int Pid, string Window)> CurrentUrlCalls { get; } = [];
     public int RunningBrowsersCalls { get; private set; }
 
-    public int TotalCalls { get { lock (_gate) return RunningBrowsersCalls + ReadWindowsCalls.Count + CurrentUrlCalls.Count + Reloads.Count; } }
+    public int TotalCalls { get { lock (_gate) return RunningBrowsersCalls + ReadWindowsCalls.Count + CurrentUrlCalls.Count + Reloads.Count + Opens.Count; } }
 
     // Lists the browsers the test put in.
     public IReadOnlyList<BrowserProcess> RunningBrowsers()
@@ -132,6 +132,16 @@ public sealed class FakeBrowserTabs : IBrowserTabs
         lock (_gate) CurrentUrlCalls.Add((processId, windowId));
         if (CurrentOverrides.TryGetValue((processId, windowId), out string? over)) return over;
         return Windows.TryGetValue(processId, out var list) ? list.FirstOrDefault(w => w.WindowId == windowId)?.Url : null;
+    }
+
+    public bool OpenThrows { get; set; }
+    public List<(int Pid, string Window, string Url)> Opens { get; } = [];
+
+    // Records the move to an address, or throws when the test asked for a failing address bar.
+    public void Open(int processId, string windowId, string url)
+    {
+        if (OpenThrows) throw new InvalidOperationException("no address bar");
+        lock (_gate) Opens.Add((processId, windowId, url));
     }
 
     // Records the reload, or throws when the test asked for a failing reload button.

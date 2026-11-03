@@ -8,9 +8,9 @@ using SiteBlock.AppLogic;
 namespace SiteBlock.App;
 
 /// <summary>
-/// Reads and reloads the visible tab of every Chrome, Edge and Brave window through UI Automation (the Windows accessibility interface screen readers use).
+/// Reads, moves and reloads the visible tab of every Chrome, Edge and Brave window through UI Automation (the Windows accessibility interface screen readers use).
 /// It lists the top-level windows of class <c>Chrome_WidgetWin_1</c> that are visible, have a title and belong to a process named chrome, msedge or brave; finds each window's address bar (class <c>OmniboxViewViews</c>, an Edit control) once and remembers it;
-/// reads its text with the Value pattern (skipping a window while its address bar has keyboard focus, because the person may be typing); and reloads by pressing the window's <c>ReloadButton</c> with the Invoke pattern.
+/// reads its text with the Value pattern (skipping a window while its address bar has keyboard focus, because the person may be typing); moves the tab by typing an address into the address bar; and reloads by pressing the window's <c>ReloadButton</c>.
 /// Class names are used because they do not change with the browser's language, while visible names do. Every call runs on the tab watcher's pool thread, never on the window thread.
 /// </summary>
 internal sealed class UiaBrowserTabs : IBrowserTabs
@@ -167,6 +167,67 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
             if (ShouldReport("press")) _log.Info($"tab reader: pressing the reload button failed ({detail}); {DescribeElement(button)}");
             throw error;
         }
+    }
+
+    /// <summary>
+    /// Sends the window's visible tab to an address: puts the keyboard focus in the address bar, sets its text with the Value pattern, and posts an Enter key press to the window, which is what
+    /// the browser does when a person types an address. The tab counts as moved once the address bar has lost the focus and shows the new address. Throws when the address bar cannot be found or
+    /// set, or the tab did not move within the time limit; the typed text is then taken back with Escape, so the person never finds it in their address bar.
+    /// </summary>
+    public void Open(int processId, string windowId, string url)
+    {
+        IntPtr hwnd = HandleOf(windowId);
+        AutomationElement bar = Element(hwnd, reloadButton: false) ?? throw new InvalidOperationException("The window has no address bar.");
+        try
+        {
+            // The steps run on their own task with a time limit, so a browser that stopped answering cannot stall the tab watcher; a late result is ignored.
+            var typing = Task.Run(() => TypeAddress(hwnd, bar, url));
+            if (!typing.Wait(OpenTimeout)) throw new TimeoutException("The browser did not move the tab within 4 seconds.");
+        }
+        catch (Exception thrown)
+        {
+            Exception error = thrown is AggregateException { InnerException: { } inner } ? inner : thrown;
+            if (error is ElementNotAvailableException) Forget(hwnd);
+            PostKey(hwnd, NativeMethods.VkEscape);
+            string detail = error is InvalidOperationException or TimeoutException ? $"{error.GetType().Name}: {error.Message}" : error.GetType().Name;
+            if (ShouldReport("open")) _log.Info($"tab reader: sending a tab to the blocked page failed ({detail})");
+            throw error;
+        }
+    }
+
+    // How long typing an address and waiting for the tab to move may take.
+    private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(4);
+
+    /// <summary>The steps of <see cref="Open"/>: focus, set the text, press Enter, and wait until the address bar shows the new address without the focus. Throws when a step fails or the tab did not move within about 3 seconds.</summary>
+    private static void TypeAddress(IntPtr hwnd, AutomationElement bar, string url)
+    {
+        if (!bar.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern)) throw new InvalidOperationException("The address bar offers no Value pattern.");
+        var value = (ValuePattern)pattern;
+        if (value.Current.IsReadOnly) throw new InvalidOperationException("The address bar is read-only.");
+        // The focus brings the window forward when Windows allows it; when it does not, the browser still moves the focus inside its own window, which is where the Enter key goes.
+        try { bar.SetFocus(); } catch (InvalidOperationException) { }
+        value.SetValue(url);
+        PostKey(hwnd, NativeMethods.VkReturn);
+        // The browser may show the rest of the address decoded, so only the part up to the first comma (for the blocked page, "data:text/html;charset=utf-8,") is compared.
+        int comma = url.IndexOf(',', StringComparison.Ordinal);
+        string expected = comma >= 0 ? url[..(comma + 1)] : url;
+        long until = Environment.TickCount64 + 3_000;
+        while (Environment.TickCount64 < until)
+        {
+            Thread.Sleep(100);
+            AutomationElement.AutomationElementInformation info = bar.Current;
+            // While the address bar still has the focus, the browser has only the typed text and has not gone to it yet.
+            if (!info.HasKeyboardFocus && BrowserAddress.ToUrl(value.Current.Value).StartsWith(expected, StringComparison.Ordinal)) return;
+        }
+        throw new InvalidOperationException("The tab did not move to the new address.");
+    }
+
+    /// <summary>Posts one key press (down, then up) to the browser window. Chrome, Edge and Brave hand a key the window gets to the control that has the focus inside it.</summary>
+    private static void PostKey(IntPtr hwnd, int key)
+    {
+        // The key-message details: a repeat count of 1, and for the release the "was down" and "being released" bits.
+        NativeMethods.PostMessage(hwnd, NativeMethods.WmKeyDown, (IntPtr)key, 1);
+        NativeMethods.PostMessage(hwnd, NativeMethods.WmKeyUp, (IntPtr)key, unchecked((IntPtr)(int)0xC0000001));
     }
 
     /// <summary>
