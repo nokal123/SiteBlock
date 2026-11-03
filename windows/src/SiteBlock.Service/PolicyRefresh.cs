@@ -26,8 +26,8 @@ public static class PolicyRefreshers
 }
 
 /// <summary>
-/// Asks Windows to apply the computer's Group Policy (<c>RefreshPolicyEx</c>, the call behind <c>gpupdate /target:computer</c>). Windows sees the raised version in gpt.ini, applies the Local Group Policy file,
-/// and then signals every program that registered for policy changes, so Chrome, Edge and Brave read their policy keys again. The call only starts the refresh and returns; it does not wait for it.
+/// Asks Windows to apply the computer's Group Policy (<c>RefreshPolicyEx</c> with RP_FORCE, the call behind <c>gpupdate /target:computer /force</c>). Windows applies the Local Group Policy file and then
+/// signals every program that registered for policy changes, so Chrome, Edge and Brave read their policy keys again. The call only starts the refresh and returns; it does not wait for it.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class GroupPolicyRefresher : IPolicyRefresher
@@ -35,9 +35,13 @@ public sealed class GroupPolicyRefresher : IPolicyRefresher
     /// <summary>Starts a refresh of the computer's policy, or throws a <see cref="Win32Exception"/> with Windows' error when it cannot be started.</summary>
     public void Refresh()
     {
-        // bMachine true refreshes computer policy, which is where HKEY_LOCAL_MACHINE\SOFTWARE\Policies belongs. Option 0 applies only what changed, which is the policy file SiteBlock just changed.
-        if (!RefreshPolicyEx(true, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        // bMachine true refreshes computer policy, which is where HKEY_LOCAL_MACHINE\SOFTWARE\Policies belongs. RP_FORCE applies the file even when Windows thinks its version was already applied,
+        // which happens when Windows' own background refresh runs between SiteBlock's writes of gpt.ini and Registry.pol. It only runs after SiteBlock changed the file, at most every 5 seconds.
+        if (!RefreshPolicyEx(true, RpForce)) throw new Win32Exception(Marshal.GetLastWin32Error());
     }
+
+    // RefreshPolicyEx's option to apply all policy again, not only what Windows counts as changed.
+    private const uint RpForce = 1;
 
     [DllImport("userenv.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

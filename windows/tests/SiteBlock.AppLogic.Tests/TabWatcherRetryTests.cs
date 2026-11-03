@@ -3,12 +3,13 @@ using SiteBlock.Core;
 
 namespace SiteBlock.AppLogic.Tests;
 
-// What the tab watcher does when a reload it decided on does not happen: the second read of the address gives nothing, or the reload button cannot be pressed.
-// Expected values come from 06-windows.md § TabWatcher step 6: such a reload is tried again 5 seconds later, at most 3 times at the same address, and after that the tab is
-// left alone until its address changes. "5 seconds later" is measured on IClock.MonotonicMilliseconds, the clock that ignores wall-clock changes (§ Tray App, Structure).
+// What the tab watcher does when a move it decided on does not happen: the second read of the address gives nothing, or the tab cannot be sent to the blocked page and
+// its reload button cannot be pressed either. The design sends the tab to the blocked page first and presses reload only when that fails (06-windows.md § TabWatcher
+// step 5), so "the move failed" means both failed. Expected values come from § TabWatcher step 6: such a move is tried again 5 seconds later, at most 3 times at the same
+// address, and after that the tab is left alone until its address changes. "5 seconds later" is measured on IClock.MonotonicMilliseconds, the clock that ignores wall-clock changes (§ Tray App, Structure).
 // The design's "tried again 5 seconds later, at most 3 times" is read here as 3 attempts in all (the first try and two retries), which is how the coordinator's brief states it.
-// Each attempt reads the address again before pressing, so the fake's CurrentUrlCalls counts attempts, and Reloads counts presses that worked.
-// The only log line the watcher writes is the reload line, so a failed attempt must write nothing (§ TabWatcher, last paragraph).
+// Each attempt reads the address again before acting, so the fake's CurrentUrlCalls counts attempts, Opens counts moves to the blocked page that worked, and Reloads counts presses that worked.
+// The watcher's only log lines are the sent line and the reload line, so a failed attempt must write nothing (§ TabWatcher, last paragraphs).
 public sealed class TabWatcherRetryTests
 {
     private const int Chrome = 4100;
@@ -17,7 +18,9 @@ public sealed class TabWatcherRetryTests
     private const string Blocked = "https://www.youtube.com/shorts/abc";
     private const string OtherBlocked = "https://www.youtube.com/shorts/def";
     private const string Home = "https://www.youtube.com/";
-    private const string ReloadLine = "reloaded a Google Chrome tab on a blocked part of a site";
+    private const string ReloadLine = "reloaded a Google Chrome tab on a blocked site or part of a site";
+    private const string SentLine = "sent a Google Chrome tab to the blocked page";
+    private static readonly string ShortsPage = BlockedPage.Address("youtube.com/shorts");
 
     private sealed class Rig
     {
@@ -37,6 +40,13 @@ public sealed class TabWatcherRetryTests
         }
 
         public int Attempts => Tabs.CurrentUrlCalls.Count;
+
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so a move fails only when the Open and the reload fallback both fail.
+        public void FailMoves()
+        {
+            Tabs.OpenThrows = true;
+            Tabs.ReloadThrows = true;
+        }
 
         // Runs one tick at the current clock time and records the time of every attempt it made.
         public async Task Tick()
@@ -58,10 +68,10 @@ public sealed class TabWatcherRetryTests
     }
 
     [Fact]
-    public async Task ReloadButtonFails_IsNotTriedAgainBeforeFiveSecondsAndIsTriedAtFiveSeconds()
+    public async Task MoveFails_IsNotTriedAgainBeforeFiveSecondsAndIsTriedAtFiveSeconds()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
 
         await rig.Tick();
         await rig.TickUntil(4_500);
@@ -72,37 +82,42 @@ public sealed class TabWatcherRetryTests
     }
 
     [Fact]
-    public async Task ReloadButtonKeepsFailing_IsTriedThreeTimesFiveSecondsApartThenLeftAlone()
+    public async Task MoveKeepsFailing_IsTriedThreeTimesFiveSecondsApartThenLeftAlone()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
 
         await rig.Tick();
         await rig.TickUntil(60_000);
 
         Assert.Equal([0L, 5_000L, 10_000L], rig.AttemptTimes);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so each attempt tries the Open before the reload.
+        Assert.Equal(3, rig.Tabs.OpenAttempts.Count);
         Assert.Empty(rig.Tabs.Reloads);
         Assert.Empty(rig.Log.Lines);
     }
 
     [Fact]
-    public async Task AfterThreeFailures_AWorkingButtonIsStillNotPressedWhileTheAddressStaysTheSame()
+    public async Task AfterThreeFailures_AWorkingAddressBarAndButtonAreStillNotUsedWhileTheAddressStaysTheSame()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(10_000);
         Assert.Equal(3, rig.Attempts);
 
+        rig.Tabs.OpenThrows = false;
         rig.Tabs.ReloadThrows = false;
         await rig.TickUntil(60_000);
 
         Assert.Equal(3, rig.Attempts);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so neither a move nor a press may happen after the cap.
+        Assert.Empty(rig.Tabs.Opens);
         Assert.Empty(rig.Tabs.Reloads);
     }
 
     [Fact]
-    public async Task SecondReadGivesNothing_IsTriedAgainFiveSecondsLaterAndReloadsWhenItCanBeRead()
+    public async Task SecondReadGivesNothing_IsTriedAgainFiveSecondsLaterAndSentWhenItCanBeRead()
     {
         var rig = new Rig();
         // The address cannot be read again right now, for example because the person clicked into the address bar.
@@ -110,14 +125,17 @@ public sealed class TabWatcherRetryTests
 
         await rig.Tick();
         await rig.TickUntil(4_500);
-        Assert.Empty(rig.Tabs.Reloads);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so "nothing done yet" means no Open attempt either.
+        Assert.Empty(rig.Tabs.OpenAttempts);
         Assert.Equal(1, rig.Attempts);
 
         rig.Tabs.CurrentOverrides.Clear();
         await rig.TickUntil(5_000);
 
-        Assert.Equal([(Chrome, "1")], rig.Tabs.Reloads);
-        Assert.Equal([ReloadLine], rig.Log.Lines);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the retry moves the tab and logs the sent line.
+        Assert.Equal([(Chrome, "1", ShortsPage)], rig.Tabs.Opens);
+        Assert.Empty(rig.Tabs.Reloads);
+        Assert.Equal([SentLine], rig.Log.Lines);
     }
 
     [Fact]
@@ -134,16 +152,19 @@ public sealed class TabWatcherRetryTests
     }
 
     [Fact]
-    public async Task ReloadWorksOnTheRetry_IsNotRepeatedWhileTheTabStaysAtThatAddress()
+    public async Task ReloadFallbackWorksOnTheRetry_IsNotRepeatedWhileTheTabStaysAtThatAddress()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
 
+        // The address bar still cannot take the blocked page, but the reload button works again.
         rig.Tabs.ReloadThrows = false;
         await rig.TickUntil(60_000);
 
         Assert.Equal([0L, 5_000L], rig.AttemptTimes);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the retry tries the Open, falls back to the reload, and logs the reload line.
+        Assert.Equal(2, rig.Tabs.OpenAttempts.Count);
         Assert.Equal([(Chrome, "1")], rig.Tabs.Reloads);
         Assert.Equal([ReloadLine], rig.Log.Lines);
     }
@@ -152,7 +173,7 @@ public sealed class TabWatcherRetryTests
     public async Task AfterTheCap_AddressMovesToAnotherBlockedAddress_IsTriedAtOnceWithThreeFreshAttempts()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(20_000);
         Assert.Equal(3, rig.Attempts);
@@ -167,7 +188,7 @@ public sealed class TabWatcherRetryTests
     public async Task AfterTheCap_TabLeavesTheBlockedPartAndReturns_IsHandledFresh()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(20_000);
         Assert.Equal(3, rig.Attempts);
@@ -184,7 +205,7 @@ public sealed class TabWatcherRetryTests
     public async Task TabLeavesTheBlockedPartBeforeItsRetryIsDue_ReturnsLaterAndIsHandledFresh()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
 
         rig.Tabs.SetWindows(Chrome, ("1", Home));
@@ -200,7 +221,7 @@ public sealed class TabWatcherRetryTests
     public async Task TabIsOffTheBlockedPartJustWhenItsRetryFallsDue_ReturnsLaterAndIsHandledFresh()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(4_500);
 
@@ -219,7 +240,7 @@ public sealed class TabWatcherRetryTests
     public async Task WindowMissingFromTheListJustWhenItsRetryFallsDue_ReturnsLaterAndIsHandledFresh()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(4_500);
 
@@ -239,7 +260,7 @@ public sealed class TabWatcherRetryTests
     public async Task BrowserUnreadableWhenItsRetryFallsDue_IsRetriedOnTheNextTickItCanBeRead()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(4_500);
 
@@ -250,6 +271,7 @@ public sealed class TabWatcherRetryTests
         await rig.TickUntil(30_000);
 
         Assert.Equal([0L, 5_500L], rig.AttemptTimes);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5); the Open still fails here, so the working reload button is what moves the tab.
         Assert.Equal([(Chrome, "1")], rig.Tabs.Reloads);
     }
 
@@ -257,7 +279,7 @@ public sealed class TabWatcherRetryTests
     public async Task WallClockJumpsForward_DoesNotBringTheRetryForward()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
 
         // The wall clock moves a day ahead while the monotonic clock moves only 1 second.
@@ -272,7 +294,7 @@ public sealed class TabWatcherRetryTests
     {
         var rig = new Rig();
         rig.Tabs.Browsers.Add(new BrowserProcess(Edge, "Microsoft Edge"));
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(20_000);
         Assert.Equal(3, rig.Attempts);
@@ -291,7 +313,7 @@ public sealed class TabWatcherRetryTests
     public async Task EveryBrowserQuits_TheirFailuresAreDroppedAndAReturningIdStartsFresh()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(20_000);
         Assert.Equal(3, rig.Attempts);
@@ -310,7 +332,7 @@ public sealed class TabWatcherRetryTests
     public async Task EveryRuleIsRemovedForOneLook_TheCountIsDroppedAndTheRestoredRuleGivesThreeFreshAttempts()
     {
         var rig = new Rig();
-        rig.Tabs.ReloadThrows = true;
+        rig.FailMoves();
         await rig.Tick();
         await rig.TickUntil(20_000);
         Assert.Equal(3, rig.Attempts);
@@ -323,6 +345,8 @@ public sealed class TabWatcherRetryTests
 
         // § TabWatcher step 6: the count of every tab is dropped when no rule exists, so the restored rule finds the tab at 21 s and tries it 3 times, 5 seconds apart.
         Assert.Equal([0L, 5_000L, 10_000L, 21_000L, 26_000L, 31_000L], rig.AttemptTimes);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so no move of either kind worked.
+        Assert.Empty(rig.Tabs.Opens);
         Assert.Empty(rig.Tabs.Reloads);
     }
 
@@ -336,10 +360,12 @@ public sealed class TabWatcherRetryTests
         rig.Tabs.SetWindows(Chrome, ("1", Blocked), ("2", OtherBlocked));
         await rig.TickUntil(30_000);
 
-        // Window 2 is reloaded once, at once; window 1, whose address never reads back, gets its three attempts and no reload.
-        Assert.Equal([(Chrome, "2")], rig.Tabs.Reloads);
+        // Window 2 is sent once, at once; window 1, whose address never reads back, gets its three attempts and no move.
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so window 2's move is an Open and the line is the sent line.
+        Assert.Equal([(Chrome, "2", ShortsPage)], rig.Tabs.Opens);
+        Assert.Empty(rig.Tabs.Reloads);
         Assert.Equal(3, rig.Tabs.CurrentUrlCalls.Count(call => call.Window == "1"));
         Assert.Equal(1, rig.Tabs.CurrentUrlCalls.Count(call => call.Window == "2"));
-        Assert.Equal([ReloadLine], rig.Log.Lines);
+        Assert.Equal([SentLine], rig.Log.Lines);
     }
 }

@@ -188,7 +188,8 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         {
             Exception error = thrown is AggregateException { InnerException: { } inner } ? inner : thrown;
             if (error is ElementNotAvailableException) Forget(hwnd);
-            PostKey(hwnd, NativeMethods.VkEscape);
+            // Escape takes back typed text only when the address bar holds the focus; sent to a page, it could close a dialog or leave full screen.
+            try { if (bar.Current.HasKeyboardFocus) PostKey(hwnd, NativeMethods.VkEscape); } catch (Exception) { }
             string detail = error is InvalidOperationException or TimeoutException ? $"{error.GetType().Name}: {error.Message}" : error.GetType().Name;
             if (ShouldReport("open")) _log.Info($"tab reader: sending a tab to the blocked page failed ({detail})");
             throw error;
@@ -204,8 +205,10 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         if (!bar.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern)) throw new InvalidOperationException("The address bar offers no Value pattern.");
         var value = (ValuePattern)pattern;
         if (value.Current.IsReadOnly) throw new InvalidOperationException("The address bar is read-only.");
-        // The focus brings the window forward when Windows allows it; when it does not, the browser still moves the focus inside its own window, which is where the Enter key goes.
+        // The focus brings the window forward when Windows allows it. Enter goes to whatever holds the focus inside the window, so without the focus in the address bar nothing is typed or pressed:
+        // the key would go to the page instead, where it could submit a form.
         try { bar.SetFocus(); } catch (InvalidOperationException) { }
+        if (!bar.Current.HasKeyboardFocus) throw new InvalidOperationException("The address bar could not be given the focus.");
         value.SetValue(url);
         PostKey(hwnd, NativeMethods.VkReturn);
         // The browser may show the rest of the address decoded, so only the part up to the first comma (for the blocked page, "data:text/html;charset=utf-8,") is compared.

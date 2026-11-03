@@ -109,7 +109,7 @@ public sealed class FakeBrowserTabs : IBrowserTabs
     public List<(int Pid, string Window)> CurrentUrlCalls { get; } = [];
     public int RunningBrowsersCalls { get; private set; }
 
-    public int TotalCalls { get { lock (_gate) return RunningBrowsersCalls + ReadWindowsCalls.Count + CurrentUrlCalls.Count + Reloads.Count + Opens.Count; } }
+    public int TotalCalls { get { lock (_gate) return RunningBrowsersCalls + ReadWindowsCalls.Count + CurrentUrlCalls.Count + Reloads.Count + OpenAttempts.Count; } }
 
     // Lists the browsers the test put in.
     public IReadOnlyList<BrowserProcess> RunningBrowsers()
@@ -135,11 +135,15 @@ public sealed class FakeBrowserTabs : IBrowserTabs
     }
 
     public bool OpenThrows { get; set; }
+    // Moves that worked.
     public List<(int Pid, string Window, string Url)> Opens { get; } = [];
+    // Every call to Open, including the ones that threw, in call order.
+    public List<(int Pid, string Window, string Url)> OpenAttempts { get; } = [];
 
     // Records the move to an address, or throws when the test asked for a failing address bar.
     public void Open(int processId, string windowId, string url)
     {
+        lock (_gate) OpenAttempts.Add((processId, windowId, url));
         if (OpenThrows) throw new InvalidOperationException("no address bar");
         lock (_gate) Opens.Add((processId, windowId, url));
     }

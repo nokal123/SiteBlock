@@ -8,6 +8,9 @@ public sealed class TabWatcherTests
     private const int Chrome = 4100;
     private const int Edge = 5200;
     private static readonly WatchedPathRule Shorts = new("youtube.com", "/shorts");
+    // The log line of 06-windows.md § TabWatcher after a successful Open, and the page a youtube.com/shorts tab is sent to.
+    private const string SentChrome = "sent a Google Chrome tab to the blocked page";
+    private static readonly string ShortsPage = BlockedPage.Address("youtube.com/shorts");
 
     private static (TabWatcher Watcher, FakeBrowserTabs Tabs, RecordingLog Log) Make(params WatchedPathRule[] rules)
     {
@@ -29,14 +32,16 @@ public sealed class TabWatcherTests
     }
 
     [Fact]
-    public async Task Tick_MatchingWindow_ReloadsItOnceAndLogsOnlyTheBrowserName()
+    public async Task Tick_MatchingWindow_SendsItToTheBlockedPageOnceAndLogsOnlyTheBrowserName()
     {
         var (watcher, tabs, log) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/abc"));
         await watcher.TryRunTickAsync();
-        Assert.Equal([(Chrome, "1")], tabs.Reloads);
-        Assert.Equal(["reloaded a Google Chrome tab on a blocked part of a site"], log.Lines);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the move is an Open to the rule's blocked page and no reload is pressed.
+        Assert.Equal([(Chrome, "1", ShortsPage)], tabs.Opens);
+        Assert.Empty(tabs.Reloads);
+        Assert.Equal([SentChrome], log.Lines);
     }
 
     [Fact]
@@ -46,12 +51,13 @@ public sealed class TabWatcherTests
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/abc"));
         for (int i = 0; i < 4; i++) await watcher.TryRunTickAsync();
-        Assert.Single(tabs.Reloads);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the one action is an Open, not a reload.
+        Assert.Single(tabs.OpenAttempts);
         Assert.Single(log.Lines);
     }
 
     [Fact]
-    public async Task Tick_WindowMovesToAnotherBlockedAddress_IsReloadedAgain()
+    public async Task Tick_WindowMovesToAnotherBlockedAddress_IsSentAgain()
     {
         var (watcher, tabs, _) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
@@ -59,11 +65,12 @@ public sealed class TabWatcherTests
         await watcher.TryRunTickAsync();
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/def"));
         await watcher.TryRunTickAsync();
-        Assert.Equal(2, tabs.Reloads.Count);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so each blocked address gets its own Open.
+        Assert.Equal(2, tabs.Opens.Count);
     }
 
     [Fact]
-    public async Task Tick_WindowLeavesAndReturnsToSameBlockedAddress_IsReloadedAgain()
+    public async Task Tick_WindowLeavesAndReturnsToSameBlockedAddress_IsSentAgain()
     {
         var (watcher, tabs, _) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
@@ -73,11 +80,12 @@ public sealed class TabWatcherTests
         await watcher.TryRunTickAsync();
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/abc"));
         await watcher.TryRunTickAsync();
-        Assert.Equal(2, tabs.Reloads.Count);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the return is counted in Opens.
+        Assert.Equal(2, tabs.Opens.Count);
     }
 
     [Fact]
-    public async Task Tick_SecondReadShowsWindowMovedOn_DoesNotReload()
+    public async Task Tick_SecondReadShowsWindowMovedOn_NeitherOpensNorReloads()
     {
         var (watcher, tabs, log) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
@@ -85,18 +93,22 @@ public sealed class TabWatcherTests
         tabs.CurrentOverrides[(Chrome, "1")] = "https://www.youtube.com/watch?v=xyz";
         await watcher.TryRunTickAsync();
         Assert.Equal([(Chrome, "1")], tabs.CurrentUrlCalls);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so a tab that moved on must get no Open as well as no reload.
+        Assert.Empty(tabs.OpenAttempts);
         Assert.Empty(tabs.Reloads);
         Assert.Empty(log.Lines);
     }
 
     [Fact]
-    public async Task Tick_SecondReadUnreadable_DoesNotReload()
+    public async Task Tick_SecondReadUnreadable_NeitherOpensNorReloads()
     {
         var (watcher, tabs, _) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/abc"));
         tabs.CurrentOverrides[(Chrome, "1")] = null;
         await watcher.TryRunTickAsync();
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so an unreadable second read must stop the Open too.
+        Assert.Empty(tabs.OpenAttempts);
         Assert.Empty(tabs.Reloads);
     }
 
@@ -107,7 +119,8 @@ public sealed class TabWatcherTests
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/watch?v=1"), ("2", "https://notyoutube.com/shorts/x"), ("3", "https://www.youtube.com/Shorts/x"), ("4", "https://www.youtube.com/shorts/x"));
         await watcher.TryRunTickAsync();
-        Assert.Equal([(Chrome, "4")], tabs.Reloads);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so only window 4 is opened.
+        Assert.Equal([(Chrome, "4", ShortsPage)], tabs.Opens);
         Assert.Equal([(Chrome, "4")], tabs.CurrentUrlCalls);
     }
 
@@ -120,8 +133,9 @@ public sealed class TabWatcherTests
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/abc"));
         tabs.SetWindows(Edge, ("1", "https://www.youtube.com/shorts/abc"));
         await watcher.TryRunTickAsync();
-        Assert.Equal([(Chrome, "1"), (Edge, "1")], tabs.Reloads.OrderBy(r => r.Pid));
-        Assert.Contains("reloaded a Microsoft Edge tab on a blocked part of a site", log.Lines);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so each browser's window 1 gets its own Open and its own sent line.
+        Assert.Equal([(Chrome, "1"), (Edge, "1")], tabs.Opens.Select(o => (o.Pid, o.Window)).OrderBy(r => r.Pid));
+        Assert.Contains("sent a Microsoft Edge tab to the blocked page", log.Lines);
     }
 
     [Fact]
@@ -136,7 +150,8 @@ public sealed class TabWatcherTests
         await watcher.TryRunTickAsync();
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         await watcher.TryRunTickAsync();
-        Assert.Equal(2, tabs.Reloads.Count(r => r.Pid == Chrome));
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the fresh process shows as a second Open.
+        Assert.Equal(2, tabs.Opens.Count(r => r.Pid == Chrome));
     }
 
     [Fact]
@@ -150,7 +165,8 @@ public sealed class TabWatcherTests
         await watcher.TryRunTickAsync();
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         await watcher.TryRunTickAsync();
-        Assert.Equal(2, tabs.Reloads.Count);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so forgetting shows as a second Open.
+        Assert.Equal(2, tabs.Opens.Count);
     }
 
     [Fact]
@@ -164,22 +180,26 @@ public sealed class TabWatcherTests
         await watcher.TryRunTickAsync();
         tabs.UnreadableProcesses.Clear();
         await watcher.TryRunTickAsync();
-        Assert.Single(tabs.Reloads);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the kept memory shows as a single Open.
+        Assert.Single(tabs.OpenAttempts);
     }
 
     [Fact]
-    public async Task Tick_ReloadButtonFails_NoLogLineAndLaterTicksStillRun()
+    public async Task Tick_OpenAndReloadButtonBothFail_NoLogLineAndLaterTicksStillRun()
     {
         var (watcher, tabs, log) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/abc"));
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so a failed action means both the Open and the reload fallback failed.
+        tabs.OpenThrows = true;
         tabs.ReloadThrows = true;
         Assert.True(await watcher.TryRunTickAsync());
         Assert.Empty(log.Lines);
+        tabs.OpenThrows = false;
         tabs.ReloadThrows = false;
         tabs.SetWindows(Chrome, ("2", "https://m.youtube.com/shorts/q"));
         Assert.True(await watcher.TryRunTickAsync());
-        Assert.Equal([(Chrome, "2")], tabs.Reloads);
+        Assert.Equal([(Chrome, "2", ShortsPage)], tabs.Opens);
     }
 
     [Fact]
@@ -204,8 +224,15 @@ public sealed class TabWatcherTests
         tabs.Browsers.Add(new BrowserProcess(Edge, "Microsoft Edge"));
         tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/secret-video"), ("2", "https://www.instagram.com/reels/abc?utm=1"));
         tabs.SetWindows(Edge, ("9", "http://youtube.com/shorts/x#frag"));
+        // Half the moves fail, so both log lines (the sent line and the reload line) are checked.
         await watcher.TryRunTickAsync();
-        Assert.Equal(3, log.Lines.Count);
+        tabs.OpenThrows = true;
+        tabs.SetWindows(Chrome, ("1", "https://www.youtube.com/shorts/other-secret"), ("2", "https://www.instagram.com/reels/def"));
+        tabs.SetWindows(Edge, ("9", "http://youtube.com/shorts/y#frag"));
+        await watcher.TryRunTickAsync();
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the first look writes three sent lines and the second three reload lines.
+        Assert.Equal(3, log.Lines.Count(line => line.StartsWith("sent a ", StringComparison.Ordinal)));
+        Assert.Equal(3, log.Lines.Count(line => line.StartsWith("reloaded a ", StringComparison.Ordinal)));
         foreach (string line in log.Lines)
         {
             foreach (string forbidden in new[] { "youtube", "instagram", "shorts", "reels", "http", "/", "secret" }) Assert.DoesNotContain(forbidden, line, StringComparison.OrdinalIgnoreCase);
@@ -240,14 +267,15 @@ public sealed class TabWatcherTests
     }
 
     [Fact]
-    public async Task Tick_AddressBarTextWithoutScheme_IsReloadedOnceGivenHttps()
+    public async Task Tick_AddressBarTextWithoutScheme_IsSentOnceGivenHttps()
     {
         // The reader turns the bare address-bar text into an address with BrowserAddress.ToUrl, as UiaBrowserTabs does.
         var (watcher, tabs, _) = Make(Shorts);
         tabs.Browsers.Add(new BrowserProcess(Chrome, "Google Chrome"));
         tabs.SetWindows(Chrome, ("1", BrowserAddress.ToUrl("youtube.com/shorts/abc")));
         await watcher.TryRunTickAsync();
-        Assert.Single(tabs.Reloads);
+        // The design sends the tab to the blocked page first (06-windows.md § TabWatcher step 5), so the single action is an Open.
+        Assert.Single(tabs.Opens);
     }
 }
 

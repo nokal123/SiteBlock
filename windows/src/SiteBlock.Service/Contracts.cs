@@ -45,6 +45,9 @@ public interface IBrowserPolicyEnforcer
 {
     /// Runs one pass for all four browsers and returns true when every write succeeded, then asks the browsers to read their policy again when the pass changed anything. With `adultFilter` false and empty lists (the uninstaller's call) every value and list SiteBlock owns is removed.
     bool Enforce(BrowserBlockLists lists, bool adultFilter, bool causedByCommand);
+
+    /// True when the last pass left SiteBlock's part of the Local Group Policy file right and no request to apply it waiting or failed. The uninstaller checks it, because entries left in that file would be applied by Windows at every start, long after SiteBlock is gone.
+    bool LocalPolicyHealthy { get; }
 }
 
 /// <summary>Keeps every network adapter's DNS servers on Cloudflare for Families (see 06-windows.md § DNSEnforcer).</summary>

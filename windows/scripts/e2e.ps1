@@ -915,14 +915,25 @@ function Test-RunningChromeGetsNewBlock {
         $control = Get-NavigationOutcome $port "https://www.$TestDomain/"
         if ($control -ne 'net::ERR_BLOCKED_BY_ADMINISTRATOR') { throw "the control navigation to www.$TestDomain, blocked before this Chrome started, ended '$control' instead of net::ERR_BLOCKED_BY_ADMINISTRATOR" }
         $beforeAdd = Get-NavigationOutcome $port "https://$site/"
+        # A Chrome policy value another program wrote straight into the registry. Windows applying SiteBlock's Local Group Policy file must leave it alone.
+        $chromeKey = Open-MachineKey 'SOFTWARE\Policies\Google\Chrome' $true
+        $chromeKey.SetValue('SiteBlockE2EForeignValue', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $chromeKey.Dispose()
 
         $add = Invoke-SiteBlock @('add', $site)
         if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
         $script:LastOutcome = ''
         $blockedAt = Wait-Until 30000 { $script:LastOutcome = Get-NavigationOutcome $port "https://$site/"; $script:LastOutcome -eq 'net::ERR_BLOCKED_BY_ADMINISTRATOR' }
         if ($blockedAt -lt 0) { throw "a navigation to $site was still not refused by Chrome's policy 30 seconds after siteblock add (before the add it ended '$beforeAdd'; the last one ended '$($script:LastOutcome)'). End of siteblockd.log: $(Get-LogTail $DaemonLog 6)" }
-        return "Chrome refused $site $blockedAt ms after siteblock add (before the add it ended '$beforeAdd')"
+        # Windows has applied the file by now (Chrome reacted to it); give it a few more seconds, then the foreign value must still be there.
+        Start-Sleep -Seconds 5
+        $chromeKey = Open-MachineKey 'SOFTWARE\Policies\Google\Chrome'
+        $foreign = $chromeKey.GetValue('SiteBlockE2EForeignValue')
+        $chromeKey.Dispose()
+        if ($foreign -ne 1) { throw "Chrome refused $site after $blockedAt ms, but applying the Local Group Policy file removed a Chrome policy value another program had written to the registry (it reads '$foreign')" }
+        return "Chrome refused $site $blockedAt ms after siteblock add (before the add it ended '$beforeAdd'); a Chrome policy value written straight to the registry by another program survived"
     } finally {
+        try { $cleanup = Open-MachineKey 'SOFTWARE\Policies\Google\Chrome' $true; $cleanup.DeleteValue('SiteBlockE2EForeignValue', $false); $cleanup.Dispose() } catch { }
         Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $started.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }

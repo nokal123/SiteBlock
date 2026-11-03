@@ -60,7 +60,8 @@ public static class Uninstaller
         // The hosts pass gives up when another program keeps saving the file while it works (see HostsEnforcer), and nothing runs after the uninstall to try again, so it
         // is tried a few more times here; otherwise SiteBlock's lines could stay in the hosts file for good.
         Attempt(log, "hosts file", () => Retry(() => services.Hosts.Enforce([], causedByCommand: true), HostsAttempts, HostsRetryDelay));
-        Attempt(log, "browser policy", () => services.Browsers.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true));
+        // SiteBlock's entries in the Local Group Policy file must go too, or Windows would write the block lists back at every start; a file another program holds open is tried again.
+        Attempt(log, "browser policy", () => Retry(() => services.Browsers.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true) && services.Browsers.LocalPolicyHealthy, HostsAttempts, HostsRetryDelay));
         // The saved record is not cleared on disk: the state folder is deleted a moment later, and a retry after a crash restores the same servers again.
         Attempt(log, "DNS restore", () => services.Dns.Enforce(adultFilterActive: false, savedDNS, _ => true) is null);
         if (!paths.IsSandbox) DnsCache.Flush();
