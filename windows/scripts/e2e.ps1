@@ -847,6 +847,49 @@ function Test-LiveTabWatcher {
     }
 }
 
+# 06-windows.md, Testing, item 5. A Chrome that is already running refuses a site blocked after it started, within
+# 30 seconds. Chrome reads its registry policy again only when Windows signals that Group Policy was applied (or on
+# its own 15-minute timer), so this passes only when the service asks Windows for that refresh after it writes the
+# list. Chrome runs headless with its debugging port, and every 2 seconds a new tab is opened on the site; the check
+# passes when one shows ERR_BLOCKED_BY_ADMINISTRATOR. A tab that only fails to connect (the hosts file) does not count.
+# The note also says whether a tab that was already open on the site was left on its page, for the record.
+function Test-RunningChromeGetsNewBlock {
+    $chrome = Find-Chrome
+    if ($null -eq $chrome) { Skip-Check 'Chrome is not installed on this machine' }
+    $site = 'example.org'
+    $port = 9334
+    $chromeProfile = Join-Path ([System.IO.Path]::GetTempPath()) ('siteblock-refresh-' + [guid]::NewGuid().ToString('N'))
+    $started = Start-Process -FilePath $chrome -ArgumentList @('--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', "--remote-debugging-port=$port", "--user-data-dir=$chromeProfile", "https://$site/") -PassThru
+    try {
+        if ((Wait-Until 20000 { @(Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" }).Count -ge 1 }) -lt 0) { throw 'headless Chrome did not open its debugging port within 20 seconds' }
+        $open = Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" } | Select-Object -First 1
+        if ((Wait-Until 20000 { (Invoke-TabScript $open.webSocketDebuggerUrl "document.readyState + ' ' + location.href") -match "^complete https://$([regex]::Escape($site))/" }) -lt 0) { throw "the first tab did not finish loading $site within 20 seconds; it must load before the block for this check to mean anything" }
+        [void](Invoke-TabScript $open.webSocketDebuggerUrl "window.__siteblockMark = 'marked'; 'ok'")
+
+        $add = Invoke-SiteBlock @('add', $site)
+        if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $attempts = 0
+        $lastSeen = ''
+        $blockedAt = -1
+        while ($watch.ElapsedMilliseconds -lt 30000) {
+            $attempts++
+            $tab = Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:$port/json/new?https://$site/?try=$attempts" -TimeoutSec 5
+            Start-Sleep -Milliseconds 1500
+            try { $lastSeen = Invoke-TabScript $tab.webSocketDebuggerUrl "(document.documentElement.outerHTML.indexOf('ERR_BLOCKED_BY_ADMINISTRATOR') >= 0 ? 'blocked ' : 'not-blocked ') + location.href" } catch { $lastSeen = "unreadable: $($_.Exception.Message)" }
+            try { Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/close/$($tab.id)" -TimeoutSec 5 | Out-Null } catch { }
+            if ($lastSeen -like 'blocked *') { $blockedAt = [int]$watch.ElapsedMilliseconds; break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($blockedAt -lt 0) { throw "a new tab on $site was still not refused by Chrome's policy 30 seconds after siteblock add ($attempts tries; the last tab showed '$lastSeen'). End of siteblockd.log: $(Get-LogTail $DaemonLog 10)" }
+        $openState = ''
+        try { $openState = Invoke-TabScript $open.webSocketDebuggerUrl "location.href + ' mark=' + (typeof window.__siteblockMark)" } catch { $openState = "unreadable: $($_.Exception.Message)" }
+        return "Chrome refused a new tab on $site $blockedAt ms after siteblock add (try $attempts); the tab already open on it reads '$openState'"
+    } finally {
+        Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $started.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Serves files from a folder on http://127.0.0.1:<port>/ in a background job, for the live update test. Returns the job.
 function Start-TestServer([string]$folder, [int]$port) {
     return Start-Job -ArgumentList $folder, $port -ScriptBlock {
@@ -1037,6 +1080,7 @@ try {
         Invoke-Check 'deleted watchdog recreated' { Test-DeletedWatchdogRecreated }
         Invoke-Check 'tray app runs and is restarted' { Test-TrayApp }
         Invoke-Check 'upgrade keeps blocks, password and countdowns' { Test-UpgradeKeepsState }
+        Invoke-Check 'running Chrome refuses a newly blocked site' { Test-RunningChromeGetsNewBlock }
         Invoke-Check 'live tab watcher' { Test-LiveTabWatcher }
         Invoke-Check 'live update' { Test-LiveUpdate }
     }

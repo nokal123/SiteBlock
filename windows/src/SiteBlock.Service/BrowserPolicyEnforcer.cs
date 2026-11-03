@@ -12,22 +12,34 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
     // A failure message that repeats is logged at most this often (milliseconds), so a problem that happens every tick does not fill the log.
     private const long RepeatedFailureLogIntervalMs = 60_000;
 
+    // The shortest time between two policy refreshes (milliseconds). A change that comes sooner is refreshed when this has passed, so a run of changes never makes Windows apply policy over and over.
+    internal const long MinRefreshIntervalMs = 5_000;
+
     private readonly IPolicyStore _store;
+    private readonly IPolicyRefresher _refresher;
+    private readonly Func<long> _now;
     private readonly Log _log;
+    // True when a pass changed the registry and the browsers have not yet been asked to read it again.
+    private bool _refreshWanted;
+    // When the last refresh was asked for (milliseconds from the clock), or null before the first one.
+    private long? _lastRefresh;
     // When each failure message was last logged (Environment.TickCount64), tracked per message because several browsers can fail in one pass.
     private readonly Dictionary<string, long> _lastFailures = new(StringComparer.Ordinal);
     // The browsers whose list was too long on the last pass and has already been reported, so the cut is logged once and not on every tick.
     private readonly HashSet<BrowserTarget> _reportedCuts = [];
 
-    /// <summary>Creates an enforcer that reads and writes through the given store.</summary>
-    public BrowserPolicyEnforcer(IPolicyStore store, Log log)
+    /// <summary>Creates an enforcer that reads and writes through the given store and tells the browsers about its changes through the refresher. The clock (milliseconds) defaults to <see cref="Environment.TickCount64"/>.</summary>
+    public BrowserPolicyEnforcer(IPolicyStore store, IPolicyRefresher refresher, Log log, Func<long>? now = null)
     {
         _store = store;
+        _refresher = refresher;
         _log = log;
+        _now = now ?? (() => Environment.TickCount64);
     }
 
     /// <summary>
     /// Runs one pass for all four browsers and returns true when every browser ended correct. A pass that changes anything a command did not ask for logs "browser policy repaired (&lt;browser&gt;)".
+    /// After a pass that changed anything, the browsers are asked to read their policy again, at most once every <see cref="MinRefreshIntervalMs"/>; a change inside that time is refreshed by the first pass after it.
     /// The uninstaller passes empty lists with <paramref name="adultFilter"/> false, which removes every owned value and list subkey and then deletes keys left empty.
     /// </summary>
     public bool Enforce(BrowserBlockLists lists, bool adultFilter, bool causedByCommand)
@@ -42,6 +54,7 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
                 bool changed = EnforceTarget(desired);
                 // Only the uninstall turns the filter off; then the keys SiteBlock emptied are removed too, deepest first.
                 if (!adultFilter) changed |= RemoveEmptyKeys(desired);
+                if (changed) _refreshWanted = true;
                 if (changed && !causedByCommand) _log.Write($"browser policy repaired ({target.DisplayName()})");
             }
             catch (Exception error)
@@ -52,7 +65,27 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
             }
         }
         if (healthy) _lastFailures.Clear();
+        RefreshIfDue();
         return healthy;
+    }
+
+    /// <summary>Asks the browsers to read their policy again when a change is waiting and the last request is at least <see cref="MinRefreshIntervalMs"/> old. A failed request is logged and tried again by the next pass.</summary>
+    private void RefreshIfDue()
+    {
+        if (!_refreshWanted) return;
+        long now = _now();
+        if (_lastRefresh is long last && now - last < MinRefreshIntervalMs) return;
+        // The time is taken before the call, so a request that fails also waits out the interval and a broken refresh is not retried on every tick.
+        _lastRefresh = now;
+        try
+        {
+            _refresher.Refresh();
+            _refreshWanted = false;
+        }
+        catch (Exception error)
+        {
+            LogFailure($"browsers could not be told to read their policy again: {error.GetType().Name}: {error.Message}");
+        }
     }
 
     /// <summary>Brings one browser's key in line with the wanted values and lists. Returns true when anything was written or deleted.</summary>

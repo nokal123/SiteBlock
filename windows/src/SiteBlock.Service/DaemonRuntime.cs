@@ -134,7 +134,7 @@ public sealed record DaemonServices(IHostsEnforcer Hosts, IBrowserPolicyEnforcer
     public static DaemonServices Create(Paths paths, Log log, TimeSpan tickInterval, Func<bool> isUninstalling)
     {
         var hosts = new HostsEnforcer(paths, log);
-        var browsers = new BrowserPolicyEnforcer(PolicyStores.For(paths), log);
+        var browsers = new BrowserPolicyEnforcer(PolicyStores.For(paths), PolicyRefreshers.For(paths), log);
         var dns = DnsEnforcer.Create(paths, log, tickInterval);
         var appGuard = new AppGuard(paths, log, isUninstalling);
         if (paths.IsSandbox || !OperatingSystem.IsWindows()) return new DaemonServices(hosts, browsers, dns, appGuard, null, new AclGuard(paths, log), null);

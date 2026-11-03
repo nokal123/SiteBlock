@@ -44,6 +44,8 @@ public sealed record Paths
     public required string BackupDaemonExe { get; init; }
     /// Sandbox only: the JSON file that stands in for the registry's browser policy keys.
     public required string RegistryFile { get; init; }
+    /// Sandbox only: the file that gains a line each time the service asks the browsers to read their policy again.
+    public required string PolicyRefreshLog { get; init; }
     /// Sandbox only: the JSON file that stands in for the network adapters' DNS settings.
     public required string NetworkServicesFile { get; init; }
     /// Sandbox only: while this file exists the family DNS servers count as unreachable.
@@ -85,6 +87,7 @@ public sealed record Paths
                 BackupDaemonExe = System.IO.Path.Combine(backupAppDir, "siteblockd.exe"),
                 // The sandbox-only files are never read in production; they point inside the data folder so nothing outside it is ever named.
                 RegistryFile = System.IO.Path.Combine(dataDir, "unused-registry.json"),
+                PolicyRefreshLog = System.IO.Path.Combine(dataDir, "unused-policy-refreshes.log"),
                 NetworkServicesFile = System.IO.Path.Combine(dataDir, "unused-network-services.json"),
                 FamilyDnsUnreachableMarker = System.IO.Path.Combine(dataDir, "unused-family-dns-unreachable"),
                 FamilyDnsProbeDelayFile = System.IO.Path.Combine(dataDir, "unused-family-dns-probe-delay"),
@@ -117,6 +120,7 @@ public sealed record Paths
             BackupAppExe = P("backup", "app", "SiteBlockApp.exe"),
             BackupDaemonExe = P("backup", "app", "siteblockd.exe"),
             RegistryFile = P("registry.json"),
+            PolicyRefreshLog = P("policy-refreshes.log"),
             NetworkServicesFile = P("network-services.json"),
             FamilyDnsUnreachableMarker = P("family-dns-unreachable"),
             FamilyDnsProbeDelayFile = P("family-dns-probe-delay"),

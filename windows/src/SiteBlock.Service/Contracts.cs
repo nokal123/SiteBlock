@@ -43,7 +43,7 @@ public interface IHostsEnforcer
 /// <summary>Keeps every browser's registry policy equal to the wanted one (see 06-windows.md § BrowserPolicyEnforcer).</summary>
 public interface IBrowserPolicyEnforcer
 {
-    /// Runs one pass for all four browsers and returns true when every write succeeded. With `adultFilter` false and empty lists (the uninstaller's call) every value and list SiteBlock owns is removed.
+    /// Runs one pass for all four browsers and returns true when every write succeeded, then asks the browsers to read their policy again when the pass changed anything. With `adultFilter` false and empty lists (the uninstaller's call) every value and list SiteBlock owns is removed.
     bool Enforce(BrowserBlockLists lists, bool adultFilter, bool causedByCommand);
 }
 

@@ -160,7 +160,7 @@ public sealed class BrowserPolicyEnforcerTests : IDisposable
 
     private static readonly BrowserBlockLists Lists = new(["redd.it", "reddit.com"], ["youtube.com/shorts"], ["*://*.redd.it/*", "*://*.reddit.com/*"], ["*://*.youtube.com/shorts*"]);
 
-    public BrowserPolicyEnforcerTests() => _enforcer = new BrowserPolicyEnforcer(_registry.Store, new Log(_logPath));
+    public BrowserPolicyEnforcerTests() => _enforcer = new BrowserPolicyEnforcer(_registry.Store, new FilePolicyRefresher(Path.Combine(Path.GetTempPath(), $"sb-refresh-{Guid.NewGuid():N}.log")), new Log(_logPath));
 
     public void Dispose()
     {
