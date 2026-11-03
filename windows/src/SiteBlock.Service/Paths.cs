@@ -44,8 +44,12 @@ public sealed record Paths
     public required string BackupDaemonExe { get; init; }
     /// Sandbox only: the JSON file that stands in for the registry's browser policy keys.
     public required string RegistryFile { get; init; }
-    /// Sandbox only: the file that gains a line each time the service asks the browsers to read their policy again.
+    /// Sandbox only: the file that gains a line each time the service asks Windows to apply policy again.
     public required string PolicyRefreshLog { get; init; }
+    /// The computer's Local Group Policy file, which holds a copy of SiteBlock's browser policy so Windows applies it and signals the browsers.
+    public required string LocalPolicyFile { get; init; }
+    /// The Local Group Policy's gpt.ini, whose version number tells Windows the policy file changed.
+    public required string LocalPolicyIni { get; init; }
     /// Sandbox only: the JSON file that stands in for the network adapters' DNS settings.
     public required string NetworkServicesFile { get; init; }
     /// Sandbox only: while this file exists the family DNS servers count as unreachable.
@@ -88,6 +92,8 @@ public sealed record Paths
                 // The sandbox-only files are never read in production; they point inside the data folder so nothing outside it is ever named.
                 RegistryFile = System.IO.Path.Combine(dataDir, "unused-registry.json"),
                 PolicyRefreshLog = System.IO.Path.Combine(dataDir, "unused-policy-refreshes.log"),
+                LocalPolicyFile = System.IO.Path.Combine(Environment.SystemDirectory, "GroupPolicy", "Machine", "Registry.pol"),
+                LocalPolicyIni = System.IO.Path.Combine(Environment.SystemDirectory, "GroupPolicy", "gpt.ini"),
                 NetworkServicesFile = System.IO.Path.Combine(dataDir, "unused-network-services.json"),
                 FamilyDnsUnreachableMarker = System.IO.Path.Combine(dataDir, "unused-family-dns-unreachable"),
                 FamilyDnsProbeDelayFile = System.IO.Path.Combine(dataDir, "unused-family-dns-probe-delay"),
@@ -121,6 +127,8 @@ public sealed record Paths
             BackupDaemonExe = P("backup", "app", "siteblockd.exe"),
             RegistryFile = P("registry.json"),
             PolicyRefreshLog = P("policy-refreshes.log"),
+            LocalPolicyFile = P("GroupPolicy", "Machine", "Registry.pol"),
+            LocalPolicyIni = P("GroupPolicy", "gpt.ini"),
             NetworkServicesFile = P("network-services.json"),
             FamilyDnsUnreachableMarker = P("family-dns-unreachable"),
             FamilyDnsProbeDelayFile = P("family-dns-probe-delay"),

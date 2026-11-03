@@ -65,6 +65,8 @@ function Add-Result([string]$outcome, [string]$name, [string]$why) {
     switch ($outcome) {
         'PASS' {
             if ($why) { Write-Host "PASS $name ($why)" -ForegroundColor Green } else { Write-Host "PASS $name" -ForegroundColor Green }
+            # The timing of the checks that measure how fast a running browser is blocked is a notice on the run page, so it can be read without downloading the logs.
+            if ($why -and ($name -like 'running Chrome*' -or $name -like 'live tab watcher*')) { Write-Host ('::notice title={0}::{1}' -f (ConvertTo-AnnotationText "e2e $name" -Title), (ConvertTo-AnnotationText $why)) }
         }
         'SKIP' {
             Write-Host "SKIP ${name}: $why" -ForegroundColor Yellow
@@ -842,7 +844,7 @@ function Test-LiveTabWatcher {
         }
         $stayMark = Invoke-TabScript $staying.webSocketDebuggerUrl 'window.__siteblockMark'
         if ($stayMark -ne 'marked') { throw 'the second window, which never left an allowed page, was reloaded too' }
-        $landed = @(Get-ChromeTabs $port | Where-Object { $_.id -eq $moving.id } | ForEach-Object { $_.url }) -join ''
+        $landed = [string](Invoke-TabScript $moving.webSocketDebuggerUrl 'location.href')
         if (-not $landed.StartsWith('data:text/html')) { throw "the tab was moved off the blocked path, but not to the blocked page (it is at '$($landed.Substring(0, [Math]::Min(60, $landed.Length)))')" }
         return "sent to the blocked page once after $elapsed ms; the other window was left alone"
     } finally {
@@ -892,86 +894,10 @@ function Get-NavigationOutcome([int]$port, [string]$url) {
     }
 }
 
-# Calls RegisterGPNotification, as Chrome does, for computer policy and returns the event it signals.
-function Register-PolicySignal {
-    if (-not ('SiteBlockE2E.GpNotify' -as [type])) {
-        Add-Type -Namespace SiteBlockE2E -Name GpNotify -MemberDefinition '[DllImport("userenv.dll", SetLastError = true)] public static extern bool RegisterGPNotification(IntPtr hEvent, bool bMachine); [DllImport("userenv.dll", SetLastError = true)] public static extern bool UnregisterGPNotification(IntPtr hEvent);'
-    }
-    $signal = New-Object System.Threading.AutoResetEvent $false
-    if (-not [SiteBlockE2E.GpNotify]::RegisterGPNotification($signal.SafeWaitHandle.DangerousGetHandle(), $true)) { throw "RegisterGPNotification failed with error $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-    return $signal
-}
-
-# Undoes Register-PolicySignal.
-function Unregister-PolicySignal($signal) {
-    [void][SiteBlockE2E.GpNotify]::UnregisterGPNotification($signal.SafeWaitHandle.DangerousGetHandle())
-    $signal.Dispose()
-}
-
-# Builds the bytes of a Registry.pol file (the "PReg" format of Local Group Policy) holding text values: each item is
-# @(key, name, text).
-function New-RegistryPol($items) {
-    $out = New-Object System.IO.MemoryStream
-    $w = New-Object System.IO.BinaryWriter $out
-    $w.Write([byte[]](0x50, 0x52, 0x65, 0x67))
-    $w.Write([uint32]1)
-    $u = [System.Text.Encoding]::Unicode
-    foreach ($item in $items) {
-        $data = $u.GetBytes($item[2] + [char]0)
-        $w.Write($u.GetBytes('[' + $item[0] + [char]0 + ';' + $item[1] + [char]0 + ';'))
-        $w.Write([uint32]1)
-        $w.Write($u.GetBytes(';'))
-        $w.Write([uint32]$data.Length)
-        $w.Write($u.GetBytes(';'))
-        $w.Write($data)
-        $w.Write($u.GetBytes(']'))
-    }
-    $w.Flush()
-    return $out.ToArray()
-}
-
-# The experiment behind the Local Group Policy design: copies Chrome's current URLBlocklist values from the registry into
-# the Local Group Policy file, raises the computer version in gpt.ini, runs gpupdate /target:computer (not forced), and
-# reports whether Windows signalled the change and whether the running Chrome then refused the site. The two files are
-# put back afterwards.
-function Test-LocalPolicyExperiment([int]$port, [string]$site) {
-    $gpDir = Join-Path $env:SystemRoot 'System32\GroupPolicy'
-    $polPath = Join-Path $gpDir 'Machine\Registry.pol'
-    $iniPath = Join-Path $gpDir 'gpt.ini'
-    $polBefore = if (Test-Path -LiteralPath $polPath) { [System.IO.File]::ReadAllBytes($polPath) } else { $null }
-    $iniBefore = if (Test-Path -LiteralPath $iniPath) { [System.IO.File]::ReadAllText($iniPath) } else { $null }
-    $listKey = 'SOFTWARE\Policies\Google\Chrome\URLBlocklist'
-    $key = Open-MachineKey $listKey
-    $items = @()
-    foreach ($name in $key.GetValueNames()) { $items += ,@('Software\Policies\Google\Chrome\URLBlocklist', $name, [string]$key.GetValue($name)) }
-    $key.Dispose()
-    $version = 0
-    if ($iniBefore -and $iniBefore -match '(?m)^Version=(\d+)') { $version = [int]$Matches[1] }
-    $signal = Register-PolicySignal
-    try {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $polPath) -Force | Out-Null
-        [System.IO.File]::WriteAllBytes($polPath, (New-RegistryPol $items))
-        $ini = "[General]`r`ngPCMachineExtensionNames=[{35378EAC-683F-11D2-A89A-00C04FBBCFA2}{D02B1F72-3407-48AE-BA88-E8213C6761F1}]`r`nVersion=$($version + 1)`r`n"
-        [System.IO.File]::WriteAllText($iniPath, $ini, [System.Text.Encoding]::ASCII)
-        $watch = [System.Diagnostics.Stopwatch]::StartNew()
-        $gp = Invoke-Program 'gpupdate.exe' @('/target:computer') @() 120
-        $signalled = $signal.WaitOne(30000)
-        $signalNote = if ($signalled) { "Windows signalled after $($watch.ElapsedMilliseconds) ms" } else { "Windows did not signal within 30 seconds (gpupdate exit $($gp.ExitCode))" }
-        $refusedAt = Wait-Until 20000 { $script:ExperimentOutcome = Get-NavigationOutcome $port "https://$site/"; $script:ExperimentOutcome -eq 'net::ERR_BLOCKED_BY_ADMINISTRATOR' }
-        $chromeNote = if ($refusedAt -ge 0) { "Chrome refused $site $refusedAt ms later" } else { "Chrome still did not refuse $site 20 seconds later ($($script:ExperimentOutcome))" }
-        return "Local Group Policy experiment ($($items.Count) entries): $signalNote; $chromeNote"
-    } finally {
-        Unregister-PolicySignal $signal
-        if ($null -eq $polBefore) { Remove-Item -LiteralPath $polPath -Force -ErrorAction SilentlyContinue } else { [System.IO.File]::WriteAllBytes($polPath, $polBefore) }
-        $iniAfter = if ($null -eq $iniBefore) { "[General]`r`nVersion=$($version + 2)`r`n" } else { $iniBefore -replace '(?m)^Version=\d+', "Version=$($version + 2)" }
-        [System.IO.File]::WriteAllText($iniPath, $iniAfter, [System.Text.Encoding]::ASCII)
-        Invoke-Program 'gpupdate.exe' @('/target:computer') @() 120 | Out-Null
-    }
-}
-
 # 06-windows.md, Testing, item 5. A Chrome that is already running refuses a site blocked after it started, within
 # 30 seconds. Chrome reads its registry policy again only when Windows signals that Group Policy was applied (or on
-# its own 15-minute timer). Chrome runs headless with its debugging port, and every 2 seconds a new tab is navigated to
+# its own 15-minute timer), so this passes only when the service's copy of the lists in the Local Group Policy file
+# was applied by Windows. Chrome runs headless with its debugging port, and every 2 seconds a new tab is navigated to
 # the site; the check passes when the navigation fails with net::ERR_BLOCKED_BY_ADMINISTRATOR (a failure to connect,
 # which the hosts file causes, does not count). youtube.com, blocked before this Chrome started, is the control.
 function Test-RunningChromeGetsNewBlock {
@@ -991,11 +917,7 @@ function Test-RunningChromeGetsNewBlock {
         if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
         $script:LastOutcome = ''
         $blockedAt = Wait-Until 30000 { $script:LastOutcome = Get-NavigationOutcome $port "https://$site/"; $script:LastOutcome -eq 'net::ERR_BLOCKED_BY_ADMINISTRATOR' }
-        if ($blockedAt -lt 0) {
-            $experiment = ''
-            try { $experiment = Test-LocalPolicyExperiment $port $site } catch { $experiment = "the Local Group Policy experiment failed: $($_.Exception.Message)" }
-            throw "a navigation to $site was still not refused by Chrome's policy 30 seconds after siteblock add (before the add it ended '$beforeAdd'; the last one ended '$($script:LastOutcome)'). $experiment. End of siteblockd.log: $(Get-LogTail $DaemonLog 6)"
-        }
+        if ($blockedAt -lt 0) { throw "a navigation to $site was still not refused by Chrome's policy 30 seconds after siteblock add (before the add it ended '$beforeAdd'; the last one ended '$($script:LastOutcome)'). End of siteblockd.log: $(Get-LogTail $DaemonLog 6)" }
         return "Chrome refused $site $blockedAt ms after siteblock add (before the add it ended '$beforeAdd')"
     } finally {
         Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $started.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -1010,10 +932,11 @@ function Test-LiveWholeSite {
     if ($null -eq $chrome) { Skip-Check 'Chrome is not installed on this machine' }
     $session = Get-ConsoleSessionId
     if ((Get-Process -Id $PID).SessionId -ne $session) { Skip-Check "this script does not run on the interactive desktop (it is in session $((Get-Process -Id $PID).SessionId), the console is session $session)" }
-    $site = 'example.net'
+    # example.com is the one test site that loads reliably on GitHub's machine. Its path rule from the check before stays, and the whole site is blocked here.
+    $site = 'example.com'
     $port = 9336
     $chromeProfile = Join-Path ([System.IO.Path]::GetTempPath()) ('siteblock-whole-' + [guid]::NewGuid().ToString('N'))
-    $started = Start-Process -FilePath $chrome -ArgumentList @("--remote-debugging-port=$port", "--user-data-dir=$chromeProfile", '--no-first-run', '--no-default-browser-check', '--new-window', "https://$site/") -PassThru
+    $started = Start-Process -FilePath $chrome -ArgumentList @("--remote-debugging-port=$port", "--user-data-dir=$chromeProfile", '--no-first-run', '--no-default-browser-check', '--new-window', "https://$site/?whole") -PassThru
     try {
         if ((Wait-Until 20000 { @(Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" }).Count -ge 1 }) -lt 0) { throw "Chrome did not open $site within 20 seconds" }
         $tab = Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" } | Select-Object -First 1
@@ -1023,7 +946,7 @@ function Test-LiveWholeSite {
         if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
         # The tray app learns of a site added from the command line on its next status poll, every 30 seconds while its panel is closed.
         $script:WholeSiteUrl = ''
-        $elapsed = Wait-Until 45000 { $script:WholeSiteUrl = @(Get-ChromeTabs $port | Where-Object { $_.id -eq $tab.id } | ForEach-Object { $_.url }) -join ''; $script:WholeSiteUrl.StartsWith('data:text/html') }
+        $elapsed = Wait-Until 45000 { $script:WholeSiteUrl = [string](Invoke-TabScript $tab.webSocketDebuggerUrl 'location.href'); $script:WholeSiteUrl.StartsWith('data:text/html') }
         if ($elapsed -lt 0) { throw "the tab open on $site was not sent to the blocked page within 45 seconds (it is at '$($script:WholeSiteUrl)'). End of app.log: $(Get-LogTail (Join-Path $env:LOCALAPPDATA 'SiteBlock\Logs\app.log') 12)" }
         Start-Sleep -Seconds 5
         $moves = (Get-TabReloadCount) - $before
