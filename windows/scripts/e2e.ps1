@@ -883,7 +883,19 @@ function Test-RunningChromeGetsNewBlock {
             if ($lastSeen -like 'blocked *') { $blockedAt = [int]$watch.ElapsedMilliseconds; break }
             Start-Sleep -Milliseconds 500
         }
-        if ($blockedAt -lt 0) { throw "a new tab on $site was still not refused by Chrome's policy 30 seconds after siteblock add ($attempts tries; the last tab showed '$lastSeen'). End of siteblockd.log: $(Get-LogTail $DaemonLog 10)" }
+        if ($blockedAt -lt 0) {
+            # For the diagnosis: whether a forced Group Policy refresh run by hand reaches this Chrome at all.
+            $gp = Invoke-Program 'gpupdate.exe' @('/target:computer', '/force') @() 120
+            $afterGp = Wait-Until 30000 {
+                $probe = Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:$port/json/new?https://$site/?gp" -TimeoutSec 5
+                Start-Sleep -Milliseconds 1500
+                $seen = Invoke-TabScript $probe.webSocketDebuggerUrl "document.documentElement.outerHTML.indexOf('ERR_BLOCKED_BY_ADMINISTRATOR') >= 0 ? 'blocked' : 'not-blocked'"
+                try { Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/close/$($probe.id)" -TimeoutSec 5 | Out-Null } catch { }
+                $seen -eq 'blocked'
+            }
+            $gpNote = if ($afterGp -ge 0) { "after gpupdate /force (exit $($gp.ExitCode)) Chrome refused it within $afterGp ms" } else { "even gpupdate /force (exit $($gp.ExitCode)) did not make Chrome refuse it within 30 seconds" }
+            throw "a new tab on $site was still not refused by Chrome's policy 30 seconds after siteblock add ($attempts tries; the last tab showed '$lastSeen'); $gpNote. End of siteblockd.log: $(Get-LogTail $DaemonLog 10)"
+        }
         $openState = "it never loaded (it last read '$($script:OpenTabState)')"
         if ($openLoaded) { try { $openState = Invoke-TabScript $open.webSocketDebuggerUrl "location.href + ' mark=' + (typeof window.__siteblockMark)" } catch { $openState = "unreadable: $($_.Exception.Message)" } }
         return "Chrome refused a new tab on $site $blockedAt ms after siteblock add (try $attempts); the tab already open on it reads '$openState'"

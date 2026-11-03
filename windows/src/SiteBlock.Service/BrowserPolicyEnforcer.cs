@@ -81,6 +81,7 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
         {
             _refresher.Refresh();
             _refreshWanted = false;
+            _log.Write("asked Windows to apply policy again, so running browsers read the new block lists");
         }
         catch (Exception error)
         {

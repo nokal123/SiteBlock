@@ -26,7 +26,7 @@ public static class PolicyRefreshers
 }
 
 /// <summary>
-/// Asks Windows to apply the computer's Group Policy again (<c>RefreshPolicyEx</c>, the call behind <c>gpupdate /target:computer</c>). When that finishes, Windows signals every program that
+/// Asks Windows to apply the computer's Group Policy again (<c>RefreshPolicyEx</c> with RP_FORCE, the call behind <c>gpupdate /target:computer /force</c>). When that finishes, Windows signals every program that
 /// registered for policy changes, and Chrome, Edge and Brave then read their policy keys again. The call only starts the refresh and returns; it does not wait for it.
 /// </summary>
 [SupportedOSPlatform("windows")]
@@ -35,9 +35,13 @@ public sealed class GroupPolicyRefresher : IPolicyRefresher
     /// <summary>Starts a refresh of the computer's policy, or throws a <see cref="Win32Exception"/> with Windows' error when it cannot be started.</summary>
     public void Refresh()
     {
-        // bMachine true refreshes computer policy, which is where HKEY_LOCAL_MACHINE\SOFTWARE\Policies belongs; option 0 applies only what changed, so the refresh stays light.
-        if (!RefreshPolicyEx(true, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        // bMachine true refreshes computer policy, which is where HKEY_LOCAL_MACHINE\SOFTWARE\Policies belongs. RP_FORCE applies every setting again even when Windows' own policy
+        // files did not change; without it Windows skips the work, because SiteBlock writes the registry directly, and the browsers are never signalled.
+        if (!RefreshPolicyEx(true, RpForce)) throw new Win32Exception(Marshal.GetLastWin32Error());
     }
+
+    // RefreshPolicyEx's option to apply all policy again, not only what changed.
+    private const uint RpForce = 1;
 
     [DllImport("userenv.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
