@@ -288,3 +288,23 @@ The user set an autonomous overnight goal on 2026-10-06 ("make the decisions you
 - Waived: the user turned comprehension gates off for SiteBlock.
 
 ---
+
+## 2026-11-03 — Windows: running browsers pick up new blocks, and the tab watcher covers whole sites
+
+**Implemented:**
+- Cause: Chrome, Edge and Brave on Windows read their registry policy at start, on a 15-minute timer, and when Windows signals a Group Policy change (Chromium's `PolicyLoaderWin` listens only through `RegisterGPNotification`). SiteBlock wrote the registry directly, which sends no signal, so a running browser kept allowing a newly blocked site for up to 15 minutes. Tested on GitHub's Windows machine: even `gpupdate /force` sends no signal while Windows' own policy files are unchanged.
+- The service now also keeps SiteBlock's browser policy in the Local Group Policy file (`Registry.pol`, with the computer version in `gpt.ini` raised), keeping the owner's own entries, and after a change asks Windows to apply it (`RefreshPolicyEx` with RP_FORCE, at most every 5 seconds). Tested live: a running Chrome refused a newly blocked site about 2 seconds after `siteblock add`, and a Chrome value written straight to the registry by another program survived. The uninstall removes SiteBlock's entries from the file and retries until that worked.
+- The Windows tab watcher now watches whole sites too and sends a matching visible tab to a `data:` "Blocked by SiteBlock" page by typing it into the address bar through UI Automation (only when the address bar holds the focus), pressing reload when that fails; it checks every 4 seconds with only whole sites, every half second with a path rule, and at once when the rules change. Covers Windows Home, where the Local Group Policy file may not be applied.
+- Review and audit fixes: uninstall cleanup checked and retried; Enter and Escape never sent to a page; failure lines once a minute; gpt.ini written before Registry.pol and byte for byte; temp files cleaned up.
+- Tests: about 95 new cases (Local Group Policy format and merge, enforcer timing and failures, blocked page, watched rules, tab watcher), one audit with 14 mutants and one fix round; 923 Windows tests pass on the Mac and all 29 end-to-end checks pass on GitHub's Windows machine, including three new live checks.
+
+**User's summary:**
+> Gate waived for this project (user decision, 2026-10-13).
+
+**Gaps found:**
+- Not assessed (gate waived).
+
+**Resolution:**
+- Waived: the user turned comprehension gates off for SiteBlock.
+
+---
