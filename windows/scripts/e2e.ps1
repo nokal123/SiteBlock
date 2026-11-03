@@ -863,8 +863,10 @@ function Test-RunningChromeGetsNewBlock {
     try {
         if ((Wait-Until 20000 { @(Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" }).Count -ge 1 }) -lt 0) { throw 'headless Chrome did not open its debugging port within 20 seconds' }
         $open = Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" } | Select-Object -First 1
-        if ((Wait-Until 20000 { (Invoke-TabScript $open.webSocketDebuggerUrl "document.readyState + ' ' + location.href") -match "^complete https://$([regex]::Escape($site))/" }) -lt 0) { throw "the first tab did not finish loading $site within 20 seconds; it must load before the block for this check to mean anything" }
-        [void](Invoke-TabScript $open.webSocketDebuggerUrl "window.__siteblockMark = 'marked'; 'ok'")
+        # The tab already open only tells whether Chrome leaves such a tab alone, so a page that does not load is noted and the check goes on.
+        $script:OpenTabState = ''
+        $openLoaded = (Wait-Until 20000 { $script:OpenTabState = Invoke-TabScript $open.webSocketDebuggerUrl "document.readyState + ' ' + location.href"; $script:OpenTabState -match "^complete https://$([regex]::Escape($site))/" }) -ge 0
+        if ($openLoaded) { [void](Invoke-TabScript $open.webSocketDebuggerUrl "window.__siteblockMark = 'marked'; 'ok'") }
 
         $add = Invoke-SiteBlock @('add', $site)
         if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
@@ -882,8 +884,8 @@ function Test-RunningChromeGetsNewBlock {
             Start-Sleep -Milliseconds 500
         }
         if ($blockedAt -lt 0) { throw "a new tab on $site was still not refused by Chrome's policy 30 seconds after siteblock add ($attempts tries; the last tab showed '$lastSeen'). End of siteblockd.log: $(Get-LogTail $DaemonLog 10)" }
-        $openState = ''
-        try { $openState = Invoke-TabScript $open.webSocketDebuggerUrl "location.href + ' mark=' + (typeof window.__siteblockMark)" } catch { $openState = "unreadable: $($_.Exception.Message)" }
+        $openState = "it never loaded (it last read '$($script:OpenTabState)')"
+        if ($openLoaded) { try { $openState = Invoke-TabScript $open.webSocketDebuggerUrl "location.href + ' mark=' + (typeof window.__siteblockMark)" } catch { $openState = "unreadable: $($_.Exception.Message)" } }
         return "Chrome refused a new tab on $site $blockedAt ms after siteblock add (try $attempts); the tab already open on it reads '$openState'"
     } finally {
         Get-Process -Name 'chrome' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $chrome -and $_.StartTime -ge $started.StartTime } | Stop-Process -Force -ErrorAction SilentlyContinue
