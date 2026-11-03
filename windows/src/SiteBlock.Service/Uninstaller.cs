@@ -59,9 +59,9 @@ public static class Uninstaller
         // A failure here is logged by the enforcer and does not stop the uninstall: a retry that can never succeed would leave SiteBlock installed for good.
         // The hosts pass gives up when another program keeps saving the file while it works (see HostsEnforcer), and nothing runs after the uninstall to try again, so it
         // is tried a few more times here; otherwise SiteBlock's lines could stay in the hosts file for good.
-        Attempt(log, "hosts file", () => Retry(() => services.Hosts.Enforce([], causedByCommand: true), HostsAttempts, HostsRetryDelay));
+        Attempt(log, "hosts file", () => Retry(() => services.Hosts.Enforce([], causedByCommand: true), CleanupAttempts, CleanupRetryDelay));
         // SiteBlock's entries in the Local Group Policy file must go too, or Windows would write the block lists back at every start; a file another program holds open is tried again.
-        Attempt(log, "browser policy", () => Retry(() => services.Browsers.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true) && services.Browsers.LocalPolicyHealthy, HostsAttempts, HostsRetryDelay));
+        Attempt(log, "browser policy", () => Retry(() => services.Browsers.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true) && services.Browsers.LocalPolicyHealthy, CleanupAttempts, CleanupRetryDelay));
         // The saved record is not cleared on disk: the state folder is deleted a moment later, and a retry after a crash restores the same servers again.
         Attempt(log, "DNS restore", () => services.Dns.Enforce(adultFilterActive: false, savedDNS, _ => true) is null);
         if (!paths.IsSandbox) DnsCache.Flush();
@@ -96,9 +96,9 @@ public static class Uninstaller
         return UninstallOutcome.WaitForStop;
     }
 
-    // How many times the uninstaller tries to take SiteBlock's lines out of the hosts file, and how long it waits between tries.
-    private const int HostsAttempts = 5;
-    private static readonly TimeSpan HostsRetryDelay = TimeSpan.FromMilliseconds(500);
+    // How many times the uninstaller tries a cleanup step that another program can get in the way of (the hosts file, the browser policy and its Local Group Policy file), and how long it waits between tries.
+    private const int CleanupAttempts = 5;
+    private static readonly TimeSpan CleanupRetryDelay = TimeSpan.FromMilliseconds(500);
 
     /// <summary>Runs a step until it reports success or has run the given number of times, waiting between tries, and returns whether it succeeded. An exception ends the tries at once.</summary>
     private static bool Retry(Func<bool> step, int attempts, TimeSpan delay)

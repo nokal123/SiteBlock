@@ -151,21 +151,30 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
     {
         IntPtr hwnd = HandleOf(windowId);
         AutomationElement button = Element(hwnd, reloadButton: true) ?? throw new InvalidOperationException("The window has no reload button.");
+        RunLimited(hwnd, () => Press(hwnd, button), PressTimeout, "press", detail => $"tab reader: pressing the reload button failed ({detail}); {DescribeElement(button)}");
+    }
+
+    /// <summary>
+    /// Runs one step against a browser window on its own task with a time limit, so a browser that stopped answering cannot stall the tab watcher; a step still running after the limit is abandoned and
+    /// its late result ignored. When the step fails or runs too long, it runs <paramref name="onFailure"/>, forgets the window's remembered controls when they no longer exist, logs <paramref name="describe"/>'s
+    /// line at most once a minute for <paramref name="kind"/>, and throws the step's own error.
+    /// </summary>
+    private void RunLimited(IntPtr hwnd, Action step, TimeSpan limit, string kind, Func<string, string> describe, Action? onFailure = null)
+    {
         try
         {
-            // The press runs on its own task with a time limit; a press still running after it is abandoned, and its late result is ignored.
-            var press = Task.Run(() => Press(hwnd, button));
-            if (!press.Wait(PressTimeout)) throw new TimeoutException("The browser did not answer the press within 3 seconds.");
+            if (!Task.Run(step).Wait(limit)) throw new TimeoutException($"The browser did not finish within {limit.TotalSeconds:0} seconds.");
         }
         catch (Exception thrown)
         {
             Exception error = thrown is AggregateException { InnerException: { } inner } ? inner : thrown;
-            // Only a button that no longer exists is searched for again; the remembered address bar and button stay for an ordinary failed press.
+            // Only controls that no longer exist are searched for again; the remembered address bar and button stay for an ordinary failure.
             if (error is ElementNotAvailableException) Forget(hwnd);
+            try { onFailure?.Invoke(); } catch (Exception) { }
             // The reader's own failure sentences hold no address, so the message is written; for other errors only the type is.
             string detail = error is InvalidOperationException or TimeoutException ? $"{error.GetType().Name}: {error.Message}" : error.GetType().Name;
-            if (ShouldReport("press")) _log.Info($"tab reader: pressing the reload button failed ({detail}); {DescribeElement(button)}");
-            throw error;
+            ReportOncePerMinute(kind, describe(detail));
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
         }
     }
 
@@ -178,28 +187,16 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
     {
         IntPtr hwnd = HandleOf(windowId);
         AutomationElement bar = Element(hwnd, reloadButton: false) ?? throw new InvalidOperationException("The window has no address bar.");
-        try
-        {
-            // The steps run on their own task with a time limit, so a browser that stopped answering cannot stall the tab watcher; a late result is ignored.
-            var typing = Task.Run(() => TypeAddress(hwnd, bar, url));
-            if (!typing.Wait(OpenTimeout)) throw new TimeoutException("The browser did not move the tab within 4 seconds.");
-        }
-        catch (Exception thrown)
-        {
-            Exception error = thrown is AggregateException { InnerException: { } inner } ? inner : thrown;
-            if (error is ElementNotAvailableException) Forget(hwnd);
-            // Escape takes back typed text only when the address bar holds the focus; sent to a page, it could close a dialog or leave full screen.
-            try { if (bar.Current.HasKeyboardFocus) PostKey(hwnd, NativeMethods.VkEscape); } catch (Exception) { }
-            string detail = error is InvalidOperationException or TimeoutException ? $"{error.GetType().Name}: {error.Message}" : error.GetType().Name;
-            if (ShouldReport("open")) _log.Info($"tab reader: sending a tab to the blocked page failed ({detail})");
-            throw error;
-        }
+        // Escape takes back typed text only when the address bar holds the focus; sent to a page, it could close a dialog or leave full screen.
+        RunLimited(hwnd, () => TypeAddress(hwnd, bar, url), OpenTimeout, "open", detail => $"tab reader: sending a tab to the blocked page failed ({detail})",
+            onFailure: () => { if (bar.Current.HasKeyboardFocus) PostKey(hwnd, NativeMethods.VkEscape); });
     }
 
-    // How long typing an address and waiting for the tab to move may take.
-    private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(4);
+    // How long the tab may take to show the new address after Enter, and the limit on the whole move, which leaves a second for setting the focus and the text.
+    private static readonly TimeSpan MoveWait = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan OpenTimeout = MoveWait + TimeSpan.FromSeconds(1);
 
-    /// <summary>The steps of <see cref="Open"/>: focus, set the text, press Enter, and wait until the address bar shows the new address without the focus. Throws when a step fails or the tab did not move within about 3 seconds.</summary>
+    /// <summary>The steps of <see cref="Open"/>: focus, set the text, press Enter, and wait until the address bar shows the new address without the focus. Throws when a step fails or the tab did not move within <see cref="MoveWait"/>.</summary>
     private static void TypeAddress(IntPtr hwnd, AutomationElement bar, string url)
     {
         if (!bar.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern)) throw new InvalidOperationException("The address bar offers no Value pattern.");
@@ -214,7 +211,7 @@ internal sealed class UiaBrowserTabs : IBrowserTabs
         // The browser may show the rest of the address decoded, so only the part up to the first comma (for the blocked page, "data:text/html;charset=utf-8,") is compared.
         int comma = url.IndexOf(',', StringComparison.Ordinal);
         string expected = comma >= 0 ? url[..(comma + 1)] : url;
-        long until = Environment.TickCount64 + 3_000;
+        long until = Environment.TickCount64 + (long)MoveWait.TotalMilliseconds;
         while (Environment.TickCount64 < until)
         {
             Thread.Sleep(100);

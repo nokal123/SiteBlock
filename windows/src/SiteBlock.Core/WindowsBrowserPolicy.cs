@@ -66,6 +66,9 @@ public sealed class RegistryPolicy
 
     /// <summary>For each subkey ("" or <c>DNSOverHTTPS</c>), the value names SiteBlock owns even when it currently wants them absent; the enforcer and the uninstaller delete an owned value that is not wanted. Values with other names are never touched.</summary>
     public IReadOnlyDictionary<string, IReadOnlySet<string>> OwnedValueNames { get; }
+
+    /// <summary>The full key path of a subkey given relative to <see cref="KeyPath"/> ("" means the key itself). The registry pass and the Local Group Policy file both name keys this way, so they always agree.</summary>
+    public string KeyFor(string subkey) => subkey.Length == 0 ? KeyPath : KeyPath + "\\" + subkey;
 }
 
 /// <summary>

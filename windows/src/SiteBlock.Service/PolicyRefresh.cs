@@ -36,7 +36,7 @@ public sealed class GroupPolicyRefresher : IPolicyRefresher
     public void Refresh()
     {
         // bMachine true refreshes computer policy, which is where HKEY_LOCAL_MACHINE\SOFTWARE\Policies belongs. RP_FORCE applies the file even when Windows thinks its version was already applied,
-        // which happens when Windows' own background refresh runs between SiteBlock's writes of gpt.ini and Registry.pol. It only runs after SiteBlock changed the file, at most every 5 seconds.
+        // which happens when Windows' own background refresh runs between SiteBlock's writes of gpt.ini and Registry.pol. BrowserPolicyEnforcer calls it only after it changed the file, and limits how often.
         if (!RefreshPolicyEx(true, RpForce)) throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 

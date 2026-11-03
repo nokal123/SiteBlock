@@ -157,23 +157,39 @@ public static partial class LocalGroupPolicy
     public const string AdministrativeTemplatesTool = "{D02B1F72-3407-48AE-BA88-E8213C6761F1}";
 
     /// <summary>True when SiteBlock owns the entry: it sits in one of SiteBlock's list subkeys, or it names (or deletes, with <c>**del.</c>) one of SiteBlock's values.</summary>
-    public static bool IsOwned(PolEntry entry, IEnumerable<RegistryPolicy> policies)
+    public static bool IsOwned(PolEntry entry, IEnumerable<RegistryPolicy> policies) => new Ownership(policies).Owns(entry);
+
+    /// <summary>SiteBlock's keys, built once from the policies so each entry is checked with lookups, ignoring letter case as the registry does.</summary>
+    private sealed class Ownership
     {
-        foreach (RegistryPolicy policy in policies)
+        // The full key paths of SiteBlock's list subkeys; every entry in them is SiteBlock's.
+        private readonly HashSet<string> _listKeys = new(StringComparer.OrdinalIgnoreCase);
+        // For each key that holds SiteBlock's named values, the names SiteBlock owns there.
+        private readonly Dictionary<string, HashSet<string>> _valueNames = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Collects the owned list keys and value names of every policy.</summary>
+        public Ownership(IEnumerable<RegistryPolicy> policies)
         {
-            foreach (string list in policy.OwnedListSubkeys)
+            foreach (RegistryPolicy policy in policies)
             {
-                if (string.Equals(entry.Key, policy.KeyPath + "\\" + list, StringComparison.OrdinalIgnoreCase)) return true;
-            }
-            foreach (var (subkey, names) in policy.OwnedValueNames)
-            {
-                string key = subkey.Length == 0 ? policy.KeyPath : policy.KeyPath + "\\" + subkey;
-                if (!string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase)) continue;
-                string name = entry.Name.StartsWith("**del.", StringComparison.OrdinalIgnoreCase) ? entry.Name["**del.".Length..] : entry.Name;
-                if (names.Any(owned => string.Equals(owned, name, StringComparison.OrdinalIgnoreCase))) return true;
+                foreach (string list in policy.OwnedListSubkeys) _listKeys.Add(policy.KeyFor(list));
+                foreach (var (subkey, names) in policy.OwnedValueNames)
+                {
+                    string key = policy.KeyFor(subkey);
+                    if (!_valueNames.TryGetValue(key, out var owned)) _valueNames[key] = owned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    owned.UnionWith(names);
+                }
             }
         }
-        return false;
+
+        /// <summary>True when the entry is in an owned list key, or names one of the owned values, directly or through <c>**del.</c>.</summary>
+        public bool Owns(PolEntry entry)
+        {
+            if (_listKeys.Contains(entry.Key)) return true;
+            if (!_valueNames.TryGetValue(entry.Key, out var names)) return false;
+            string name = entry.Name.StartsWith("**del.", StringComparison.OrdinalIgnoreCase) ? entry.Name["**del.".Length..] : entry.Name;
+            return names.Contains(name);
+        }
     }
 
     /// <summary>
@@ -187,7 +203,7 @@ public static partial class LocalGroupPolicy
         {
             foreach (var (subkey, values) in policy.Values.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             {
-                string key = subkey.Length == 0 ? policy.KeyPath : policy.KeyPath + "\\" + subkey;
+                string key = policy.KeyFor(subkey);
                 foreach (var (name, value) in values.OrderBy(pair => pair.Key, StringComparer.Ordinal))
                 {
                     entries.Add(value.Kind == RegValueKind.DWord ? PolEntry.Number(key, name, value.Number ?? 0) : PolEntry.Text(key, name, value.Text ?? ""));
@@ -195,7 +211,7 @@ public static partial class LocalGroupPolicy
             }
             foreach (var (subkey, list) in policy.Lists.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             {
-                string key = policy.KeyPath + "\\" + subkey;
+                string key = policy.KeyFor(subkey);
                 // The editor writes a single space as the delete-all entry's text, and so does SiteBlock.
                 entries.Add(PolEntry.Text(key, PolEntry.DeleteAllValues, " "));
                 for (int i = 0; i < list.Count; i++) entries.Add(PolEntry.Text(key, (i + 1).ToString(CultureInfo.InvariantCulture), list[i]));
@@ -210,9 +226,13 @@ public static partial class LocalGroupPolicy
     /// </summary>
     public static List<PolEntry>? Merged(IReadOnlyList<PolEntry> existing, IReadOnlyList<RegistryPolicy> policies)
     {
+        var ownership = new Ownership(policies);
+        var owned = new List<PolEntry>();
+        var others = new List<PolEntry>();
+        foreach (PolEntry entry in existing) (ownership.Owns(entry) ? owned : others).Add(entry);
         List<PolEntry> wanted = Wanted(policies);
-        if (existing.Where(entry => IsOwned(entry, policies)).SequenceEqual(wanted)) return null;
-        return [.. existing.Where(entry => !IsOwned(entry, policies)), .. wanted];
+        if (owned.SequenceEqual(wanted)) return null;
+        return [.. others, .. wanted];
     }
 
     /// <summary>
@@ -234,26 +254,26 @@ public static partial class LocalGroupPolicy
         int end = lines.FindIndex(general + 1, line => line.TrimStart().StartsWith('['));
         if (end < 0) end = lines.Count;
 
-        int versionLine = FindKey(lines, general + 1, end, "Version");
-        uint version = 0;
-        if (versionLine >= 0) uint.TryParse(ValueOf(lines[versionLine]), NumberStyles.Integer, CultureInfo.InvariantCulture, out version);
+        // Replaces the key's line in the section with its new value, or adds the line at the section's end, which keeps the lines above where they are.
+        void Set(string key, Func<string?, string> newValue)
+        {
+            int line = FindKey(lines, general + 1, end, key);
+            string text = key + "=" + newValue(line >= 0 ? ValueOf(lines[line]) : null);
+            if (line >= 0) lines[line] = text;
+            else lines.Insert(end++, text);
+        }
+        Set("gPCMachineExtensionNames", current => WithRegistryExtension(current ?? ""));
+        Set("Version", NextVersion);
+        return string.Join("\r\n", lines) + "\r\n";
+    }
+
+    /// <summary>The version after a computer policy change: the low 16 bits (the computer half) go up by one, skipping 0, and the high 16 bits (the user half) stay. A missing or non-numeric value counts as 0.</summary>
+    private static string NextVersion(string? current)
+    {
+        uint.TryParse(current, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint version);
         uint computer = (version & 0xFFFF) + 1;
         if (computer > 0xFFFF) computer = 1;
-        string newVersion = "Version=" + ((version & 0xFFFF0000) | computer).ToString(CultureInfo.InvariantCulture);
-
-        int namesLine = FindKey(lines, general + 1, end, "gPCMachineExtensionNames");
-        string newNames = "gPCMachineExtensionNames=" + WithRegistryExtension(namesLine >= 0 ? ValueOf(lines[namesLine]) : "");
-
-        if (namesLine >= 0) lines[namesLine] = newNames;
-        else
-        {
-            // A line added at the section's end comes after every line of the section, so a Version line found above keeps its index.
-            lines.Insert(end, newNames);
-            end++;
-        }
-        if (versionLine >= 0) lines[versionLine] = newVersion;
-        else lines.Insert(end, newVersion);
-        return string.Join("\r\n", lines) + "\r\n";
+        return ((version & 0xFFFF0000) | computer).ToString(CultureInfo.InvariantCulture);
     }
 
     /// <summary>
@@ -263,15 +283,18 @@ public static partial class LocalGroupPolicy
     private static string WithRegistryExtension(string names)
     {
         var groups = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
+        // The tool ids of one extension's group, made empty when the extension has no group yet.
+        SortedSet<string> ToolsOf(string extension)
+        {
+            if (!groups.TryGetValue(extension, out var tools)) groups[extension] = tools = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            return tools;
+        }
         foreach (Match group in BracketGroup().Matches(names))
         {
             var ids = GuidText().Matches(group.Groups[1].Value).Select(id => id.Value.ToUpperInvariant()).ToList();
-            if (ids.Count == 0) continue;
-            if (!groups.TryGetValue(ids[0], out var tools)) groups[ids[0]] = tools = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string tool in ids.Skip(1)) tools.Add(tool);
+            if (ids.Count > 0) ToolsOf(ids[0]).UnionWith(ids.Skip(1));
         }
-        if (!groups.TryGetValue(RegistryExtension, out var registryTools)) groups[RegistryExtension] = registryTools = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        registryTools.Add(AdministrativeTemplatesTool);
+        ToolsOf(RegistryExtension).Add(AdministrativeTemplatesTool);
         return string.Concat(groups.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).Select(pair => "[" + pair.Key + string.Concat(pair.Value) + "]"));
     }
 

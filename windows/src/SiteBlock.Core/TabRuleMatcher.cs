@@ -38,6 +38,10 @@ public static class TabRuleMatcher
     /// <summary>The two parts of a tab address that a rule is compared with: the host normalized with DomainNormalizer, and the percent-encoded path (<c>/</c> when the address has none).</summary>
     private readonly record struct Address(string Host, string Path);
 
+    /// <summary>True when the host ends with a dot followed by the domain, such as "m.youtube.com" for "youtube.com", checked in place without building a new string, because it runs for every rule on every look.</summary>
+    private static bool IsSubdomainOf(string host, string domain) =>
+        host.Length > domain.Length && host[host.Length - domain.Length - 1] == '.' && host.EndsWith(domain, StringComparison.Ordinal);
+
     /// <summary>Returns the first rule, in list order, that the address falls under, or null when it falls under none (or is not an ordinary web address). It never throws.</summary>
     public static WatchedPathRule? MatchingRule(string url, IEnumerable<WatchedPathRule> rules)
     {
@@ -63,7 +67,7 @@ public static class TabRuleMatcher
     {
         if (rule.Domain is null || rule.Path is null) return false;
         // The host must be the rule's site or a subdomain of it. The dot in front of the rule's name makes "notyoutube.com" fail while "m.youtube.com" passes.
-        if (!(address.Host == rule.Domain || address.Host.EndsWith("." + rule.Domain, StringComparison.Ordinal))) return false;
+        if (!(address.Host == rule.Domain || IsSubdomainOf(address.Host, rule.Domain))) return false;
         // A plain, case-sensitive prefix test, which is what the browsers do: "/shorts", "/shorts/abc" and "/shortsXYZ" all start with "/shorts", but "/Shorts" does not.
         // The address path is ASCII after encoding, so an ordinal prefix test gives the same answer as the Swift byte comparison.
         return address.Path.StartsWith(rule.Path, StringComparison.Ordinal);

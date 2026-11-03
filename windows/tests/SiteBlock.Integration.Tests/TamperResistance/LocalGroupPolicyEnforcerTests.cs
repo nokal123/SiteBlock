@@ -367,4 +367,96 @@ public sealed class LocalGroupPolicyEnforcerTests : IDisposable
         Assert.Equal(0, Refreshes);
         Assert.Empty(Directory.GetFiles(Path.Combine(_sandbox.Root, "GroupPolicy"), "*.siteblock-tmp", SearchOption.AllDirectories));
     }
+
+    // LocalPolicyHealthy and the uninstall's refresh: expected values from 06-windows.md § BrowserPolicyEnforcer, uninstall paragraph (true after a pass that left SiteBlock's part of
+    // the file right with no request waiting or failed; the uninstall asks Windows to apply the file at once, without the 5-second interval; the uninstaller repeats the browser policy
+    // step up to 5 times, half a second apart, until the pass succeeds and LocalPolicyHealthy is true).
+    [Fact]
+    public void LocalPolicyHealthy_FalseWhileARefreshWaitsInsideTheIntervalAndTrueOnceItIsMade()
+    {
+        var enforcer = Make();
+        enforcer.Enforce(Reddit, true, false);
+        Assert.True(enforcer.LocalPolicyHealthy);
+
+        _now = 2_000;
+        enforcer.Enforce(RedditAndX, true, true);
+        Assert.Equal(1, Refreshes);
+        Assert.False(enforcer.LocalPolicyHealthy);
+
+        _now = 5_000;
+        enforcer.Enforce(RedditAndX, true, false);
+        Assert.Equal(2, Refreshes);
+        Assert.True(enforcer.LocalPolicyHealthy);
+    }
+
+    [Fact]
+    public void LocalPolicyHealthy_FalseAfterAFailedRefreshAndTrueAfterTheRetryWorks()
+    {
+        var enforcer = Make(new ScriptedRefresher(call => call == 1));
+        enforcer.Enforce(Reddit, true, false);
+        Assert.False(enforcer.LocalPolicyHealthy);
+        // Inside the interval nothing is retried, so the failure is still waiting.
+        _now = 2_000;
+        enforcer.Enforce(Reddit, true, false);
+        Assert.False(enforcer.LocalPolicyHealthy);
+        _now = 5_000;
+        enforcer.Enforce(Reddit, true, false);
+        Assert.True(enforcer.LocalPolicyHealthy);
+    }
+
+    [Theory]
+    [InlineData("malformed Registry.pol")]
+    [InlineData("folder at Registry.pol")]
+    [InlineData("folder at gpt.ini")]
+    public void LocalPolicyHealthy_FalseWhenAPolicyFileCannotBeReadOrWritten(string fault)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PolFile)!);
+        if (fault == "malformed Registry.pol") File.WriteAllBytes(PolFile, [.. "PRex"u8]);
+        else Directory.CreateDirectory(fault == "folder at Registry.pol" ? PolFile : IniFile);
+        var enforcer = Make();
+        // Two passes, the second past the refresh interval, so nothing but the fault can keep the flag false.
+        enforcer.Enforce(Reddit, true, false);
+        _now = 10_000;
+        enforcer.Enforce(Reddit, true, false);
+        Assert.False(enforcer.LocalPolicyHealthy);
+    }
+
+    [Fact]
+    public void UninstallPass_AsksForTheRefreshAtOnceEvenInsideTheInterval()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PolFile)!);
+        File.WriteAllBytes(PolFile, RegistryPol.Serialize([WindowsUpdate, Homepage]));
+        var enforcer = Make();
+        enforcer.Enforce(Reddit, true, false);
+        Assert.Equal(1, Refreshes);
+
+        _now = 1_000;
+        enforcer.Enforce(BrowserBlockLists.Empty, adultFilter: false, causedByCommand: true);
+
+        Assert.Equal([WindowsUpdate, Homepage], ReadPol());
+        Assert.Equal(2, Refreshes);
+        Assert.True(enforcer.LocalPolicyHealthy);
+    }
+
+    [Fact]
+    public void Uninstaller_RepeatsTheBrowserPolicyStepUntilTheRefreshWorks()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PolFile)!);
+        var refresher = new ScriptedRefresher(call => call == 2);
+        var browsers = Make(refresher);
+        // A normal pass first, so the file holds SiteBlock's entries beside the owner's and the first refresh is used up.
+        File.WriteAllBytes(PolFile, RegistryPol.Serialize([WindowsUpdate]));
+        browsers.Enforce(Reddit, true, false);
+        Assert.Contains(ReadPol(), entry => LocalGroupPolicy.IsOwned(entry, [WindowsBrowserPolicy.Desired(BrowserTarget.Chrome, Reddit, true)]));
+        var services = DaemonServices.Create(_sandbox.Paths, _sandbox.Log, TimeSpan.FromSeconds(1), () => true) with { Browsers = browsers };
+
+        // The uninstall's refresh at the same clock time is not held back by the interval; it fails once (call 2) and the repeated step's request (call 3) works.
+        Assert.Equal(UninstallOutcome.Finished, Uninstaller.Run(_sandbox.Paths, services, null, () => true, _sandbox.Log));
+
+        Assert.Equal([WindowsUpdate], ReadPol());
+        Assert.Equal(3, refresher.Calls);
+        Assert.True(browsers.LocalPolicyHealthy);
+        Assert.DoesNotContain("reddit.com", File.ReadAllText(_sandbox.Paths.RegistryFile), StringComparison.Ordinal);
+        Assert.DoesNotContain(_sandbox.LogMessages(), line => line.Contains("browser policy did not finish cleanly", StringComparison.Ordinal));
+    }
 }

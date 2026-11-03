@@ -22,7 +22,7 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
     private readonly string? _localPolicyIni;
     private readonly Func<long> _now;
     private readonly Log _log;
-    // True when a pass changed the Local Group Policy file and Windows has not yet been asked to apply it.
+    // True when a pass changed the Local Group Policy file and Windows has not yet been asked to apply it (or the request failed).
     private bool _refreshWanted;
     // When the last refresh was asked for (milliseconds from the clock), or null before the first one.
     private long? _lastRefresh;
@@ -81,38 +81,36 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
             }
         }
         if (healthy) _lastFailures.Clear();
-        bool localHealthy = EnforceLocalPolicy(allDesired, out bool written);
-        if (written) _refreshWanted = true;
+        bool fileRight = EnforceLocalPolicy(allDesired);
         // Only the uninstall turns the filter off, and it is the last pass, so its request does not wait for the interval.
-        localHealthy &= RefreshIfDue(ignoreInterval: !adultFilter);
-        LocalPolicyHealthy = localHealthy && !_refreshWanted;
-        // The record of logged failures is cleared only once nothing is left to do: a refresh still waiting (inside the 5-second interval, or after a failed request) keeps it, so a request that keeps failing is logged once a minute.
+        RefreshIfDue(ignoreInterval: !adultFilter);
+        // A refresh still waiting (inside the interval, or after a failed request) leaves the pass unfinished, which also keeps the record of logged failures, so a request that keeps failing is logged once a minute.
+        LocalPolicyHealthy = fileRight && !_refreshWanted;
         if (LocalPolicyHealthy) _lastLocalFailures.Clear();
         return healthy;
     }
 
     /// <summary>
     /// Makes SiteBlock's entries in the Local Group Policy file equal to the wanted values (<see cref="LocalGroupPolicy.Merged"/>), keeping every other entry, and raises the computer version in gpt.ini so
-    /// Windows applies the file. Sets <paramref name="written"/> when the file was written, and returns false when the file could not be read or written. A file that does not follow the format is left alone
+    /// Windows applies the file; after a write, a refresh request is waiting. Returns false when the file could not be read or written. A file that does not follow the format is left alone
     /// and reported, because rewriting it would lose the owner's own settings. A failure never affects the registry pass, which already ran.
     /// </summary>
-    private bool EnforceLocalPolicy(IReadOnlyList<RegistryPolicy> desired, out bool written)
+    private bool EnforceLocalPolicy(IReadOnlyList<RegistryPolicy> desired)
     {
-        written = false;
         if (_localPolicyFile is null || _localPolicyIni is null) return true;
         try
         {
-            List<PolEntry> existing = File.Exists(_localPolicyFile) ? RegistryPol.Parse(File.ReadAllBytes(_localPolicyFile)) : [];
+            List<PolEntry> existing = File.Exists(_localPolicyFile) ? RegistryPol.Parse(ReadShared(_localPolicyFile)) : [];
             // A missing file reads as empty, so with nothing wanted Merged gives null and no file is created.
             if (LocalGroupPolicy.Merged(existing, desired) is not { } merged) return true;
             // gpt.ini is single-byte text in the PC's code page. Latin-1 turns every byte into one character and back unchanged, so the owner's own lines keep their exact bytes whatever the code page.
             // The bytes are decoded directly, because File.ReadAllText would follow a byte-order mark and decode the file as UTF-8 or UTF-16 instead.
-            string? ini = File.Exists(_localPolicyIni) ? System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(_localPolicyIni)) : null;
+            string? ini = File.Exists(_localPolicyIni) ? System.Text.Encoding.Latin1.GetString(ReadShared(_localPolicyIni)) : null;
             // gpt.ini is written first: when it fails, Registry.pol is still unchanged, so the next pass sees the difference and tries both again. Written the other way round, a failed gpt.ini would
             // leave a policy file the next pass finds right, and Windows would never be told to apply it.
             WriteReplacing(_localPolicyIni, System.Text.Encoding.Latin1.GetBytes(LocalGroupPolicy.UpdatedGptIni(ini)));
             WriteReplacing(_localPolicyFile, RegistryPol.Serialize(merged));
-            written = true;
+            _refreshWanted = true;
             return true;
         }
         catch (PolFormatException error)
@@ -125,6 +123,15 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
             LogFailure(_lastLocalFailures, $"the Local Group Policy file could not be written: {error.GetType().Name}: {error.Message}");
             return false;
         }
+    }
+
+    /// <summary>Reads a whole file while letting other programs read, write or delete it, so Windows holding the file open while it applies policy does not make the read fail.</summary>
+    private static byte[] ReadShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        return copy.ToArray();
     }
 
     /// <summary>Writes the bytes to a temporary file beside the target and then moves it over the target, so Windows never reads a half-written file. A temporary file left by a failed move is deleted.</summary>
@@ -146,13 +153,13 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
 
     /// <summary>
     /// Asks Windows to apply the Local Group Policy when a change is waiting and the last request is at least <see cref="MinRefreshIntervalMs"/> old (or at once with <paramref name="ignoreInterval"/>).
-    /// A failed request is logged and tried again by a later pass. Returns false only when a request was made and failed.
+    /// A failed request is logged and tried again by a later pass, because the request stays waiting until one succeeds.
     /// </summary>
-    private bool RefreshIfDue(bool ignoreInterval)
+    private void RefreshIfDue(bool ignoreInterval)
     {
-        if (!_refreshWanted) return true;
+        if (!_refreshWanted) return;
         long now = _now();
-        if (!ignoreInterval && _lastRefresh is long last && now - last < MinRefreshIntervalMs) return true;
+        if (!ignoreInterval && _lastRefresh is long last && now - last < MinRefreshIntervalMs) return;
         // The time is taken before the call, so a request that fails also waits out the interval and a broken refresh is not retried on every tick.
         _lastRefresh = now;
         try
@@ -160,12 +167,10 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
             _refresher.Refresh();
             _refreshWanted = false;
             _log.Write("asked Windows to apply the Local Group Policy, so running browsers read the new block lists");
-            return true;
         }
         catch (Exception error)
         {
             LogFailure(_lastLocalFailures, $"Windows could not be asked to apply the Local Group Policy: {error.GetType().Name}: {error.Message}");
-            return false;
         }
     }
 
@@ -175,7 +180,7 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
         bool changed = false;
         foreach (var (subkey, ownedNames) in desired.OwnedValueNames)
         {
-            string keyPath = Join(desired.KeyPath, subkey);
+            string keyPath = desired.KeyFor(subkey);
             var actual = _store.ReadValues(keyPath) ?? new Dictionary<string, RegValue>();
             var wanted = desired.Values.GetValueOrDefault(subkey) ?? new Dictionary<string, RegValue>();
             foreach (string name in ownedNames.Order(StringComparer.Ordinal))
@@ -199,7 +204,7 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
         }
         foreach (string listSubkey in desired.OwnedListSubkeys.Order(StringComparer.Ordinal))
         {
-            string keyPath = Join(desired.KeyPath, listSubkey);
+            string keyPath = desired.KeyFor(listSubkey);
             if (desired.Lists.TryGetValue(listSubkey, out var entries))
             {
                 // The list is replaced as a whole, so a stray value such as "1001" added by hand never survives.
@@ -226,12 +231,12 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
     private bool RemoveEmptyKeys(RegistryPolicy desired)
     {
         var candidates = new List<string>();
-        foreach (string subkey in desired.OwnedValueNames.Keys) if (subkey.Length > 0) candidates.Add(Join(desired.KeyPath, subkey));
+        foreach (string subkey in desired.OwnedValueNames.Keys) if (subkey.Length > 0) candidates.Add(desired.KeyFor(subkey));
         foreach (string listSubkey in desired.OwnedListSubkeys)
         {
             // Each parent between the list subkey and the policy key, for example WebsiteFilter for WebsiteFilter\Block.
             string[] parts = listSubkey.Split('\\');
-            for (int i = parts.Length - 1; i >= 1; i--) candidates.Add(Join(desired.KeyPath, string.Join('\\', parts[..i])));
+            for (int i = parts.Length - 1; i >= 1; i--) candidates.Add(desired.KeyFor(string.Join('\\', parts[..i])));
         }
         candidates.Add(desired.KeyPath);
         bool changed = false;
@@ -261,9 +266,6 @@ public sealed class BrowserPolicyEnforcer : IBrowserPolicyEnforcer
             _log.Write($"browser block list for {target.DisplayName()} cut to {BrowserPolicy.MaxListEntries} entries; {dropped} path rules or sites are not enforced in that browser");
         }
     }
-
-    /// <summary>Joins a key path and a relative subkey path ("" means the key itself).</summary>
-    private static string Join(string keyPath, string subkey) => subkey.Length == 0 ? keyPath : keyPath + "\\" + subkey;
 
     /// <summary>Logs a failure message unless the same message was logged within the last minute, as recorded in <paramref name="logged"/>.</summary>
     private void LogFailure(Dictionary<string, long> logged, string message)
