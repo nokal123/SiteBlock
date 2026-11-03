@@ -57,6 +57,7 @@
 - 3a. `Paths`, `Logger` (with rotation), `ProcessRunner`, `DaemonRuntime`, `PipeServer`.
 - 3b. `HostsEnforcer` with the attribute, access-list and `DataBasePath` repairs.
 - 3c. `IPolicyStore`, `RegistryPolicyStore`, `FilePolicyStore`, `BrowserPolicyEnforcer`.
+- 3c2. `LocalGroupPolicy` (with `RegistryPol`), the Local Group Policy copy in `BrowserPolicyEnforcer`, and `IPolicyRefresher` (`GroupPolicyRefresher`, `FilePolicyRefresher`) so running browsers read a changed list (see [06-windows.md](../06-windows.md) § BrowserPolicyEnforcer).
 - 3d. `IDnsSettingsBackend`, `WindowsDnsBackend`, `FileDnsBackend`, `DnsEnforcer` with the reachability check and change notices.
 - 3e. `ServiceGuard`, the watchdog loop, `AppGuard` (with `CreateProcessAsUser`), `AclGuard`, `Uninstaller`.
 - 3f. `siteblockd` flags and the service host; `siteblock` commands, password prompt and exit codes.
@@ -77,7 +78,7 @@
 
 **Sub-steps:**
 - 4a. AppLogic models: `StatusModel`, panel state, row model, temporary unblock form, settings, banners.
-- 4b. `TabWatcher` loop and `UiaBrowserTabs`.
+- 4b. `TabWatcher` loop and `UiaBrowserTabs`, covering whole sites and path rules, sending tabs to the blocked page (`BlockedPage`, `IBrowserTabs.Open`) with a reload as the fallback.
 - 4c. `Updater` flow, `HttpUpdateDownloader`, `UacElevatedRunner`.
 - 4d. WPF: tray icon, single instance, flyout window, Mica, light and dark mode, every view.
 

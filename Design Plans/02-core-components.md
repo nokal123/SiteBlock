@@ -154,14 +154,14 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 
 
 **Rules for the tab watcher:** `public extension StatusSnapshot` has two computed properties that turn a status snapshot into the list the tab watcher looks for.
-- `var watchedPathRules: [WatchedPathRule]` — every path rule except one whose own temporary unblock is open (`temporaryUnblock?.isOpen == true`), because the browsers' block lists do not hold an open rule. Rules waiting to open or waiting to unblock for good stay in, because they are still blocked. A snapshot from an older daemon with no path rules gives an empty list. The Windows tab watcher uses this list.
+- `var watchedPathRules: [WatchedPathRule]` — every path rule except one whose own temporary unblock is open (`temporaryUnblock?.isOpen == true`), because the browsers' block lists do not hold an open rule. Rules waiting to open or waiting to unblock for good stay in, because they are still blocked. A snapshot from an older daemon with no path rules gives an empty list. `watchedTabRules` is built on top of this list.
 - `var secondsUntilWatchedRulesChange: Int?` — the number of seconds until the earliest countdown that changes `watchedTabRules` ends, or nil when none is running. It is the smallest of, for every blocked site and every path rule: its temporary unblock's `secondsRemaining` when that unblock is open, its `opensInSeconds` (or `secondsRemaining` when `opensInSeconds` is missing) when it is waiting, and its `unblockSecondsRemaining`. The menu bar app's status model uses it to poll at that moment (see [03-daemon-cli-app.md](03-daemon-cli-app.md) § SiteBlock.app Menu Bar App, StatusModel).
-- `var watchedTabRules: [WatchedPathRule]` — one whole-site rule for each host of the browsers' block list, followed by `watchedPathRules`. The hosts come from every blocked site whose temporary unblock is not open, shortened the way the browsers' list is (`ChromePolicy.urlBlocklist`, which leaves out a host when a parent domain of it is in the list) and run through `DomainNormalizer.normalize`, so a listed `www.` name still matches a tab host. A host the normalizer refuses is dropped, because it could never equal a normalized tab host, and duplicates are removed. The whole-site rules are sorted by domain and come first, so a tab on a blocked site is reported under its site even when a path rule on that site also matches. The Mac tab watcher uses this list.
+- `var watchedTabRules: [WatchedPathRule]` — one whole-site rule for each host of the browsers' block list, followed by `watchedPathRules`. The hosts come from every blocked site whose temporary unblock is not open, shortened the way the browsers' list is (`ChromePolicy.urlBlocklist`, which leaves out a host when a parent domain of it is in the list) and run through `DomainNormalizer.normalize`, so a listed `www.` name still matches a tab host. A host the normalizer refuses is dropped, because it could never equal a normalized tab host, and duplicates are removed. The whole-site rules are sorted by domain and come first, so a tab on a blocked site is reported under its site even when a path rule on that site also matches. Both the Mac and the Windows tab watcher use this list ([06-windows.md](06-windows.md) § SiteBlock.Core has the C# names).
 ---
 
 ### 3c. TabReloadDecider (`Sources/SiteBlockCore/TabReloadDecider.swift`)
 
-**Purpose:** Decides which tabs to act on (the Mac tab watcher sends them to the blocked page, the Windows tab watcher reloads them), and remembers which tab it has already acted on at which address, so a tab that is showing a block page is never acted on over and over. It is a value type with no browser access; the tab watcher feeds it the tab lists it reads.
+**Purpose:** Decides which tabs to act on (both tab watchers send them to the blocked page; the Windows watcher presses reload when it cannot), and remembers which tab it has already acted on at which address, so a tab that is showing a block page is never acted on over and over. It is a value type with no browser access; the tab watcher feeds it the tab lists it reads.
 
 **Properties:**
 - Memory: for each process ID (`Int32`), a dictionary from tab ID (`String`) to the address the decider last acted on for that tab.
@@ -189,14 +189,14 @@ The library has no third-party dependencies. It uses Foundation and, for hashing
 
 ### 3d. BlockedPage (`Sources/SiteBlockCore/BlockedPage.swift`)
 
-**Purpose:** Builds the page that the Mac tab watcher sets a tab to when the tab is on a blocked site or a blocked part of a site. The page travels inside its own address as a `data:` address (an address that holds the page itself), so it needs no file on disk and no server. A `data:` address is used because Safari refused to switch a web tab to a `file://` page set through Apple Events, while Chrome and Safari both accepted `data:`. A `data:` address matches no rule (`TabRuleMatcher` accepts only `http` and `https`), so a tab showing this page is left alone.
+**Purpose:** Builds the page that the tab watchers (Mac and Windows) set a tab to when the tab is on a blocked site or a blocked part of a site. The page travels inside its own address as a `data:` address (an address that holds the page itself), so it needs no file on disk and no server. A `data:` address is used because Safari refused to switch a web tab to a `file://` page set through Apple Events, while Chrome and Safari both accepted `data:`. A `data:` address matches no rule (`TabRuleMatcher` accepts only `http` and `https`), so a tab showing this page is left alone.
 
 **Key Methods:**
 - `BlockedPage.title` — the page title, "Blocked by SiteBlock".
 - `static func address(ruleText: String) -> String` — `data:text/html;charset=utf-8,` followed by the page HTML, percent-encoded. Every character except ASCII letters, digits and `-._~` is encoded, so `#` (which would start a fragment and cut the page short), `%` and every non-ASCII character are encoded.
 - `static func html(ruleText: String) -> String` — the page: the heading "<rule> is blocked", the line "SiteBlock blocked this page. To open it again, use the SiteBlock menu bar app.", and colors that follow the system's light or dark appearance. The rule text is HTML-escaped for `&`, `<`, `>`, `"` and `'`, one Unicode scalar at a time, so a rule can never add markup or script.
 
-**Dependencies:** Foundation only. The Windows port does not use it; the Windows tab watcher reloads the tab.
+**Dependencies:** Foundation only. The Windows port is `BlockedPage.cs` ([06-windows.md](06-windows.md) § SiteBlock.Core, Blocked page); its last sentence reads "To open it again, use the SiteBlock icon in the system tray."
 
 ---
 

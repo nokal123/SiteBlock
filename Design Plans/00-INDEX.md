@@ -86,12 +86,12 @@
 
 ### Windows
 
-30. `windows/src/SiteBlock.Core/*.cs` (the C# port of SiteBlockCore: `DomainNormalizer`, `Punycode`, `DomainExpander`, `PathRuleParser`, `TabRuleMatcher`, `TabReloadDecider`, `HostsFileEditor`, `PasswordHasher`, `Models`, `Protocol`, `Engine`, `StateStore`, `DaemonClient`, `Formatting`, `ConnectionLimiter`, `UninstallRule`, `TemporaryUnblockOptions`, `UpdateCheck`, `DNSProbePacket`, `FamilyDNSProbe`, `FamilyDNSProviders`, `BrowserPolicy`, `ChromePolicy`, `WindowsBrowserPolicy`, `Peer`, `PipeNames`, `BuildInfo`, `JsonCoding`, `SwiftText`) — **Primary:** [06-windows.md](06-windows.md) § SiteBlock.Core (the C# port of SiteBlockCore; `FamilyDNSProviders.cs` and the embedded providers file) — **Also:** [02-core-components.md](02-core-components.md) (the rules each type implements)
+30. `windows/src/SiteBlock.Core/*.cs` (the C# port of SiteBlockCore: `DomainNormalizer`, `Punycode`, `DomainExpander`, `PathRuleParser`, `TabRuleMatcher`, `TabReloadDecider`, `HostsFileEditor`, `PasswordHasher`, `Models`, `Protocol`, `Engine`, `StateStore`, `DaemonClient`, `Formatting`, `ConnectionLimiter`, `UninstallRule`, `TemporaryUnblockOptions`, `UpdateCheck`, `DNSProbePacket`, `FamilyDNSProbe`, `FamilyDNSProviders`, `BrowserPolicy`, `ChromePolicy`, `WindowsBrowserPolicy`, `LocalGroupPolicy` (with `PolEntry`, `PolFormatException`, `RegistryPol`), `BlockedPage`, `Peer`, `PipeNames`, `BuildInfo`, `JsonCoding`, `SwiftText`) — **Primary:** [06-windows.md](06-windows.md) § SiteBlock.Core (the C# port of SiteBlockCore; `FamilyDNSProviders.cs` and the embedded providers file; Local Group Policy rules; Blocked page; Rules for the tab watcher) — **Also:** [02-core-components.md](02-core-components.md) (the rules each type implements)
 31. `windows/src/SiteBlock.Service/DaemonRuntime.cs` — **Primary:** [06-windows.md](06-windows.md) § DaemonRuntime — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § Daemon Runtime
 32. `windows/src/SiteBlock.Service/PipeServer.cs` — **Primary:** [06-windows.md](06-windows.md) § PipeServer — **Also:** [03-daemon-cli-app.md](03-daemon-cli-app.md) § SocketServer
 33. `windows/src/SiteBlock.Service/ConsoleSession.cs` — **Primary:** [06-windows.md](06-windows.md) § Flags (the console user's SID)
 34. `windows/src/SiteBlock.Service/HostsEnforcer.cs` — **Primary:** [06-windows.md](06-windows.md) § HostsEnforcer
-35. `windows/src/SiteBlock.Service/PolicyStores.cs`, `windows/src/SiteBlock.Service/BrowserPolicyEnforcer.cs` — **Primary:** [06-windows.md](06-windows.md) § BrowserPolicyEnforcer — **Also:** [06-windows.md](06-windows.md) § SiteBlock.Core (Windows browser policy rules)
+35. `windows/src/SiteBlock.Service/PolicyStores.cs`, `windows/src/SiteBlock.Service/BrowserPolicyEnforcer.cs`, `windows/src/SiteBlock.Service/PolicyRefresh.cs` — **Primary:** [06-windows.md](06-windows.md) § BrowserPolicyEnforcer — **Also:** [06-windows.md](06-windows.md) § SiteBlock.Core (Windows browser policy rules, Local Group Policy rules)
 36. `windows/src/SiteBlock.Service/DnsBackends.cs`, `windows/src/SiteBlock.Service/DnsEnforcer.cs` — **Primary:** [06-windows.md](06-windows.md) § DNSEnforcer
 37. `windows/src/SiteBlock.Service/ServiceGuard.cs` — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog
 38. `windows/src/SiteBlock.Service/ServiceControl.cs` (includes `ServiceConfigReader`) — **Primary:** [06-windows.md](06-windows.md) § ServiceGuard and the watchdog
@@ -109,11 +109,11 @@
 50. `windows/src/siteblock/Program.cs` — **Primary:** [06-windows.md](06-windows.md) § siteblock.exe CLI
 51. `windows/src/SiteBlock.AppLogic/*.cs` (`StatusModel`, `PanelModel`, `HomeModel`, `RowModel`, `SettingsModel`, `FormModels`, `Banners`, `Feedback`, `ToneColors`, `Defaults`, `ObservableModel`, `Interfaces`, `TabWatcher`, `Updater`, `UpdatePackage`) — **Primary:** [06-windows.md](06-windows.md) § Tray App (Structure) — **Also:** [06-windows.md](06-windows.md) § TabWatcher, § Updater
 52. `windows/src/SiteBlockApp/**` (the WPF tray app: `Program.cs`, `TrayIcon.cs`, `PanelWindow.cs`, `Theme.cs`, `Ui.cs`, `OverlayScrollViewer.cs`, `NativeMethods.cs`, `WindowsServices.cs`, `app.manifest`, `Views/*`) — **Primary:** [06-windows.md](06-windows.md) § Tray App (The panel)
-53. `windows/src/SiteBlockApp/UiaBrowserTabs.cs` — **Primary:** [06-windows.md](06-windows.md) § TabWatcher
+53. `windows/src/SiteBlockApp/UiaBrowserTabs.cs` — **Primary:** [06-windows.md](06-windows.md) § TabWatcher (including `Open`)
 54. `windows/scripts/build.ps1`, `windows/scripts/package.ps1`, `windows/version.props` (including the hand-kept `SiteBlockBuildNumber`) — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release
 55. `windows/scripts/install.ps1`, `windows/Install SiteBlock.cmd`, `windows/INSTALL.txt` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release
 56. `windows/scripts/verify-install.ps1` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (the installer runs it) — **Also:** [06-windows.md](06-windows.md) § Testing
-57. `windows/scripts/e2e.ps1` — **Primary:** [06-windows.md](06-windows.md) § Testing (items 5 to 7)
+57. `windows/scripts/e2e.ps1` — **Primary:** [06-windows.md](06-windows.md) § Testing (items 5 to 7, including the running-Chrome check and the two live tab-watcher checks)
 58. `.github/workflows/windows.yml` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (GitHub workflow)
 58b. `windows/scripts/release-check.ps1` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (GitHub workflow, the release decision)
 58a. `windows/scripts/stats.sh` — **Primary:** [06-windows.md](06-windows.md) § Install, Package and Release (Download counts)
@@ -212,6 +212,8 @@
 - Named pipe, its access list, how the caller is identified → [06-windows.md](06-windows.md) § PipeServer
 - Hosts file repair, `DataBasePath`, takeover → [06-windows.md](06-windows.md) § HostsEnforcer
 - Registry policy for Chrome, Edge, Brave and Firefox → [06-windows.md](06-windows.md) § SiteBlock.Core (Windows browser policy rules), § BrowserPolicyEnforcer
+- Why a running Windows browser keeps allowing a newly blocked site, the Local Group Policy copy (`Registry.pol`, `gpt.ini`), and the request that makes Windows apply it → [06-windows.md](06-windows.md) § BrowserPolicyEnforcer, § SiteBlock.Core (Local Group Policy rules)
+- The Windows tab watcher (whole sites and path rules, the blocked page, the reload fallback, `UiaBrowserTabs.Open`) → [06-windows.md](06-windows.md) § TabWatcher, § SiteBlock.Core (Blocked page, Rules for the tab watcher)
 - Family DNS on adapters → [06-windows.md](06-windows.md) § DNSEnforcer
 - Switching the family DNS provider → [06-windows.md](06-windows.md) § SiteBlock.Core (Family DNS providers)
 - Services, watchdog and tray app guards → [06-windows.md](06-windows.md) § ServiceGuard and the watchdog, § AppGuard

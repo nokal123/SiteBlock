@@ -940,7 +940,11 @@ function Test-LiveWholeSite {
     try {
         if ((Wait-Until 20000 { @(Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" }).Count -ge 1 }) -lt 0) { throw "Chrome did not open $site within 20 seconds" }
         $tab = Get-ChromeTabs $port | Where-Object { $_.url -like "https://$site/*" } | Select-Object -First 1
-        if ((Wait-Until 20000 { (Invoke-TabScript $tab.webSocketDebuggerUrl "document.readyState + ' ' + location.href") -match "^complete https://$([regex]::Escape($site))/" }) -lt 0) { throw "the page did not finish loading $site within 20 seconds" }
+        $script:WholeSiteState = ''
+        if ((Wait-Until 20000 { try { $script:WholeSiteState = Invoke-TabScript $tab.webSocketDebuggerUrl "document.readyState + ' ' + location.href" } catch { $script:WholeSiteState = "unreadable: $($_.Exception.Message)" }; $script:WholeSiteState -match "^complete https://$([regex]::Escape($site))/" }) -lt 0) {
+            $listed = (@(Get-ChromeTabs $port | ForEach-Object { "$($_.type) $($_.url)" }) -join ' | ')
+            throw "the page did not finish loading $site within 20 seconds (the tab read '$($script:WholeSiteState)'; Chrome lists: $listed)"
+        }
         $before = Get-TabReloadCount
         $add = Invoke-SiteBlock @('add', $site)
         if ($add.ExitCode -ne 0) { throw "siteblock add $site exited $($add.ExitCode): $($add.Text)" }
