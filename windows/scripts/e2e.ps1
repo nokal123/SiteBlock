@@ -847,6 +847,28 @@ function Test-LiveTabWatcher {
     }
 }
 
+# For the diagnosis of the refresh check: registers an event for computer policy changes with RegisterGPNotification
+# (as Chrome does), runs gpupdate /target:computer /force, and says whether and when Windows signalled the event.
+function Test-GroupPolicySignal {
+    if (-not ('SiteBlockE2E.GpNotify' -as [type])) {
+        Add-Type -Namespace SiteBlockE2E -Name GpNotify -MemberDefinition '[DllImport("userenv.dll", SetLastError = true)] public static extern bool RegisterGPNotification(IntPtr hEvent, bool bMachine); [DllImport("userenv.dll", SetLastError = true)] public static extern bool UnregisterGPNotification(IntPtr hEvent);'
+    }
+    $event = New-Object System.Threading.AutoResetEvent $false
+    $handle = $event.SafeWaitHandle.DangerousGetHandle()
+    if (-not [SiteBlockE2E.GpNotify]::RegisterGPNotification($handle, $true)) { return "RegisterGPNotification failed with error $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    try {
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $gp = Invoke-Program 'gpupdate.exe' @('/target:computer', '/force') @() 120
+        $ranMs = $watch.ElapsedMilliseconds
+        $signalled = $event.WaitOne(30000)
+        if ($signalled) { return "signalled $($watch.ElapsedMilliseconds) ms after gpupdate started (gpupdate took $ranMs ms, exit $($gp.ExitCode))" }
+        return "not signalled within 30 seconds after gpupdate (it took $ranMs ms, exit $($gp.ExitCode): $($gp.Text -replace '\s+', ' '))"
+    } finally {
+        [void][SiteBlockE2E.GpNotify]::UnregisterGPNotification($handle)
+        $event.Dispose()
+    }
+}
+
 # 06-windows.md, Testing, item 5. A Chrome that is already running refuses a site blocked after it started, within
 # 30 seconds. Chrome reads its registry policy again only when Windows signals that Group Policy was applied (or on
 # its own 15-minute timer), so this passes only when the service asks Windows for that refresh after it writes the
@@ -884,6 +906,13 @@ function Test-RunningChromeGetsNewBlock {
             Start-Sleep -Milliseconds 500
         }
         if ($blockedAt -lt 0) {
+            # For the diagnosis: whether this way of reading a tab sees Chrome's block page at all, on youtube.com, which was blocked before this Chrome started.
+            $control = Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:$port/json/new?https://www.$TestDomain/" -TimeoutSec 5
+            Start-Sleep -Milliseconds 2500
+            $controlSeen = ''
+            try { $controlSeen = Invoke-TabScript $control.webSocketDebuggerUrl "(document.documentElement.outerHTML.indexOf('ERR_BLOCKED_BY_ADMINISTRATOR') >= 0 ? 'blocked ' : 'not-blocked ') + location.href + ' ' + document.title" } catch { $controlSeen = "unreadable: $($_.Exception.Message)" }
+            # And whether Windows signals a program that registered for computer policy changes, the way Chrome does, when policy is applied again.
+            $signal = Test-GroupPolicySignal
             # For the diagnosis: whether a forced Group Policy refresh run by hand reaches this Chrome at all.
             $gp = Invoke-Program 'gpupdate.exe' @('/target:computer', '/force') @() 120
             $afterGp = Wait-Until 30000 {
@@ -894,7 +923,7 @@ function Test-RunningChromeGetsNewBlock {
                 $seen -eq 'blocked'
             }
             $gpNote = if ($afterGp -ge 0) { "after gpupdate /force (exit $($gp.ExitCode)) Chrome refused it within $afterGp ms" } else { "even gpupdate /force (exit $($gp.ExitCode)) did not make Chrome refuse it within 30 seconds" }
-            throw "a new tab on $site was still not refused by Chrome's policy 30 seconds after siteblock add ($attempts tries; the last tab showed '$lastSeen'); $gpNote. End of siteblockd.log: $(Get-LogTail $DaemonLog 10)"
+            throw "a new tab on $site was still not refused by Chrome's policy 30 seconds after siteblock add ($attempts tries; the last tab showed '$lastSeen'); $gpNote. A tab on www.$TestDomain read '$controlSeen'. Group Policy signal: $signal. End of siteblockd.log: $(Get-LogTail $DaemonLog 10)"
         }
         $openState = "it never loaded (it last read '$($script:OpenTabState)')"
         if ($openLoaded) { try { $openState = Invoke-TabScript $open.webSocketDebuggerUrl "location.href + ' mark=' + (typeof window.__siteblockMark)" } catch { $openState = "unreadable: $($_.Exception.Message)" } }
